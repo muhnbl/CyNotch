@@ -1,0 +1,3267 @@
+use crate::memreduct::{CleanAreas, CleanResult};
+use chrono::Local;
+use serde::{Deserialize, Serialize};
+use std::time::Instant;
+
+/// Per-user state directory (`%LOCALAPPDATA%\CyNotch`).
+///
+/// Resolved from the environment instead of a literal path so an install on any
+/// account works. The fallback never names a specific user: if `LOCALAPPDATA` is
+/// missing (only possible in a stripped-down service context) the temp directory
+/// is used, so the app still starts and writes somewhere it owns.
+pub fn appdata_dir() -> std::path::PathBuf {
+    std::env::var_os("LOCALAPPDATA")
+        .map(std::path::PathBuf::from)
+        .unwrap_or_else(std::env::temp_dir)
+        .join("CyNotch")
+}
+
+/// Path for a crash/diagnostic log inside [`appdata_dir`].
+pub fn crash_log_path(name: &str) -> std::path::PathBuf {
+    appdata_dir().join(name)
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum NotchStyle {
+    Floating,
+    EdgeFlush,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum NotchPlacement {
+    Top,
+    Left,
+    Right,
+}
+
+impl NotchPlacement {
+    pub fn is_vertical(self) -> bool {
+        !matches!(self, Self::Top)
+    }
+
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Top => "Top",
+            Self::Left => "Left",
+            Self::Right => "Right",
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum NotchSizePreset {
+    Compact,
+    Standard,
+    Wide,
+}
+
+impl NotchSizePreset {
+    pub fn idle_width(self) -> f32 {
+        match self {
+            Self::Compact => 260.0,
+            Self::Standard => 330.0,
+            Self::Wide => 412.0,
+        }
+    }
+
+    pub fn idle_height_horizontal(self) -> f32 {
+        match self {
+            Self::Compact => 40.0,
+            Self::Standard => 42.0,
+            Self::Wide => 46.0,
+        }
+    }
+
+    pub fn idle_width_vertical(self) -> f32 {
+        match self {
+            Self::Compact => 46.0,
+            Self::Standard => 52.0,
+            Self::Wide => 60.0,
+        }
+    }
+
+    pub fn idle_height_vertical(self) -> f32 {
+        match self {
+            Self::Compact => 156.0,
+            Self::Standard => 204.0,
+            Self::Wide => 256.0,
+        }
+    }
+
+    pub fn minimized_length(self) -> f32 {
+        match self {
+            Self::Compact => 68.0,
+            Self::Standard => 86.0,
+            Self::Wide => 118.0,
+        }
+    }
+
+    pub fn minimized_thickness(self) -> f32 {
+        match self {
+            Self::Compact => 16.0,
+            Self::Standard => 18.0,
+            Self::Wide => 20.0,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum ExpandedSizePreset {
+    Compact,
+    Standard,
+    Large,
+}
+
+impl ExpandedSizePreset {
+    pub fn scale(self) -> f32 {
+        match self {
+            Self::Compact => 0.90,
+            Self::Standard => 1.00,
+            Self::Large => 1.15,
+        }
+    }
+
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Compact => "Compact",
+            Self::Standard => "Standard",
+            Self::Large => "Large",
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum IdleMetric {
+    Ram,
+    NetSpeed,
+    Cpu,
+    Clock,
+    Minimal,
+}
+
+impl IdleMetric {
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Ram => "RAM",
+            Self::NetSpeed => "Net",
+            Self::Cpu => "CPU",
+            Self::Clock => "Clock",
+            Self::Minimal => "Min",
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum MotionPreset {
+    Gentle,
+    Balanced,
+    Reduced,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum TypeScale {
+    Compact,
+    Standard,
+    Large,
+    ExtraLarge,
+}
+
+impl TypeScale {
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Compact => "Compact",
+            Self::Standard => "Desktop",
+            Self::Large => "Large",
+            Self::ExtraLarge => "X-Large",
+        }
+    }
+
+    /// Proportional UI container / button / control scale factor for each preset.
+    /// Keeps buttons, spacing, and banners responsive alongside typography.
+    pub fn ui_scale(self) -> f32 {
+        match self {
+            Self::Compact => 1.00,
+            Self::Standard => 1.09,
+            Self::Large => 1.22,
+            Self::ExtraLarge => 1.38,
+        }
+    }
+
+    /// Gentler scale factor for non-minimized idle capsules so the top/edge bar
+    /// stays sleek while text remains crisp across desktop scales.
+    pub fn idle_ui_scale(self) -> f32 {
+        match self {
+            Self::Compact => 1.00,
+            Self::Standard => 1.05,
+            Self::Large => 1.13,
+            Self::ExtraLarge => 1.24,
+        }
+    }
+
+    /// Pre-transform (`p.s`) desktop legibility curve: eliminates tiny `<10.8px`
+    /// captions even in `Compact`, while giving `Large` / `X-Large` balanced
+    /// additional breathing room on top of responsive `ui_scale`.
+    pub fn caption_lift_px(self, raw_size: f32) -> f32 {
+        if raw_size <= 9.0 {
+            return (raw_size + 0.45).max(8.8);
+        }
+        let lifted = if raw_size < 14.0 {
+            10.8 + (raw_size - 9.2) * (3.2 / 4.8)
+        } else {
+            raw_size
+        };
+        let tier_bonus = match self {
+            Self::Compact => 1.00,
+            Self::Standard => 1.015,
+            Self::Large => 1.03,
+            Self::ExtraLarge => 1.05,
+        };
+        lifted * tier_bonus
+    }
+
+    /// Net rendered pixel font size at the preset's responsive `ui_scale`.
+    pub fn scale_px(self, raw_size: f32) -> f32 {
+        self.caption_lift_px(raw_size) * self.ui_scale()
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum LyricSize {
+    Compact,
+    Standard,
+    Large,
+}
+
+impl LyricSize {
+    pub fn next(self) -> Self {
+        match self {
+            Self::Compact => Self::Standard,
+            Self::Standard => Self::Large,
+            Self::Large => Self::Compact,
+        }
+    }
+
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Compact => "Compact",
+            Self::Standard => "Standard",
+            Self::Large => "Large",
+        }
+    }
+
+    pub fn short_label(self) -> &'static str {
+        match self {
+            Self::Compact => "S",
+            Self::Standard => "M",
+            Self::Large => "L",
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum LyricStyle {
+    ClassicList,
+    KaraokeGlow,
+    MinimalSingle,
+    CompactStream,
+}
+
+impl LyricStyle {
+    pub fn next(self) -> Self {
+        match self {
+            Self::ClassicList => Self::KaraokeGlow,
+            Self::KaraokeGlow => Self::MinimalSingle,
+            Self::MinimalSingle => Self::CompactStream,
+            Self::CompactStream => Self::ClassicList,
+        }
+    }
+
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::ClassicList => "Classic",
+            Self::KaraokeGlow => "Karaoke",
+            Self::MinimalSingle => "Minimal",
+            Self::CompactStream => "Stream",
+        }
+    }
+
+    pub fn short_label(self) -> &'static str {
+        self.label()
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SettingsCategory {
+    General,
+    Motion,
+    Modules,
+    Notifications,
+    Health,
+    System,
+}
+
+impl SettingsCategory {
+    pub const COUNT: usize = 6;
+    pub const ALL: [SettingsCategory; 6] = [
+        SettingsCategory::General,
+        SettingsCategory::Motion,
+        SettingsCategory::Modules,
+        SettingsCategory::Notifications,
+        SettingsCategory::Health,
+        SettingsCategory::System,
+    ];
+
+    pub fn index(self) -> usize {
+        match self {
+            Self::General => 0,
+            Self::Motion => 1,
+            Self::Modules => 2,
+            Self::Notifications => 3,
+            Self::Health => 4,
+            Self::System => 5,
+        }
+    }
+
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::General => "General & Notch",
+            Self::Motion => "Motion & Perf",
+            Self::Modules => "Dock & Modules",
+            Self::Notifications => "Notifications",
+            Self::Health => "Health & Focus",
+            Self::System => "Memory & System",
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ModuleVisibility {
+    pub music: bool,
+    pub volume: bool,
+    pub mem_reduct: bool,
+    pub focus_timer: bool,
+    pub tasks: bool,
+    pub shelf: bool,
+    pub capture: bool,
+    pub telemetry: bool,
+}
+
+impl Default for ModuleVisibility {
+    fn default() -> Self {
+        Self {
+            music: true,
+            volume: true,
+            mem_reduct: true,
+            focus_timer: true,
+            tasks: true,
+            shelf: true,
+            capture: true,
+            telemetry: true,
+        }
+    }
+}
+
+#[repr(usize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ToggleId {
+    Autostart = 0,
+    Chime = 1,
+    ClickToOpen = 2,
+    HideFullscreen = 3,
+    ShowMascot = 4,
+    ProgressArc = 5,
+    MicroInteractions = 6,
+    Equalizer = 7,
+    Notifications = 8,
+    LyricsMonitor = 9,
+    ClipboardWatch = 10,
+    CaptureClipboard = 11,
+    AutoClean = 12,
+    AreaWs = 13,
+    AreaSys = 14,
+    AreaStandby = 15,
+    ScreenTime = 16,
+    ModMusic = 17,
+    ModVolume = 18,
+    ModMemReduct = 19,
+    ModFocus = 20,
+    ModTasks = 21,
+    ModShelf = 22,
+    ModCapture = 23,
+    ModTelemetry = 24,
+    MinimizedIsland = 25,
+    AreaModPage = 26,
+    AreaStandbyLow = 27,
+    AreaModFile = 28,
+    AreaRegistry = 29,
+    AreaCombine = 30,
+    ShowCleanResults = 31,
+    HealthReminders = 32,
+    FrostedGlass = 33,
+    NotifListener = 34,
+    NotifExclusive = 35,
+    NotifAutoClear = 36,
+    NotifOverFullscreen = 37,
+    RemoveWindowsBorders = 38,
+}
+
+impl ToggleId {
+    pub const ALL: [ToggleId; 39] = [
+        ToggleId::Autostart,
+        ToggleId::Chime,
+        ToggleId::ClickToOpen,
+        ToggleId::HideFullscreen,
+        ToggleId::ShowMascot,
+        ToggleId::ProgressArc,
+        ToggleId::MicroInteractions,
+        ToggleId::Equalizer,
+        ToggleId::Notifications,
+        ToggleId::LyricsMonitor,
+        ToggleId::ClipboardWatch,
+        ToggleId::CaptureClipboard,
+        ToggleId::AutoClean,
+        ToggleId::AreaWs,
+        ToggleId::AreaSys,
+        ToggleId::AreaStandby,
+        ToggleId::ScreenTime,
+        ToggleId::ModMusic,
+        ToggleId::ModVolume,
+        ToggleId::ModMemReduct,
+        ToggleId::ModFocus,
+        ToggleId::ModTasks,
+        ToggleId::ModShelf,
+        ToggleId::ModCapture,
+        ToggleId::ModTelemetry,
+        ToggleId::MinimizedIsland,
+        ToggleId::AreaModPage,
+        ToggleId::AreaStandbyLow,
+        ToggleId::AreaModFile,
+        ToggleId::AreaRegistry,
+        ToggleId::AreaCombine,
+        ToggleId::ShowCleanResults,
+        ToggleId::HealthReminders,
+        ToggleId::FrostedGlass,
+        ToggleId::NotifListener,
+        ToggleId::NotifExclusive,
+        ToggleId::NotifAutoClear,
+        ToggleId::NotifOverFullscreen,
+        ToggleId::RemoveWindowsBorders,
+    ];
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct SettingEffects {
+    pub redraw_notch: bool,
+    pub update_autostart: Option<bool>,
+    pub reset_screentime: bool,
+    pub trigger_purge: bool,
+    pub quit_app: bool,
+    pub close_settings: bool,
+    pub open_win_notif_settings: bool,
+    pub open_win_personalize_colors: bool,
+    pub sync_frosted_window: bool,
+    pub sync_windows_borders: Option<bool>,
+    pub sync_exclusive_banners: Option<bool>,
+    pub request_notif_access: bool,
+}
+
+/// Pure exponential decay toward `target` with zero overshoot or bounce.
+pub fn ease_exp(cur: f32, target: f32, speed: f32, dt: f32, eps: f32) -> (f32, bool) {
+    let diff = target - cur;
+    if diff.abs() <= eps {
+        return (target, (target - cur).abs() > 1e-5);
+    }
+    let alpha = (1.0 - (-speed * dt.max(0.0)).exp()).clamp(0.0, 1.0);
+    let next = cur + diff * alpha;
+    if (target - next).abs() <= eps {
+        (target, true)
+    } else {
+        (next, true)
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum NotchMode {
+    Home,
+    Music,
+    Volume,
+    MemReduct,
+    FocusTimer,
+    Tasks,
+    Shelf,
+    Capture,
+    Telemetry,
+    Settings,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum NotificationKind {
+    Pasted,
+    Water,
+    MemoryPurge,
+    Capture,
+    General,
+    SystemToast,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MascotMood {
+    Idle,
+    Purging,
+    Music,
+    Focus,
+    Hydrate,
+    Capture,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum Action {
+    SetMode(NotchMode),
+    TogglePin,
+    StartGripDrag,
+    ResetPosition,
+    DrinkWater(u32),
+    ToggleLyrics,
+    ScrollLyrics(i32),
+    CycleLyricSize,
+    CycleLyricStyle,
+    SetLyricSize(LyricSize),
+    SetLyricStyle(LyricStyle),
+    PrevTrack,
+    TogglePlayPause,
+    NextTrack,
+    PurgeRam,
+    ToggleAutoClean,
+    ToggleArea(u8),     // 0..=7 matching Mem Reduct areas
+    CycleThreshold,     // 70 -> 80 -> 90 -> 0 (Disable) -> 60 -> 70
+    CycleInterval,      // 0 (Disable) -> 5 -> 15 -> 30 -> 60 -> 90 -> 0
+    SetCleanThreshold(u32),
+    SetCleanInterval(u32),
+    ToggleShowCleanResults,
+    ToggleFocusTimer,
+    ResetFocusTimer,
+    SetFocusDuration(u32),
+    ToggleTimerPhase,
+    ToggleTask(usize),
+    DeleteTask(usize),
+    ClearCompletedTasks,
+    PasteAsTask,
+    ActivateShelfItem(usize),
+    DeleteShelfItem(usize),
+    ClearShelf,
+    CaptureScreen,
+    CaptureWindow,
+    OpenCaptureFolder,
+    SeekMusic(f32),
+    SetVolume(f32),
+    ToggleMute,
+    OpenSettings,
+    CloseSettings,
+    SetSettingsCategory(SettingsCategory),
+    SetNotchStyle(NotchStyle),
+    SetPlacement(NotchPlacement),
+    SetSizePreset(NotchSizePreset),
+    SetExpandedSize(ExpandedSizePreset),
+    SetTypeScale(TypeScale),
+    SetIdleMetric(IdleMetric),
+    ToggleMinimizedIsland,
+    ToggleClickToOpen,
+    ToggleHideFullscreen,
+    ToggleShowMascot,
+    ToggleProgressArc,
+    ToggleHealthReminders,
+    SetMotionPreset(MotionPreset),
+    SetFpsCap(u32),
+    ToggleMicroInteractions,
+    ToggleEqualizer,
+    ToggleNotifications,
+    SetNotificationSecs(u32),
+    ToggleFrostedGlass,
+    ToggleRemoveWindowsBorders,
+    SetFrostedOpacity(u32),
+    SetFrostedBlur(u32),
+    ToggleNotifListener,
+    ToggleNotifExclusive,
+    ToggleNotifAutoClear,
+    ToggleNotifOverFullscreen,
+    OpenWinNotifSettings,
+    OpenWinPersonalizeColors,
+    SendTestNotification,
+    DismissNotification,
+    ToggleModule(NotchMode),
+    ToggleLyricsMonitor,
+    ToggleClipboardWatch,
+    ToggleCaptureClipboard,
+    SetWaterGoal(u32),
+    SetWaterGlass(u32),
+    SetMoveInterval(u32),
+    SetDefaultFocus(u32),
+    SetDefaultBreak(u32),
+    ToggleScreenTime,
+    ResetScreenTimeToday,
+    ResetAllSettings,
+    ToggleAutostart,
+    ToggleChime,
+    SetWaterInterval(u32),
+    Quit,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct TaskItem {
+    pub text: String,
+    pub completed: bool,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum ShelfKind {
+    Text,
+    File,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ShelfItem {
+    pub kind: ShelfKind,
+    pub label: String,
+    pub payload: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct WaterTracker {
+    pub date: String,
+    pub taken_ml: u32,
+    pub goal_ml: u32,
+    pub glass_ml: u32,
+}
+
+impl Default for WaterTracker {
+    fn default() -> Self {
+        Self {
+            date: Local::now().format("%Y-%m-%d").to_string(),
+            taken_ml: 0,
+            goal_ml: 1500,
+            glass_ml: 250,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Default)]
+pub struct CaptureState {
+    pub last_path: Option<String>,
+    pub last_filename: String,
+    pub last_dims: String,
+    pub clipboard_ok: bool,
+    pub total_captures: u32,
+}
+
+#[derive(Debug, Clone)]
+pub struct ScreenTimeStats {
+    pub today_secs: u64,
+    pub top_app_name: String,
+    pub top_app_secs: u64,
+    pub top_apps: Vec<(String, u64)>,
+    pub seven_day_avg_secs: u64,
+    pub tracked_days: usize,
+    pub peak_hour: usize,
+    pub peak_hour_str: String,
+    pub hourly_secs: [u64; 24],
+}
+
+impl Default for ScreenTimeStats {
+    fn default() -> Self {
+        Self {
+            today_secs: 0,
+            top_app_name: "--".to_string(),
+            top_app_secs: 0,
+            top_apps: Vec::new(),
+            seven_day_avg_secs: 0,
+            tracked_days: 1,
+            peak_hour: 0,
+            peak_hour_str: "--".to_string(),
+            hourly_secs: [0u64; 24],
+        }
+    }
+}
+
+impl ScreenTimeStats {
+    pub fn preview_sample() -> Self {
+        let mut hourly = [0u64; 24];
+        hourly[10] = 1400;
+        hourly[11] = 2200;
+        hourly[14] = 3800;
+        hourly[15] = 2900;
+        Self {
+            today_secs: 2 * 3600 + 2 * 60,
+            top_app_name: "Chrome".to_string(),
+            top_app_secs: 3600 + 5 * 60,
+            top_apps: vec![
+                ("Chrome".to_string(), 3900),
+                ("VS Code".to_string(), 2400),
+                ("Terminal".to_string(), 1020),
+            ],
+            seven_day_avg_secs: 3600 + 48 * 60,
+            tracked_days: 3,
+            peak_hour: 14,
+            peak_hour_str: "2 PM".to_string(),
+            hourly_secs: hourly,
+        }
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct NotificationBanner {
+    pub app_name: String,
+    pub title: String,
+    pub subtitle: String,
+    pub kind: NotificationKind,
+    pub is_success: bool,
+    pub total_secs: f32,
+    pub expires_at: Instant,
+}
+
+#[derive(Debug, Clone)]
+pub struct MediaTrack {
+    pub title: String,
+    pub artist: String,
+    pub album: String,
+    pub is_playing: bool,
+    pub position_ms: u64,
+    pub duration_ms: u64,
+}
+
+impl Default for MediaTrack {
+    fn default() -> Self {
+        Self::idle()
+    }
+}
+
+impl MediaTrack {
+    pub fn idle() -> Self {
+        Self {
+            title: "No Media Playing".to_string(),
+            artist: "Open Spotify, YT, or player".to_string(),
+            album: String::new(),
+            is_playing: false,
+            position_ms: 0,
+            duration_ms: 0,
+        }
+    }
+
+    pub fn preview_sample() -> Self {
+        Self {
+            title: "Golden Hour Drive".to_string(),
+            artist: "Northbound".to_string(),
+            album: String::new(),
+            is_playing: true,
+            position_ms: 63_000,
+            duration_ms: 214_000,
+        }
+    }
+
+    pub fn is_idle(&self) -> bool {
+        self.title == "No Media Playing" || self.title.is_empty()
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct LyricLine {
+    pub seconds: f64,
+    pub text: String,
+}
+
+#[derive(Debug, Clone)]
+pub struct PomodoroTimer {
+    pub is_running: bool,
+    pub is_break: bool,
+    pub remaining_secs: u32,
+    pub total_secs: u32,
+    pub cycles_completed: u32,
+}
+
+impl Default for PomodoroTimer {
+    fn default() -> Self {
+        Self {
+            is_running: false,
+            is_break: false,
+            remaining_secs: 25 * 60,
+            total_secs: 25 * 60,
+            cycles_completed: 0,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Default)]
+pub struct HardwareTelemetry {
+    pub cpu_usage: f32,
+    pub memory_used_gb: f32,
+    pub memory_total_gb: f32,
+    pub memory_percent: f32,
+    pub pagefile_used_gb: f32,
+    pub pagefile_total_gb: f32,
+    pub pagefile_percent: f32,
+    pub sys_cache_mb: f32,
+    pub sys_cache_peak_mb: f32,
+    pub sys_cache_percent: f32,
+    pub net_down_kbps: f32,
+    pub net_up_kbps: f32,
+    pub has_admin_privileges: bool,
+    pub on_ac: bool,
+    pub battery_pct: Option<u8>,
+}
+
+impl HardwareTelemetry {
+    pub fn initial_real() -> Self {
+        let (pools, on_ac, battery_pct) = crate::telemetry::poll_memory_and_power();
+        Self {
+            cpu_usage: 0.0,
+            memory_used_gb: pools.phys_used_gb,
+            memory_total_gb: pools.phys_total_gb,
+            memory_percent: pools.phys_percent,
+            pagefile_used_gb: pools.page_used_gb,
+            pagefile_total_gb: pools.page_total_gb,
+            pagefile_percent: pools.page_percent,
+            sys_cache_mb: pools.sys_cache_mb,
+            sys_cache_peak_mb: pools.sys_cache_peak_mb,
+            sys_cache_percent: pools.sys_cache_percent,
+            net_down_kbps: 0.0,
+            net_up_kbps: 0.0,
+            has_admin_privileges: pools.is_elevated,
+            on_ac,
+            battery_pct,
+        }
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct MemReductConfig {
+    pub clean_working_sets: bool,
+    pub clean_system_ws: bool,
+    pub clean_standby_list: bool,
+    pub clean_modified_page_list: bool,
+    pub clean_standby_low: bool,
+    pub clean_modified_file_cache: bool,
+    pub clean_registry_cache: bool,
+    pub clean_combine_memory_lists: bool,
+    pub show_clean_results: bool,
+    pub when_above_pct: u32,
+    pub every_mins: u32,
+    pub auto_clean_enabled: bool,
+    pub last_cleaned_status: String,
+    pub last_freed_mb: f64,
+    pub is_purging: bool,
+    pub cyno_quote: String,
+}
+
+impl Default for MemReductConfig {
+    fn default() -> Self {
+        Self {
+            clean_working_sets: true,
+            clean_system_ws: true,
+            clean_standby_list: true,
+            clean_modified_page_list: true,
+            clean_standby_low: false,
+            clean_modified_file_cache: false,
+            clean_registry_cache: false,
+            clean_combine_memory_lists: false,
+            show_clean_results: true,
+            when_above_pct: 70,
+            every_mins: 0,
+            auto_clean_enabled: true,
+            last_cleaned_status: "Ready â€¢ Click to purge standby & WS".to_string(),
+            last_freed_mb: 0.0,
+            is_purging: false,
+            cyno_quote: "Through me, the law is made manifest.".to_string(),
+        }
+    }
+}
+
+impl MemReductConfig {
+    pub fn preview_sample() -> Self {
+        Self {
+            last_cleaned_status: "14 procs trimmed â€¢ 420 MB freed".to_string(),
+            last_freed_mb: 420.0,
+            ..Self::default()
+        }
+    }
+
+    pub fn to_clean_areas(&self) -> CleanAreas {
+        CleanAreas {
+            working_sets: self.clean_working_sets,
+            system_file_cache: self.clean_system_ws,
+            modified_page_list: self.clean_modified_page_list,
+            standby_list: self.clean_standby_list,
+            standby_list_low: self.clean_standby_low,
+            modified_file_cache: self.clean_modified_file_cache,
+            registry_cache: self.clean_registry_cache,
+            combine_memory_lists: self.clean_combine_memory_lists,
+        }
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct AppState {
+    pub mode: NotchMode,
+    pub is_hovered: bool,
+    pub is_pinned: bool,
+    pub x_offset: i32,
+    pub y_offset: i32,
+    pub show_lyrics: bool,
+    pub lyrics_offset: i32,
+
+    // Advanced Shell & Customization Settings (Nusa / Layzee parity)
+    pub notch_style: NotchStyle,
+    pub placement: NotchPlacement,
+    pub size_preset: NotchSizePreset,
+    pub expanded_size: ExpandedSizePreset,
+    pub type_scale: TypeScale,
+    pub idle_metric: IdleMetric,
+    pub minimized_island: bool,
+    pub click_to_open: bool,
+    pub hide_in_fullscreen: bool,
+    pub show_mascot: bool,
+    pub progress_arc_enabled: bool,
+    pub health_reminders_enabled: bool,
+    pub motion_preset: MotionPreset,
+    pub fps_cap: u32,
+    pub detected_hz: u32,
+    pub micro_interactions: bool,
+    pub equalizer_enabled: bool,
+    pub notifications_enabled: bool,
+    pub notification_secs: u32,
+    pub lyric_size: LyricSize,
+    pub lyric_style: LyricStyle,
+    pub frosted_glass_enabled: bool,
+    pub frosted_opacity_pct: u32,
+    pub frosted_blur_px: u32,
+    pub windows_transparency_enabled: bool,
+    pub remove_windows_borders: bool,
+    pub notif_listener_enabled: bool,
+    pub notif_exclusive_mode: bool,
+    pub notif_auto_clear_action_center: bool,
+    pub notif_over_fullscreen: bool,
+    pub notif_listener_status: String,
+    pub notif_suppressed_apps: usize,
+    pub modules: ModuleVisibility,
+    pub lyrics_enabled: bool,
+    pub clipboard_watch_enabled: bool,
+    pub capture_to_clipboard: bool,
+    pub screentime_enabled: bool,
+    pub move_reminder_mins: u32,
+    pub default_focus_mins: u32,
+    pub default_break_mins: u32,
+
+    // Settings Window UI State
+    pub settings_open: bool,
+    pub settings_category: SettingsCategory,
+    pub settings_scroll: [f32; SettingsCategory::COUNT],
+
+    // Smooth Zero-Bounce Animation parameters
+    pub current_width: f32,
+    pub current_height: f32,
+    pub target_width: f32,
+    pub target_height: f32,
+    pub anim_expand_t: f32,
+    pub target_anchor_x: f32,
+    pub target_anchor_y: f32,
+    pub anim_anchor_x: f32,
+    pub anim_anchor_y: f32,
+    pub anim_dock_x: f32,
+    pub anim_dock_w: f32,
+    pub anim_settings_cat_y: f32,
+    pub anim_vol_pct: f32,
+    pub anim_water_pct: f32,
+    pub anim_ram_pct: f32,
+    pub hover_target_idx: Option<usize>,
+    pub hover_slots: [f32; 48],
+    pub settings_hover_idx: Option<usize>,
+    pub settings_hover_slots: [f32; 48],
+    pub switch_t: [f32; 48],
+
+    // Core Modules
+    pub media: MediaTrack,
+    pub lyrics: Vec<LyricLine>,
+    pub current_lyric_index: Option<usize>,
+    pub current_lyric_text: String,
+    pub timer: PomodoroTimer,
+    pub telemetry: HardwareTelemetry,
+    pub mem_reduct: MemReductConfig,
+    pub water: WaterTracker,
+    pub capture: CaptureState,
+    pub quick_note: String,
+    pub screen_time: ScreenTimeStats,
+    pub notification: Option<NotificationBanner>,
+    pub purge_anim_until: Option<Instant>,
+    pub shelf_items: Vec<ShelfItem>,
+    pub shelf_scroll: usize,
+    pub tasks: Vec<TaskItem>,
+    pub tasks_scroll: usize,
+    pub anim_time: f32,
+    pub volume_pct: f32,
+    pub pre_mute_volume: f32,
+    pub autostart: bool,
+    pub chime_enabled: bool,
+    pub water_interval_mins: u32,
+    pub persistence_enabled: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct PersistedConfig {
+    chime_enabled: bool,
+    water_interval_mins: u32,
+    clean_working_sets: bool,
+    clean_system_ws: bool,
+    clean_standby_list: bool,
+    #[serde(default = "default_true")]
+    clean_modified_page_list: bool,
+    #[serde(default)]
+    clean_standby_low: bool,
+    #[serde(default)]
+    clean_modified_file_cache: bool,
+    #[serde(default)]
+    clean_registry_cache: bool,
+    #[serde(default)]
+    clean_combine_memory_lists: bool,
+    #[serde(default = "default_true")]
+    show_clean_results: bool,
+    when_above_pct: u32,
+    every_mins: u32,
+    #[serde(default = "default_true")]
+    auto_clean_enabled: bool,
+    #[serde(default)]
+    is_pinned: bool,
+    #[serde(default)]
+    x_offset: i32,
+    #[serde(default)]
+    y_offset: i32,
+    #[serde(default)]
+    last_freed_mb: f64,
+    #[serde(default)]
+    last_cleaned_status: String,
+    #[serde(default = "default_notch_style")]
+    notch_style: NotchStyle,
+    #[serde(default = "default_placement")]
+    placement: NotchPlacement,
+    #[serde(default = "default_size_preset")]
+    size_preset: NotchSizePreset,
+    #[serde(default = "default_expanded_size")]
+    expanded_size: ExpandedSizePreset,
+    #[serde(default = "default_type_scale")]
+    type_scale: TypeScale,
+    #[serde(default = "default_idle_metric")]
+    idle_metric: IdleMetric,
+    #[serde(default)]
+    minimized_island: bool,
+    #[serde(default)]
+    click_to_open: bool,
+    #[serde(default = "default_true")]
+    hide_in_fullscreen: bool,
+    #[serde(default = "default_true")]
+    show_mascot: bool,
+    #[serde(default = "default_true", alias = "status_ring_enabled")]
+    progress_arc_enabled: bool,
+    #[serde(default = "default_true")]
+    health_reminders_enabled: bool,
+    #[serde(default = "default_motion_preset")]
+    motion_preset: MotionPreset,
+    #[serde(default)]
+    fps_cap: u32,
+    #[serde(default = "default_true")]
+    micro_interactions: bool,
+    #[serde(default = "default_true")]
+    equalizer_enabled: bool,
+    #[serde(default = "default_true")]
+    notifications_enabled: bool,
+    #[serde(default = "default_notif_secs")]
+    notification_secs: u32,
+    #[serde(default)]
+    modules: ModuleVisibility,
+    #[serde(default = "default_true")]
+    lyrics_enabled: bool,
+    #[serde(default = "default_true")]
+    clipboard_watch_enabled: bool,
+    #[serde(default = "default_true")]
+    capture_to_clipboard: bool,
+    #[serde(default = "default_true")]
+    screentime_enabled: bool,
+    #[serde(default)]
+    move_reminder_mins: u32,
+    #[serde(default = "default_focus_mins")]
+    default_focus_mins: u32,
+    #[serde(default = "default_break_mins")]
+    default_break_mins: u32,
+    #[serde(default = "default_lyric_size")]
+    lyric_size: LyricSize,
+    #[serde(default = "default_lyric_style")]
+    lyric_style: LyricStyle,
+    #[serde(default = "default_true")]
+    frosted_glass_enabled: bool,
+    #[serde(default = "default_frosted_opacity")]
+    frosted_opacity_pct: u32,
+    #[serde(default = "default_frosted_blur")]
+    frosted_blur_px: u32,
+    #[serde(default)]
+    remove_windows_borders: bool,
+    #[serde(default)]
+    anchor_x: Option<f32>,
+    #[serde(default)]
+    anchor_y: Option<f32>,
+    #[serde(default = "default_true")]
+    notif_listener_enabled: bool,
+    #[serde(default)]
+    notif_exclusive_mode: bool,
+    #[serde(default)]
+    notif_auto_clear_action_center: bool,
+    #[serde(default)]
+    notif_over_fullscreen: bool,
+    /// Config schema revision; < 2 means saved before the bridge became default-on.
+    #[serde(default)]
+    config_rev: u32,
+}
+
+fn default_true() -> bool { true }
+
+/// v2: Windows Notification Bridge is ON by default (configs saved earlier are migrated to ON once).
+const CONFIG_REV: u32 = 2;
+
+impl PersistedConfig {
+    fn listener_effective(&self) -> bool {
+        self.notif_listener_enabled || self.config_rev < 2
+    }
+}
+fn default_notch_style() -> NotchStyle { NotchStyle::Floating }
+fn default_placement() -> NotchPlacement { NotchPlacement::Top }
+fn default_size_preset() -> NotchSizePreset { NotchSizePreset::Standard }
+fn default_expanded_size() -> ExpandedSizePreset { ExpandedSizePreset::Standard }
+fn default_type_scale() -> TypeScale { TypeScale::Standard }
+fn default_idle_metric() -> IdleMetric { IdleMetric::Ram }
+fn default_motion_preset() -> MotionPreset { MotionPreset::Gentle }
+fn default_lyric_size() -> LyricSize { LyricSize::Standard }
+fn default_lyric_style() -> LyricStyle { LyricStyle::ClassicList }
+fn default_notif_secs() -> u32 { 4 }
+fn default_focus_mins() -> u32 { 25 }
+fn default_break_mins() -> u32 { 5 }
+fn default_frosted_opacity() -> u32 { 68 }
+fn default_frosted_blur() -> u32 { 20 }
+
+impl AppState {
+    pub const MINIMIZED_WIDTH: f32 = 86.0;
+    pub const MINIMIZED_HEIGHT: f32 = 18.0;
+    pub const MINIMIZED_VERT_WIDTH: f32 = 18.0;
+    pub const MINIMIZED_VERT_HEIGHT: f32 = 86.0;
+
+    pub const IDLE_WIDTH: f32 = 330.0;
+    pub const IDLE_HEIGHT: f32 = 42.0;
+    pub const VERT_IDLE_WIDTH: f32 = 52.0;
+    pub const VERT_IDLE_HEIGHT: f32 = 204.0;
+
+    pub const BANNER_WIDTH: f32 = 424.0;
+    pub const BANNER_HEIGHT: f32 = 80.0;
+    pub const VERT_BANNER_WIDTH: f32 = 356.0;
+    pub const VERT_BANNER_HEIGHT: f32 = 90.0;
+
+    pub const EXPANDED_WIDTH: f32 = 620.0;
+    pub const EXPANDED_HEIGHT: f32 = 232.0;
+    pub const VERT_EXPANDED_WIDTH: f32 = 316.0;
+    pub const VERT_EXPANDED_HEIGHT: f32 = 480.0;
+
+    pub const SETTINGS_WIDTH: f32 = 860.0;
+    pub const SETTINGS_HEIGHT: f32 = 720.0;
+
+    pub const VOLUME_SLIDER_X: f32 = 200.0;
+    pub const VOLUME_SLIDER_W: f32 = 380.0;
+    pub const VERT_VOLUME_SLIDER_X: f32 = 32.0;
+    pub const VERT_VOLUME_SLIDER_W: f32 = 252.0;
+
+    pub const MUSIC_SCRUBBER_X: f32 = 206.0;
+    pub const MUSIC_SCRUBBER_W: f32 = 376.0;
+    pub const VERT_MUSIC_SCRUBBER_X: f32 = 32.0;
+    pub const VERT_MUSIC_SCRUBBER_W: f32 = 252.0;
+
+    pub fn base_expanded_width(&self) -> f32 {
+        if self.placement.is_vertical() {
+            Self::VERT_EXPANDED_WIDTH
+        } else {
+            Self::EXPANDED_WIDTH
+        }
+    }
+
+    pub fn base_expanded_height(&self) -> f32 {
+        if self.placement.is_vertical() {
+            Self::VERT_EXPANDED_HEIGHT
+        } else {
+            Self::EXPANDED_HEIGHT
+        }
+    }
+
+    pub fn expanded_scale(&self) -> f32 {
+        self.expanded_size.scale() * self.type_scale.ui_scale()
+    }
+
+    pub fn banner_scale(&self) -> f32 {
+        self.type_scale.ui_scale()
+    }
+
+    pub fn settings_width(&self) -> f32 {
+        (Self::SETTINGS_WIDTH * self.type_scale.ui_scale()).round()
+    }
+
+    pub fn settings_height(&self) -> f32 {
+        (Self::SETTINGS_HEIGHT * self.type_scale.ui_scale()).round()
+    }
+
+    pub fn expanded_width(&self) -> f32 {
+        (self.base_expanded_width() * self.expanded_scale()).round()
+    }
+
+    pub fn expanded_height(&self) -> f32 {
+        (self.base_expanded_height() * self.expanded_scale()).round()
+    }
+
+    pub fn canvas_width(&self) -> u32 {
+        self.expanded_width()
+            .max(self.collapsed_width())
+            .max(self.idle_width())
+            .max(self.current_width)
+            .ceil()
+            .max(1.0) as u32
+    }
+
+    pub fn canvas_height(&self) -> u32 {
+        self.expanded_height()
+            .max(self.collapsed_height())
+            .max(self.idle_height())
+            .max(self.current_height)
+            .ceil()
+            .max(1.0) as u32
+    }
+
+    /// Collapsed target width: pops out to a readable toast banner whenever an active notification is shown.
+    pub fn collapsed_width(&self) -> f32 {
+        if self.notification.is_some() {
+            let base = if self.placement.is_vertical() {
+                Self::VERT_BANNER_WIDTH
+            } else {
+                Self::BANNER_WIDTH
+            };
+            (base * self.banner_scale()).round()
+        } else {
+            self.idle_width()
+        }
+    }
+
+    /// Collapsed target height: pops out to a multi-line toast height when a notification is active.
+    pub fn collapsed_height(&self) -> f32 {
+        if self.notification.is_some() {
+            let base = if self.placement.is_vertical() {
+                Self::VERT_BANNER_HEIGHT
+            } else {
+                Self::BANNER_HEIGHT
+            };
+            (base * self.banner_scale()).round()
+        } else {
+            self.idle_height()
+        }
+    }
+
+    pub fn sync_collapsed_targets(&mut self) {
+        if !self.is_hovered {
+            self.target_width = self.collapsed_width();
+            self.target_height = self.collapsed_height();
+        }
+    }
+
+    pub fn idle_width(&self) -> f32 {
+        if self.placement.is_vertical() {
+            if self.minimized_island {
+                self.size_preset.minimized_thickness()
+            } else {
+                (self.size_preset.idle_width_vertical() * self.type_scale.idle_ui_scale()).round()
+            }
+        } else if self.minimized_island {
+            self.size_preset.minimized_length()
+        } else {
+            (self.size_preset.idle_width() * self.type_scale.idle_ui_scale()).round()
+        }
+    }
+
+    pub fn idle_height(&self) -> f32 {
+        if self.placement.is_vertical() {
+            if self.minimized_island {
+                self.size_preset.minimized_length()
+            } else {
+                (self.size_preset.idle_height_vertical() * self.type_scale.idle_ui_scale()).round()
+            }
+        } else if self.minimized_island {
+            self.size_preset.minimized_thickness()
+        } else {
+            (self.size_preset.idle_height_horizontal() * self.type_scale.idle_ui_scale()).round()
+        }
+    }
+
+    /// Unified rounded corner radius shared by Renderer, DirectComposition clip, SetWindowRgn, and WM_NCHITTEST.
+    pub fn notch_corner_radius(&self) -> f32 {
+        let w = self.current_width.max(1.0);
+        let h = self.current_height.max(1.0);
+        let exp_w = self.expanded_width();
+        let exp_h = self.expanded_height();
+        let settled_expanded = self.is_hovered
+            && (w - exp_w).abs() < 0.5
+            && (h - exp_h).abs() < 0.5;
+        let t = if settled_expanded {
+            1.0
+        } else {
+            self.anim_expand_t.clamp(0.0, 1.0)
+        };
+        let idle_cap_r = if self.notification.is_some() {
+            21.0 * self.banner_scale()
+        } else if self.minimized_island {
+            21.0
+        } else {
+            21.0 * self.type_scale.idle_ui_scale()
+        };
+        let idle_r = (w.min(h) * 0.5).min(idle_cap_r);
+        let exp_r = match self.expanded_size {
+            ExpandedSizePreset::Compact => 23.5,
+            ExpandedSizePreset::Standard => 26.0,
+            ExpandedSizePreset::Large => 28.5,
+        } * self.type_scale.ui_scale();
+        idle_r + (exp_r - idle_r) * t
+    }
+
+    pub fn default_anchor_for_placement(_placement: NotchPlacement) -> (f32, f32) {
+        (0.5, 0.5)
+    }
+
+    pub fn reset_anchor_for_placement(&mut self) {
+        let (ax, ay) = Self::default_anchor_for_placement(self.placement);
+        self.target_anchor_x = ax;
+        self.target_anchor_y = ay;
+    }
+
+    pub fn is_top_left_corner_docked(&self) -> bool {
+        match self.placement {
+            NotchPlacement::Top => self.target_anchor_x <= 0.05,
+            NotchPlacement::Left => self.target_anchor_y <= 0.05,
+            NotchPlacement::Right => false,
+        }
+    }
+
+    pub fn is_top_right_corner_docked(&self) -> bool {
+        match self.placement {
+            NotchPlacement::Top => self.target_anchor_x >= 0.95,
+            NotchPlacement::Right => self.target_anchor_y <= 0.05,
+            NotchPlacement::Left => false,
+        }
+    }
+
+    pub fn is_corner_docked(&self) -> bool {
+        self.is_top_left_corner_docked() || self.is_top_right_corner_docked()
+    }
+
+    pub fn corner_radii(&self) -> (f32, f32, f32, f32) {
+        let r_cur = self.notch_corner_radius();
+        let (base_tl, base_tr, base_br, base_bl) = match (self.notch_style, self.placement) {
+            (NotchStyle::Floating, _) => (r_cur, r_cur, r_cur, r_cur),
+            (NotchStyle::EdgeFlush, NotchPlacement::Top) => (4.0, 4.0, r_cur, r_cur),
+            (NotchStyle::EdgeFlush, NotchPlacement::Left) => (4.0, r_cur, r_cur, 4.0),
+            (NotchStyle::EdgeFlush, NotchPlacement::Right) => (r_cur, 4.0, 4.0, r_cur),
+        };
+        let (tl_t, tr_t) = match self.placement {
+            NotchPlacement::Top => (
+                1.0 - (self.anim_anchor_x / 0.18).clamp(0.0, 1.0),
+                ((self.anim_anchor_x - 0.82) / 0.18).clamp(0.0, 1.0),
+            ),
+            NotchPlacement::Left => (1.0 - (self.anim_anchor_y / 0.18).clamp(0.0, 1.0), 0.0),
+            NotchPlacement::Right => (0.0, 1.0 - (self.anim_anchor_y / 0.18).clamp(0.0, 1.0)),
+        };
+        if tl_t > 0.0 {
+            (
+                base_tl * (1.0 - tl_t),
+                base_tr * (1.0 - tl_t),
+                base_br,
+                base_bl * (1.0 - tl_t),
+            )
+        } else if tr_t > 0.0 {
+            (
+                base_tl * (1.0 - tr_t),
+                base_tr * (1.0 - tr_t),
+                base_br * (1.0 - tr_t),
+                base_bl,
+            )
+        } else {
+            (base_tl, base_tr, base_br, base_bl)
+        }
+    }
+
+    pub fn settings_cat_pill_y(cat: SettingsCategory) -> f32 {
+        124.0 + (cat.index() as f32) * 52.0
+    }
+
+    pub fn is_frosted_active(&self) -> bool {
+        false
+    }
+
+    /// True when an active banner should punch through fullscreen / borderless apps (games, video).
+    pub fn notification_overlays_fullscreen(&self) -> bool {
+        self.notif_over_fullscreen && self.notifications_enabled && self.notification.is_some()
+    }
+
+    pub fn settings_scroll(&self, cat: SettingsCategory) -> f32 {
+        self.settings_scroll[cat.index()]
+    }
+
+    pub fn set_settings_scroll(&mut self, cat: SettingsCategory, scroll: f32) {
+        self.settings_scroll[cat.index()] = scroll.max(0.0);
+    }
+
+    pub fn dock_metrics(tab_count: usize) -> (f32, f32) {
+        Self::dock_metrics_for_placement(tab_count, NotchPlacement::Top)
+    }
+
+    pub fn dock_metrics_for_placement(tab_count: usize, placement: NotchPlacement) -> (f32, f32) {
+        let count = tab_count.max(1) as f32;
+        if placement.is_vertical() {
+            let dock_w = (8.0 + count * 30.6).min(284.0);
+            let item_w = (dock_w - 8.0) / count;
+            (dock_w, item_w)
+        } else {
+            let dock_w = (8.0 + count * 32.0).min(302.0);
+            let item_w = (dock_w - 8.0) / count;
+            (dock_w, item_w)
+        }
+    }
+
+    pub fn visible_dock_modes(&self) -> Vec<NotchMode> {
+        let mut modes = Vec::with_capacity(9);
+        modes.push(NotchMode::Home);
+        if self.modules.music { modes.push(NotchMode::Music); }
+        if self.modules.volume { modes.push(NotchMode::Volume); }
+        if self.modules.mem_reduct { modes.push(NotchMode::MemReduct); }
+        if self.modules.focus_timer { modes.push(NotchMode::FocusTimer); }
+        if self.modules.tasks { modes.push(NotchMode::Tasks); }
+        if self.modules.shelf { modes.push(NotchMode::Shelf); }
+        if self.modules.capture { modes.push(NotchMode::Capture); }
+        if self.modules.telemetry { modes.push(NotchMode::Telemetry); }
+        modes
+    }
+
+    pub fn active_dock_target(&self) -> (f32, f32) {
+        let visible = self.visible_dock_modes();
+        let (dock_w, item_w) = Self::dock_metrics_for_placement(visible.len(), self.placement);
+        let idx = visible.iter().position(|&m| m == self.mode).unwrap_or(0);
+        let dock_x = if self.placement.is_vertical() {
+            (Self::VERT_EXPANDED_WIDTH - dock_w) * 0.5
+        } else {
+            20.0
+        };
+        (dock_x + 4.0 + (idx as f32) * item_w, item_w)
+    }
+
+    pub fn desired_active_interval_ms(&self) -> u32 {
+        match self.fps_cap {
+            120 => 8,
+            90 => 11,
+            60 => 16,
+            _ => {
+                let hz = self.detected_hz.max(60);
+                if hz >= 115 {
+                    8
+                } else if hz >= 85 {
+                    11
+                } else {
+                    (1000 / hz).clamp(8, 16)
+                }
+            }
+        }
+    }
+
+    pub fn toggle_target(&self, id: ToggleId) -> bool {
+        match id {
+            ToggleId::Autostart => self.autostart,
+            ToggleId::Chime => self.chime_enabled,
+            ToggleId::ClickToOpen => self.click_to_open,
+            ToggleId::HideFullscreen => self.hide_in_fullscreen,
+            ToggleId::ShowMascot => self.show_mascot,
+            ToggleId::ProgressArc => self.progress_arc_enabled,
+            ToggleId::HealthReminders => self.health_reminders_enabled,
+            ToggleId::MicroInteractions => self.micro_interactions,
+            ToggleId::Equalizer => self.equalizer_enabled,
+            ToggleId::Notifications => self.notifications_enabled,
+            ToggleId::LyricsMonitor => self.lyrics_enabled,
+            ToggleId::ClipboardWatch => self.clipboard_watch_enabled,
+            ToggleId::CaptureClipboard => self.capture_to_clipboard,
+            ToggleId::AutoClean => self.mem_reduct.auto_clean_enabled,
+            ToggleId::AreaWs => self.mem_reduct.clean_working_sets,
+            ToggleId::AreaSys => self.mem_reduct.clean_system_ws,
+            ToggleId::AreaStandby => self.mem_reduct.clean_standby_list,
+            ToggleId::ScreenTime => self.screentime_enabled,
+            ToggleId::ModMusic => self.modules.music,
+            ToggleId::ModVolume => self.modules.volume,
+            ToggleId::ModMemReduct => self.modules.mem_reduct,
+            ToggleId::ModFocus => self.modules.focus_timer,
+            ToggleId::ModTasks => self.modules.tasks,
+            ToggleId::ModShelf => self.modules.shelf,
+            ToggleId::ModCapture => self.modules.capture,
+            ToggleId::ModTelemetry => self.modules.telemetry,
+            ToggleId::MinimizedIsland => self.minimized_island,
+            ToggleId::AreaModPage => self.mem_reduct.clean_modified_page_list,
+            ToggleId::AreaStandbyLow => self.mem_reduct.clean_standby_low,
+            ToggleId::AreaModFile => self.mem_reduct.clean_modified_file_cache,
+            ToggleId::AreaRegistry => self.mem_reduct.clean_registry_cache,
+            ToggleId::AreaCombine => self.mem_reduct.clean_combine_memory_lists,
+            ToggleId::ShowCleanResults => self.mem_reduct.show_clean_results,
+            ToggleId::FrostedGlass => self.frosted_glass_enabled,
+            ToggleId::NotifListener => self.notif_listener_enabled,
+            ToggleId::NotifExclusive => self.notif_exclusive_mode,
+            ToggleId::NotifAutoClear => self.notif_auto_clear_action_center,
+            ToggleId::NotifOverFullscreen => self.notif_over_fullscreen,
+            ToggleId::RemoveWindowsBorders => self.remove_windows_borders,
+        }
+    }
+
+    pub fn sync_switches_immediate(&mut self) {
+        for id in ToggleId::ALL {
+            self.switch_t[id as usize] = if self.toggle_target(id) { 1.0 } else { 0.0 };
+        }
+    }
+
+    pub fn apply_setting_action(&mut self, action: Action) -> Option<SettingEffects> {
+        let mut eff = SettingEffects {
+            redraw_notch: true,
+            ..Default::default()
+        };
+        match action {
+            Action::SetSettingsCategory(cat) => {
+                self.set_settings_category(cat);
+                eff.redraw_notch = false;
+            }
+            Action::CloseSettings => {
+                eff.close_settings = true;
+            }
+            Action::TogglePin => {
+                self.is_pinned = !self.is_pinned;
+                self.set_hovered(self.is_pinned);
+                self.save_config();
+            }
+            Action::SetNotchStyle(style) => {
+                self.notch_style = style;
+                self.save_config();
+            }
+            Action::SetPlacement(pl) => {
+                if self.placement != pl {
+                    let axis_changed = self.placement.is_vertical() != pl.is_vertical();
+                    self.placement = pl;
+                    self.x_offset = 0;
+                    self.y_offset = 0;
+                    self.reset_anchor_for_placement();
+                    if self.is_hovered {
+                        self.target_width = self.expanded_width();
+                        self.target_height = self.expanded_height();
+                    } else {
+                        self.sync_collapsed_targets();
+                    }
+                    if axis_changed || self.motion_preset == MotionPreset::Reduced {
+                        self.current_width = self.target_width;
+                        self.current_height = self.target_height;
+                        self.anim_anchor_x = self.target_anchor_x;
+                        self.anim_anchor_y = self.target_anchor_y;
+                    }
+                    let (dx, dw) = self.active_dock_target();
+                    self.anim_dock_x = dx;
+                    self.anim_dock_w = dw;
+                    self.save_config();
+                }
+            }
+            Action::SetSizePreset(preset) => {
+                self.size_preset = preset;
+                self.sync_collapsed_targets();
+                if !self.is_hovered && self.motion_preset == MotionPreset::Reduced {
+                    self.current_width = self.target_width;
+                    self.current_height = self.target_height;
+                }
+                self.save_config();
+            }
+            Action::SetExpandedSize(preset) => {
+                self.expanded_size = preset;
+                if self.is_hovered {
+                    self.target_width = self.expanded_width();
+                    self.target_height = self.expanded_height();
+                }
+                self.save_config();
+            }
+            Action::SetTypeScale(scale) => {
+                self.type_scale = scale;
+                if self.is_hovered {
+                    self.target_width = self.expanded_width();
+                    self.target_height = self.expanded_height();
+                } else {
+                    self.sync_collapsed_targets();
+                }
+                self.save_config();
+            }
+            Action::SetIdleMetric(metric) => {
+                self.idle_metric = metric;
+                self.save_config();
+            }
+            Action::ToggleMinimizedIsland => {
+                self.minimized_island = !self.minimized_island;
+                self.sync_collapsed_targets();
+                self.save_config();
+            }
+            Action::ToggleClickToOpen => {
+                self.click_to_open = !self.click_to_open;
+                self.save_config();
+            }
+            Action::ToggleHideFullscreen => {
+                self.hide_in_fullscreen = !self.hide_in_fullscreen;
+                self.save_config();
+            }
+            Action::ToggleShowMascot => {
+                self.show_mascot = !self.show_mascot;
+                self.save_config();
+            }
+            Action::ToggleProgressArc => {
+                self.progress_arc_enabled = !self.progress_arc_enabled;
+                self.save_config();
+            }
+            Action::ToggleHealthReminders => {
+                self.health_reminders_enabled = !self.health_reminders_enabled;
+                if !self.health_reminders_enabled
+                    && matches!(&self.notification, Some(n) if n.kind == NotificationKind::Water)
+                {
+                    self.notification = None;
+                }
+                self.save_config();
+            }
+            Action::SetMotionPreset(preset) => {
+                self.motion_preset = preset;
+                if preset == MotionPreset::Reduced {
+                    self.sync_preview_settled();
+                }
+                self.save_config();
+            }
+            Action::SetFpsCap(cap) => {
+                self.fps_cap = cap;
+                self.save_config();
+            }
+            Action::ToggleMicroInteractions => {
+                self.micro_interactions = !self.micro_interactions;
+                self.save_config();
+            }
+            Action::ToggleEqualizer => {
+                self.equalizer_enabled = !self.equalizer_enabled;
+                self.save_config();
+            }
+            Action::ToggleNotifications => {
+                self.notifications_enabled = !self.notifications_enabled;
+                if !self.notifications_enabled {
+                    self.notification = None;
+                    self.sync_collapsed_targets();
+                }
+                self.save_config();
+            }
+            Action::SetNotificationSecs(secs) => {
+                self.notification_secs = secs.clamp(2, 10);
+                self.save_config();
+            }
+            Action::ToggleFrostedGlass => {
+                self.frosted_glass_enabled = !self.frosted_glass_enabled;
+                self.save_config();
+                eff.sync_frosted_window = true;
+            }
+            Action::ToggleRemoveWindowsBorders => {
+                self.remove_windows_borders = !self.remove_windows_borders;
+                self.save_config();
+                eff.sync_windows_borders = Some(self.remove_windows_borders);
+                eff.redraw_notch = false;
+            }
+            Action::SetFrostedOpacity(pct) => {
+                if self.is_frosted_active() {
+                    self.frosted_opacity_pct = pct.clamp(25, 95);
+                    self.save_config();
+                } else {
+                    eff.redraw_notch = false;
+                }
+            }
+            Action::SetFrostedBlur(px) => {
+                if self.is_frosted_active() {
+                    self.frosted_blur_px = px.clamp(4, 40);
+                    self.save_config();
+                } else {
+                    eff.redraw_notch = false;
+                }
+            }
+            Action::ToggleNotifListener => {
+                self.notif_listener_enabled = !self.notif_listener_enabled;
+                if self.notif_listener_enabled {
+                    self.notif_listener_status = "Connecting...".to_string();
+                    eff.request_notif_access = true;
+                } else {
+                    self.notif_listener_status = "Off".to_string();
+                    if self.notif_exclusive_mode {
+                        self.notif_exclusive_mode = false;
+                        eff.sync_exclusive_banners = Some(false);
+                    }
+                }
+                self.save_config();
+            }
+            Action::ToggleNotifExclusive => {
+                self.notif_exclusive_mode = !self.notif_exclusive_mode;
+                if self.notif_exclusive_mode {
+                    if !self.notif_listener_enabled {
+                        self.notif_listener_enabled = true;
+                        self.notif_listener_status = "Connecting...".to_string();
+                        eff.request_notif_access = true;
+                    }
+                    eff.sync_exclusive_banners = Some(true);
+                } else {
+                    eff.sync_exclusive_banners = Some(false);
+                }
+                self.save_config();
+            }
+            Action::ToggleNotifAutoClear => {
+                self.notif_auto_clear_action_center = !self.notif_auto_clear_action_center;
+                self.save_config();
+            }
+            Action::ToggleNotifOverFullscreen => {
+                self.notif_over_fullscreen = !self.notif_over_fullscreen;
+                self.save_config();
+            }
+            Action::OpenWinNotifSettings => {
+                eff.open_win_notif_settings = true;
+                eff.redraw_notch = false;
+            }
+            Action::OpenWinPersonalizeColors => {
+                eff.open_win_personalize_colors = true;
+                eff.redraw_notch = false;
+            }
+            Action::SendTestNotification => {
+                self.notification = Some(NotificationBanner {
+                    app_name: "Discord".to_string(),
+                    title: "Kai (#dev-sync)".to_string(),
+                    subtitle: "Notification bridge verified — messages from apps will pop here cleanly".to_string(),
+                    kind: NotificationKind::SystemToast,
+                    is_success: true,
+                    total_secs: self.notification_secs.clamp(2, 10).max(4) as f32,
+                    expires_at: Instant::now() + std::time::Duration::from_secs(self.notification_secs.clamp(2, 10).max(4) as u64),
+                });
+                self.sync_collapsed_targets();
+                eff.redraw_notch = true;
+            }
+            Action::DismissNotification => {
+                self.notification = None;
+                self.sync_collapsed_targets();
+                eff.redraw_notch = true;
+            }
+            Action::CycleLyricSize => {
+                self.lyric_size = self.lyric_size.next();
+                self.save_config();
+            }
+            Action::CycleLyricStyle => {
+                self.lyric_style = self.lyric_style.next();
+                self.save_config();
+            }
+            Action::SetLyricSize(sz) => {
+                self.lyric_size = sz;
+                self.save_config();
+            }
+            Action::SetLyricStyle(st) => {
+                self.lyric_style = st;
+                self.save_config();
+            }
+            Action::ToggleModule(m) => {
+                match m {
+                    NotchMode::Music => self.modules.music = !self.modules.music,
+                    NotchMode::Volume => self.modules.volume = !self.modules.volume,
+                    NotchMode::MemReduct => self.modules.mem_reduct = !self.modules.mem_reduct,
+                    NotchMode::FocusTimer => self.modules.focus_timer = !self.modules.focus_timer,
+                    NotchMode::Tasks => self.modules.tasks = !self.modules.tasks,
+                    NotchMode::Shelf => self.modules.shelf = !self.modules.shelf,
+                    NotchMode::Capture => self.modules.capture = !self.modules.capture,
+                    NotchMode::Telemetry => self.modules.telemetry = !self.modules.telemetry,
+                    _ => {}
+                }
+                if !self.visible_dock_modes().contains(&self.mode) {
+                    self.set_mode(NotchMode::Home);
+                }
+                self.save_config();
+            }
+            Action::ToggleLyricsMonitor => {
+                self.lyrics_enabled = !self.lyrics_enabled;
+                self.save_config();
+            }
+            Action::ToggleClipboardWatch => {
+                self.clipboard_watch_enabled = !self.clipboard_watch_enabled;
+                self.save_config();
+            }
+            Action::ToggleCaptureClipboard => {
+                self.capture_to_clipboard = !self.capture_to_clipboard;
+                self.save_config();
+            }
+            Action::SetWaterGoal(ml) => {
+                self.water.goal_ml = ml.clamp(500, 5000);
+                self.save_water();
+            }
+            Action::SetWaterGlass(ml) => {
+                self.water.glass_ml = ml.clamp(100, 1000);
+                self.save_water();
+            }
+            Action::SetWaterInterval(mins) => {
+                self.water_interval_mins = mins;
+                self.save_config();
+            }
+            Action::SetMoveInterval(mins) => {
+                self.move_reminder_mins = mins;
+                self.save_config();
+            }
+            Action::SetDefaultFocus(mins) => {
+                self.default_focus_mins = mins.clamp(5, 90);
+                if !self.timer.is_running && !self.timer.is_break {
+                    self.timer.total_secs = self.default_focus_mins * 60;
+                    self.timer.remaining_secs = self.timer.total_secs;
+                }
+                self.save_config();
+            }
+            Action::SetDefaultBreak(mins) => {
+                self.default_break_mins = mins.clamp(1, 30);
+                if !self.timer.is_running && self.timer.is_break {
+                    self.timer.total_secs = self.default_break_mins * 60;
+                    self.timer.remaining_secs = self.timer.total_secs;
+                }
+                self.save_config();
+            }
+            Action::ToggleAutoClean => {
+                self.mem_reduct.auto_clean_enabled = !self.mem_reduct.auto_clean_enabled;
+                self.save_config();
+            }
+            Action::ToggleArea(idx) => {
+                self.toggle_mem_area(idx);
+            }
+            Action::CycleThreshold => {
+                self.cycle_threshold();
+            }
+            Action::CycleInterval => {
+                self.cycle_interval();
+            }
+            Action::SetCleanThreshold(pct) => {
+                self.mem_reduct.when_above_pct = if pct == 0 { 0 } else { pct.clamp(50, 98) };
+                self.save_config();
+            }
+            Action::SetCleanInterval(mins) => {
+                self.mem_reduct.every_mins = if mins == 0 { 0 } else { mins.clamp(1, 180) };
+                self.save_config();
+            }
+            Action::ToggleShowCleanResults => {
+                self.mem_reduct.show_clean_results = !self.mem_reduct.show_clean_results;
+                self.save_config();
+            }
+            Action::PurgeRam => {
+                eff.trigger_purge = true;
+            }
+            Action::ToggleAutostart => {
+                self.autostart = !self.autostart;
+                eff.update_autostart = Some(self.autostart);
+            }
+            Action::ToggleChime => {
+                self.chime_enabled = !self.chime_enabled;
+                self.save_config();
+            }
+            Action::ToggleScreenTime => {
+                self.screentime_enabled = !self.screentime_enabled;
+                self.save_config();
+            }
+            Action::ResetScreenTimeToday => {
+                self.screen_time = ScreenTimeStats::default();
+                eff.reset_screentime = true;
+            }
+            Action::ResetPosition => {
+                self.x_offset = 0;
+                self.y_offset = 0;
+                self.reset_anchor_for_placement();
+                if self.motion_preset == MotionPreset::Reduced {
+                    self.anim_anchor_x = self.target_anchor_x;
+                    self.anim_anchor_y = self.target_anchor_y;
+                }
+                self.save_config();
+            }
+            Action::ResetAllSettings => {
+                let prev_frosted = self.is_frosted_active();
+                let was_exclusive = self.notif_exclusive_mode;
+                let was_listening = self.notif_listener_enabled;
+                self.reset_all_settings();
+                if !was_listening && self.notif_listener_enabled {
+                    eff.request_notif_access = true;
+                }
+                if self.is_frosted_active() != prev_frosted {
+                    eff.sync_frosted_window = true;
+                }
+                if was_exclusive {
+                    eff.sync_exclusive_banners = Some(false);
+                }
+            }
+            Action::Quit => {
+                eff.quit_app = true;
+            }
+            _ => return None,
+        }
+        Some(eff)
+    }
+
+    fn appdata_dir() -> std::path::PathBuf {
+        crate::models::appdata_dir()
+    }
+
+    fn config_path() -> std::path::PathBuf { Self::appdata_dir().join("config.json") }
+    fn tasks_path() -> std::path::PathBuf { Self::appdata_dir().join("tasks.json") }
+    fn shelf_path() -> std::path::PathBuf { Self::appdata_dir().join("shelf.json") }
+    fn water_path() -> std::path::PathBuf { Self::appdata_dir().join("water.json") }
+
+    pub fn save_config(&self) {
+        if !self.persistence_enabled {
+            return;
+        }
+        let cfg = PersistedConfig {
+            chime_enabled: self.chime_enabled,
+            water_interval_mins: self.water_interval_mins,
+            clean_working_sets: self.mem_reduct.clean_working_sets,
+            clean_system_ws: self.mem_reduct.clean_system_ws,
+            clean_standby_list: self.mem_reduct.clean_standby_list,
+            clean_modified_page_list: self.mem_reduct.clean_modified_page_list,
+            clean_standby_low: self.mem_reduct.clean_standby_low,
+            clean_modified_file_cache: self.mem_reduct.clean_modified_file_cache,
+            clean_registry_cache: self.mem_reduct.clean_registry_cache,
+            clean_combine_memory_lists: self.mem_reduct.clean_combine_memory_lists,
+            show_clean_results: self.mem_reduct.show_clean_results,
+            when_above_pct: self.mem_reduct.when_above_pct,
+            every_mins: self.mem_reduct.every_mins,
+            auto_clean_enabled: self.mem_reduct.auto_clean_enabled,
+            is_pinned: self.is_pinned,
+            x_offset: self.x_offset,
+            y_offset: self.y_offset,
+            last_freed_mb: self.mem_reduct.last_freed_mb,
+            last_cleaned_status: self.mem_reduct.last_cleaned_status.clone(),
+            notch_style: self.notch_style,
+            placement: self.placement,
+            size_preset: self.size_preset,
+            expanded_size: self.expanded_size,
+            type_scale: self.type_scale,
+            idle_metric: self.idle_metric,
+            minimized_island: self.minimized_island,
+            click_to_open: self.click_to_open,
+            hide_in_fullscreen: self.hide_in_fullscreen,
+            show_mascot: self.show_mascot,
+            progress_arc_enabled: self.progress_arc_enabled,
+            health_reminders_enabled: self.health_reminders_enabled,
+            motion_preset: self.motion_preset,
+            fps_cap: self.fps_cap,
+            micro_interactions: self.micro_interactions,
+            equalizer_enabled: self.equalizer_enabled,
+            notifications_enabled: self.notifications_enabled,
+            notification_secs: self.notification_secs,
+            modules: self.modules,
+            lyrics_enabled: self.lyrics_enabled,
+            clipboard_watch_enabled: self.clipboard_watch_enabled,
+            capture_to_clipboard: self.capture_to_clipboard,
+            screentime_enabled: self.screentime_enabled,
+            move_reminder_mins: self.move_reminder_mins,
+            default_focus_mins: self.default_focus_mins,
+            default_break_mins: self.default_break_mins,
+            lyric_size: self.lyric_size,
+            lyric_style: self.lyric_style,
+            frosted_glass_enabled: self.frosted_glass_enabled,
+            frosted_opacity_pct: self.frosted_opacity_pct,
+            frosted_blur_px: self.frosted_blur_px,
+            remove_windows_borders: self.remove_windows_borders,
+            anchor_x: Some(self.target_anchor_x),
+            anchor_y: Some(self.target_anchor_y),
+            notif_listener_enabled: self.notif_listener_enabled,
+            notif_exclusive_mode: self.notif_exclusive_mode,
+            notif_auto_clear_action_center: self.notif_auto_clear_action_center,
+            notif_over_fullscreen: self.notif_over_fullscreen,
+            config_rev: CONFIG_REV,
+        };
+        let path = Self::config_path();
+        if let Some(parent) = path.parent() {
+            let _ = std::fs::create_dir_all(parent);
+        }
+        if let Ok(json) = serde_json::to_string_pretty(&cfg) {
+            let _ = std::fs::write(path, json);
+        }
+    }
+
+    fn load_config() -> Option<PersistedConfig> {
+        let text = std::fs::read_to_string(Self::config_path()).ok()?;
+        serde_json::from_str::<PersistedConfig>(&text).ok()
+    }
+
+    pub fn apply_config_json(&mut self, json: &str) -> bool {
+        let Ok(cfg) = serde_json::from_str::<PersistedConfig>(json) else {
+            return false;
+        };
+        let listener_eff = cfg.listener_effective();
+        self.chime_enabled = cfg.chime_enabled;
+        self.water_interval_mins = cfg.water_interval_mins;
+        self.mem_reduct.clean_working_sets = cfg.clean_working_sets;
+        self.mem_reduct.clean_system_ws = cfg.clean_system_ws;
+        self.mem_reduct.clean_standby_list = cfg.clean_standby_list;
+        self.mem_reduct.clean_modified_page_list = cfg.clean_modified_page_list;
+        self.mem_reduct.clean_standby_low = cfg.clean_standby_low;
+        self.mem_reduct.clean_modified_file_cache = cfg.clean_modified_file_cache;
+        self.mem_reduct.clean_registry_cache = cfg.clean_registry_cache;
+        self.mem_reduct.clean_combine_memory_lists = cfg.clean_combine_memory_lists;
+        self.mem_reduct.show_clean_results = cfg.show_clean_results;
+        self.mem_reduct.when_above_pct = cfg.when_above_pct;
+        self.mem_reduct.every_mins = cfg.every_mins;
+        self.mem_reduct.auto_clean_enabled = cfg.auto_clean_enabled;
+        self.is_pinned = cfg.is_pinned;
+        self.is_hovered = cfg.is_pinned;
+        self.x_offset = cfg.x_offset;
+        self.y_offset = cfg.y_offset;
+        if cfg.last_freed_mb > 0.0 || !cfg.last_cleaned_status.is_empty() {
+            self.mem_reduct.last_freed_mb = cfg.last_freed_mb;
+            if !cfg.last_cleaned_status.is_empty() && !cfg.last_cleaned_status.starts_with("Cleaning") {
+                self.mem_reduct.last_cleaned_status = cfg.last_cleaned_status;
+            }
+        }
+        self.notch_style = cfg.notch_style;
+        self.placement = cfg.placement;
+        self.size_preset = cfg.size_preset;
+        self.expanded_size = cfg.expanded_size;
+        self.type_scale = cfg.type_scale;
+        self.idle_metric = cfg.idle_metric;
+        self.minimized_island = cfg.minimized_island;
+        self.click_to_open = cfg.click_to_open;
+        self.hide_in_fullscreen = cfg.hide_in_fullscreen;
+        self.show_mascot = cfg.show_mascot;
+        self.progress_arc_enabled = cfg.progress_arc_enabled;
+        self.health_reminders_enabled = cfg.health_reminders_enabled;
+        self.motion_preset = cfg.motion_preset;
+        self.fps_cap = cfg.fps_cap;
+        self.micro_interactions = cfg.micro_interactions;
+        self.equalizer_enabled = cfg.equalizer_enabled;
+        self.notifications_enabled = cfg.notifications_enabled;
+        self.notification_secs = cfg.notification_secs.clamp(2, 10);
+        self.modules = cfg.modules;
+        self.lyrics_enabled = cfg.lyrics_enabled;
+        self.clipboard_watch_enabled = cfg.clipboard_watch_enabled;
+        self.capture_to_clipboard = cfg.capture_to_clipboard;
+        self.screentime_enabled = cfg.screentime_enabled;
+        self.move_reminder_mins = cfg.move_reminder_mins;
+        self.default_focus_mins = cfg.default_focus_mins.clamp(5, 90);
+        self.default_break_mins = cfg.default_break_mins.clamp(1, 30);
+        self.lyric_size = cfg.lyric_size;
+        self.lyric_style = cfg.lyric_style;
+        self.frosted_glass_enabled = cfg.frosted_glass_enabled;
+        self.frosted_opacity_pct = cfg.frosted_opacity_pct.clamp(25, 95);
+        self.frosted_blur_px = cfg.frosted_blur_px.clamp(4, 40);
+        self.remove_windows_borders = cfg.remove_windows_borders;
+        let (def_ax, def_ay) = Self::default_anchor_for_placement(self.placement);
+        self.target_anchor_x = cfg.anchor_x.unwrap_or(def_ax).clamp(0.0, 1.0);
+        self.target_anchor_y = cfg.anchor_y.unwrap_or(def_ay).clamp(0.0, 1.0);
+        self.notif_listener_enabled = listener_eff;
+        self.notif_exclusive_mode = cfg.notif_exclusive_mode;
+        self.notif_auto_clear_action_center = cfg.notif_auto_clear_action_center;
+        self.notif_over_fullscreen = cfg.notif_over_fullscreen;
+        if self.is_hovered {
+            self.target_width = self.expanded_width();
+            self.target_height = self.expanded_height();
+        } else {
+            self.sync_collapsed_targets();
+        }
+        if !self.timer.is_running && !self.timer.is_break {
+            self.timer.total_secs = self.default_focus_mins * 60;
+            self.timer.remaining_secs = self.timer.total_secs;
+        }
+        self.sync_preview_settled();
+        true
+    }
+
+    pub fn save_tasks(&self) {
+        if !self.persistence_enabled {
+            return;
+        }
+        let dir = Self::appdata_dir();
+        let _ = std::fs::create_dir_all(&dir);
+        if let Ok(json) = serde_json::to_string_pretty(&self.tasks) {
+            let _ = std::fs::write(Self::tasks_path(), json);
+        }
+        // Mirror TSV backup for interoperability with Nusa if present
+        let mut lines = Vec::new();
+        for t in &self.tasks {
+            let flag = if t.completed { "1" } else { "0" };
+            lines.push(format!("{}\t{}", flag, t.text));
+        }
+        let content = lines.join("\n");
+        let nusa_path = "C:\\Users\\muhna\\AppData\\Local\\Packages\\citoxstd.Nusa_r9cmnhct3ptgm\\LocalCache\\Roaming\\Nusa\\tasks.txt";
+        if std::path::Path::new(nusa_path).exists() {
+            let _ = std::fs::write(nusa_path, &content);
+        }
+    }
+
+    fn parse_tsv_tasks(content: &str) -> Vec<TaskItem> {
+        let mut list = Vec::new();
+        for line in content.lines() {
+            let parts: Vec<&str> = line.split('\t').collect();
+            if let Some(text) = parts.last() {
+                let trimmed = text.trim();
+                if !trimmed.is_empty() {
+                    let completed = parts.first().map(|s| s.trim() == "1").unwrap_or(false);
+                    list.push(TaskItem {
+                        text: trimmed.to_string(),
+                        completed,
+                    });
+                }
+            }
+        }
+        list
+    }
+
+    fn load_initial_tasks() -> Vec<TaskItem> {
+        if let Ok(json) = std::fs::read_to_string(Self::tasks_path())
+            && let Ok(items) = serde_json::from_str::<Vec<TaskItem>>(&json) {
+                return items;
+            }
+        let nusa_path = "C:\\Users\\muhna\\AppData\\Local\\Packages\\citoxstd.Nusa_r9cmnhct3ptgm\\LocalCache\\Roaming\\Nusa\\tasks.txt";
+        if let Ok(content) = std::fs::read_to_string(nusa_path) {
+            let parsed = Self::parse_tsv_tasks(&content);
+            if !parsed.is_empty() {
+                return parsed;
+            }
+        }
+        Vec::new()
+    }
+
+    pub fn save_shelf(&self) {
+        if !self.persistence_enabled {
+            return;
+        }
+        let dir = Self::appdata_dir();
+        let _ = std::fs::create_dir_all(&dir);
+        if let Ok(json) = serde_json::to_string_pretty(&self.shelf_items) {
+            let _ = std::fs::write(Self::shelf_path(), json);
+        }
+    }
+
+    fn load_initial_shelf() -> Vec<ShelfItem> {
+        if let Ok(json) = std::fs::read_to_string(Self::shelf_path())
+            && let Ok(items) = serde_json::from_str::<Vec<ShelfItem>>(&json) {
+                return items;
+            }
+        Vec::new()
+    }
+
+    pub fn save_water(&self) {
+        if !self.persistence_enabled {
+            return;
+        }
+        let dir = Self::appdata_dir();
+        let _ = std::fs::create_dir_all(&dir);
+        if let Ok(json) = serde_json::to_string_pretty(&self.water) {
+            let _ = std::fs::write(Self::water_path(), json);
+        }
+    }
+
+    fn load_initial_water() -> WaterTracker {
+        let today = Local::now().format("%Y-%m-%d").to_string();
+        if let Ok(json) = std::fs::read_to_string(Self::water_path())
+            && let Ok(mut w) = serde_json::from_str::<WaterTracker>(&json) {
+                if w.date != today {
+                    w.date = today;
+                    w.taken_ml = 0;
+                }
+                return w;
+            }
+        WaterTracker::default()
+    }
+
+    pub fn new() -> Self {
+        let mut mem_reduct = MemReductConfig::default();
+        let mut chime_enabled = true;
+        let mut water_interval_mins = 45;
+        let mut is_pinned = false;
+        let mut x_offset = 0;
+        let mut y_offset = 0;
+        let mut notch_style = NotchStyle::Floating;
+        let mut placement = NotchPlacement::Top;
+        let mut size_preset = NotchSizePreset::Standard;
+        let mut expanded_size = ExpandedSizePreset::Standard;
+        let mut type_scale = TypeScale::Standard;
+        let mut idle_metric = IdleMetric::Ram;
+        let mut minimized_island = false;
+        let mut click_to_open = false;
+        let mut hide_in_fullscreen = true;
+        let mut show_mascot = true;
+        let mut progress_arc_enabled = true;
+        let mut health_reminders_enabled = true;
+        let mut motion_preset = MotionPreset::Gentle;
+        let mut fps_cap = 0;
+        let mut micro_interactions = true;
+        let mut equalizer_enabled = true;
+        let mut notifications_enabled = true;
+        let mut notification_secs = 4;
+        let mut modules = ModuleVisibility::default();
+        let mut lyrics_enabled = true;
+        let mut clipboard_watch_enabled = true;
+        let mut capture_to_clipboard = true;
+        let mut screentime_enabled = true;
+        let mut move_reminder_mins = 0;
+        let mut default_focus_mins = 25;
+        let mut default_break_mins = 5;
+        let mut lyric_size = LyricSize::Standard;
+        let mut lyric_style = LyricStyle::ClassicList;
+        let mut frosted_glass_enabled = true;
+        let mut frosted_opacity_pct = default_frosted_opacity();
+        let mut frosted_blur_px = default_frosted_blur();
+        let mut remove_windows_borders = false;
+        let mut loaded_anchor_x: Option<f32> = None;
+        let mut loaded_anchor_y: Option<f32> = None;
+        let mut notif_listener_enabled = true;
+        let mut notif_exclusive_mode = false;
+        let mut notif_auto_clear_action_center = false;
+        let mut notif_over_fullscreen = false;
+        let mut needs_migration_save = false;
+
+        if let Some(cfg) = Self::load_config() {
+            let listener_eff = cfg.listener_effective();
+            chime_enabled = cfg.chime_enabled;
+            water_interval_mins = cfg.water_interval_mins;
+            mem_reduct.clean_working_sets = cfg.clean_working_sets;
+            mem_reduct.clean_system_ws = cfg.clean_system_ws;
+            mem_reduct.clean_standby_list = cfg.clean_standby_list;
+            mem_reduct.clean_modified_page_list = cfg.clean_modified_page_list;
+            mem_reduct.clean_standby_low = cfg.clean_standby_low;
+            mem_reduct.clean_modified_file_cache = cfg.clean_modified_file_cache;
+            mem_reduct.clean_registry_cache = cfg.clean_registry_cache;
+            mem_reduct.clean_combine_memory_lists = cfg.clean_combine_memory_lists;
+            mem_reduct.show_clean_results = cfg.show_clean_results;
+            mem_reduct.when_above_pct = cfg.when_above_pct;
+            mem_reduct.every_mins = cfg.every_mins;
+            mem_reduct.auto_clean_enabled = cfg.auto_clean_enabled;
+            is_pinned = cfg.is_pinned;
+            x_offset = cfg.x_offset;
+            y_offset = cfg.y_offset;
+            if cfg.last_freed_mb > 0.0 || !cfg.last_cleaned_status.is_empty() {
+                mem_reduct.last_freed_mb = cfg.last_freed_mb;
+                if !cfg.last_cleaned_status.is_empty() && !cfg.last_cleaned_status.starts_with("Cleaning") {
+                    mem_reduct.last_cleaned_status = cfg.last_cleaned_status;
+                }
+            }
+            notch_style = cfg.notch_style;
+            placement = cfg.placement;
+            size_preset = cfg.size_preset;
+            expanded_size = cfg.expanded_size;
+            type_scale = cfg.type_scale;
+            idle_metric = cfg.idle_metric;
+            minimized_island = cfg.minimized_island;
+            click_to_open = cfg.click_to_open;
+            hide_in_fullscreen = cfg.hide_in_fullscreen;
+            show_mascot = cfg.show_mascot;
+            progress_arc_enabled = cfg.progress_arc_enabled;
+            health_reminders_enabled = cfg.health_reminders_enabled;
+            motion_preset = cfg.motion_preset;
+            fps_cap = cfg.fps_cap;
+            micro_interactions = cfg.micro_interactions;
+            equalizer_enabled = cfg.equalizer_enabled;
+            notifications_enabled = cfg.notifications_enabled;
+            notification_secs = cfg.notification_secs.clamp(2, 10);
+            modules = cfg.modules;
+            lyrics_enabled = cfg.lyrics_enabled;
+            clipboard_watch_enabled = cfg.clipboard_watch_enabled;
+            capture_to_clipboard = cfg.capture_to_clipboard;
+            screentime_enabled = cfg.screentime_enabled;
+            move_reminder_mins = cfg.move_reminder_mins;
+            default_focus_mins = cfg.default_focus_mins.clamp(5, 90);
+            default_break_mins = cfg.default_break_mins.clamp(1, 30);
+            lyric_size = cfg.lyric_size;
+            lyric_style = cfg.lyric_style;
+            frosted_glass_enabled = cfg.frosted_glass_enabled;
+            frosted_opacity_pct = cfg.frosted_opacity_pct.clamp(25, 95);
+            frosted_blur_px = cfg.frosted_blur_px.clamp(4, 40);
+            remove_windows_borders = cfg.remove_windows_borders;
+            loaded_anchor_x = cfg.anchor_x;
+            loaded_anchor_y = cfg.anchor_y;
+            notif_listener_enabled = listener_eff;
+            notif_exclusive_mode = cfg.notif_exclusive_mode;
+            notif_auto_clear_action_center = cfg.notif_auto_clear_action_center;
+            notif_over_fullscreen = cfg.notif_over_fullscreen;
+            needs_migration_save = cfg.config_rev < CONFIG_REV;
+        }
+
+        let windows_transparency_enabled = crate::notifications::is_windows_transparency_enabled();
+        let notif_suppressed_apps = crate::notifications::count_suppressed_apps();
+        let notif_listener_status = if notif_listener_enabled {
+            "Connecting...".to_string()
+        } else {
+            "Off".to_string()
+        };
+
+        let vol = crate::audio::get_master_volume().unwrap_or(0.50);
+        let pre_mute = if vol > 0.05 { vol } else { 0.50 };
+        let initial_clip = crate::capture::read_clipboard_text(windows::Win32::Foundation::HWND::default());
+        let quick_note = if let Some(ref clip_text) = initial_clip {
+            format!("{} words Â· Clipboard", clip_text.split_whitespace().count())
+        } else {
+            "Clipboard empty".to_string()
+        };
+
+        let telemetry = HardwareTelemetry::initial_real();
+        let water = Self::load_initial_water();
+        let ram_pct = (telemetry.memory_percent / 100.0).clamp(0.0, 1.0);
+        let water_pct = (water.taken_ml as f32 / water.goal_ml.max(1) as f32).clamp(0.0, 1.0);
+        let idle_s = type_scale.idle_ui_scale();
+        let idle_w = if placement.is_vertical() {
+            if minimized_island {
+                Self::MINIMIZED_VERT_WIDTH
+            } else {
+                (Self::VERT_IDLE_WIDTH * idle_s).round()
+            }
+        } else if minimized_island {
+            Self::MINIMIZED_WIDTH
+        } else {
+            (size_preset.idle_width() * idle_s).round()
+        };
+        let idle_h = if placement.is_vertical() {
+            if minimized_island {
+                Self::MINIMIZED_VERT_HEIGHT
+            } else {
+                (size_preset.idle_height_vertical() * idle_s).round()
+            }
+        } else if minimized_island {
+            Self::MINIMIZED_HEIGHT
+        } else {
+            (Self::IDLE_HEIGHT * idle_s).round()
+        };
+        let exp_s = expanded_size.scale() * type_scale.ui_scale();
+        let exp_w = (if placement.is_vertical() {
+            Self::VERT_EXPANDED_WIDTH
+        } else {
+            Self::EXPANDED_WIDTH
+        } * exp_s)
+            .round();
+        let exp_h = (if placement.is_vertical() {
+            Self::VERT_EXPANDED_HEIGHT
+        } else {
+            Self::EXPANDED_HEIGHT
+        } * exp_s)
+            .round();
+        let init_timer = PomodoroTimer {
+            is_running: false,
+            is_break: false,
+            remaining_secs: default_focus_mins * 60,
+            total_secs: default_focus_mins * 60,
+            cycles_completed: 0,
+        };
+
+        let (def_ax, def_ay) = Self::default_anchor_for_placement(placement);
+        let target_anchor_x = loaded_anchor_x.unwrap_or(def_ax).clamp(0.0, 1.0);
+        let target_anchor_y = loaded_anchor_y.unwrap_or(def_ay).clamp(0.0, 1.0);
+
+        let mut st = Self {
+            mode: NotchMode::Home,
+            is_hovered: is_pinned,
+            is_pinned,
+            x_offset,
+            y_offset,
+            show_lyrics: false,
+            lyrics_offset: 0,
+            notch_style,
+            placement,
+            size_preset,
+            expanded_size,
+            type_scale,
+            idle_metric,
+            minimized_island,
+            click_to_open,
+            hide_in_fullscreen,
+            show_mascot,
+            progress_arc_enabled,
+            health_reminders_enabled,
+            motion_preset,
+            fps_cap,
+            detected_hz: 60,
+            micro_interactions,
+            equalizer_enabled,
+            notifications_enabled,
+            notification_secs,
+            lyric_size,
+            lyric_style,
+            frosted_glass_enabled,
+            frosted_opacity_pct,
+            frosted_blur_px,
+            windows_transparency_enabled,
+            remove_windows_borders,
+            notif_listener_enabled,
+            notif_exclusive_mode,
+            notif_auto_clear_action_center,
+            notif_over_fullscreen,
+            notif_listener_status,
+            notif_suppressed_apps,
+            modules,
+            lyrics_enabled,
+            clipboard_watch_enabled,
+            capture_to_clipboard,
+            screentime_enabled,
+            move_reminder_mins,
+            default_focus_mins,
+            default_break_mins,
+            settings_open: false,
+            settings_category: SettingsCategory::General,
+            settings_scroll: [0.0; SettingsCategory::COUNT],
+            current_width: if is_pinned { exp_w } else { idle_w },
+            current_height: if is_pinned { exp_h } else { idle_h },
+            target_width: if is_pinned { exp_w } else { idle_w },
+            target_height: if is_pinned { exp_h } else { idle_h },
+            anim_expand_t: if is_pinned { 1.0 } else { 0.0 },
+            target_anchor_x,
+            target_anchor_y,
+            anim_anchor_x: target_anchor_x,
+            anim_anchor_y: target_anchor_y,
+            anim_dock_x: 24.0,
+            anim_dock_w: 32.0,
+            anim_settings_cat_y: Self::settings_cat_pill_y(SettingsCategory::General),
+            anim_vol_pct: vol.clamp(0.0, 1.0),
+            anim_water_pct: water_pct,
+            anim_ram_pct: ram_pct,
+            hover_target_idx: None,
+            hover_slots: [0.0; 48],
+            settings_hover_idx: None,
+            settings_hover_slots: [0.0; 48],
+            switch_t: [0.0; 48],
+            media: MediaTrack::idle(),
+            lyrics: Vec::new(),
+            current_lyric_index: None,
+            current_lyric_text: "Play a track to sync lyrics".to_string(),
+            timer: init_timer,
+            telemetry,
+            mem_reduct,
+            water,
+            capture: CaptureState::default(),
+            quick_note,
+            screen_time: ScreenTimeStats::default(),
+            notification: None,
+            purge_anim_until: None,
+            shelf_items: Self::load_initial_shelf(),
+            shelf_scroll: 0,
+            tasks: Self::load_initial_tasks(),
+            tasks_scroll: 0,
+            anim_time: 0.0,
+            volume_pct: vol,
+            pre_mute_volume: pre_mute,
+            autostart: crate::autostart::is_autostart_enabled(),
+            chime_enabled,
+            water_interval_mins,
+            persistence_enabled: true,
+        };
+        let (dx, dw) = st.active_dock_target();
+        st.anim_dock_x = dx;
+        st.anim_dock_w = dw;
+        st.sync_switches_immediate();
+        if needs_migration_save {
+            st.save_config();
+        }
+        st
+    }
+
+    /// Creates an isolated in-memory AppState for tests and visual snapshots
+    /// so user files under %LOCALAPPDATA%\CyNotch are never mutated.
+    pub fn new_for_preview() -> Self {
+        let demo_lyrics = crate::media::default_demo_lyrics();
+        let mut st = Self {
+            mode: NotchMode::Home,
+            is_hovered: false,
+            is_pinned: false,
+            x_offset: 0,
+            y_offset: 0,
+            show_lyrics: false,
+            lyrics_offset: 0,
+            notch_style: NotchStyle::Floating,
+            placement: NotchPlacement::Top,
+            size_preset: NotchSizePreset::Standard,
+            expanded_size: ExpandedSizePreset::Standard,
+            type_scale: TypeScale::Standard,
+            idle_metric: IdleMetric::Ram,
+            minimized_island: false,
+            click_to_open: false,
+            hide_in_fullscreen: true,
+            show_mascot: true,
+            progress_arc_enabled: true,
+            health_reminders_enabled: true,
+            motion_preset: MotionPreset::Gentle,
+            fps_cap: 0,
+            detected_hz: 60,
+            micro_interactions: true,
+            equalizer_enabled: true,
+            notifications_enabled: true,
+            notification_secs: 4,
+            lyric_size: LyricSize::Standard,
+            lyric_style: LyricStyle::ClassicList,
+            frosted_glass_enabled: true,
+            frosted_opacity_pct: 68,
+            frosted_blur_px: 20,
+            windows_transparency_enabled: false,
+            remove_windows_borders: false,
+            notif_listener_enabled: true,
+            notif_exclusive_mode: false,
+            notif_auto_clear_action_center: false,
+            notif_over_fullscreen: false,
+            notif_listener_status: "Listening".to_string(),
+            notif_suppressed_apps: 0,
+            modules: ModuleVisibility::default(),
+            lyrics_enabled: true,
+            clipboard_watch_enabled: true,
+            capture_to_clipboard: true,
+            screentime_enabled: true,
+            move_reminder_mins: 60,
+            default_focus_mins: 25,
+            default_break_mins: 5,
+            settings_open: false,
+            settings_category: SettingsCategory::General,
+            settings_scroll: [0.0; SettingsCategory::COUNT],
+            current_width: Self::IDLE_WIDTH,
+            current_height: Self::IDLE_HEIGHT,
+            target_width: Self::IDLE_WIDTH,
+            target_height: Self::IDLE_HEIGHT,
+            anim_expand_t: 0.0,
+            target_anchor_x: 0.5,
+            target_anchor_y: 0.5,
+            anim_anchor_x: 0.5,
+            anim_anchor_y: 0.5,
+            anim_dock_x: 24.0,
+            anim_dock_w: 32.0,
+            anim_settings_cat_y: Self::settings_cat_pill_y(SettingsCategory::General),
+            anim_vol_pct: 0.70,
+            anim_water_pct: 0.0,
+            anim_ram_pct: 0.57,
+            hover_target_idx: None,
+            hover_slots: [0.0; 48],
+            settings_hover_idx: None,
+            settings_hover_slots: [0.0; 48],
+            switch_t: [0.0; 48],
+            media: MediaTrack::preview_sample(),
+            lyrics: demo_lyrics,
+            current_lyric_index: Some(2),
+            current_lyric_text: "Nowhere else we need to go".to_string(),
+            timer: PomodoroTimer::default(),
+            telemetry: HardwareTelemetry::default(),
+            mem_reduct: MemReductConfig::preview_sample(),
+            water: WaterTracker::default(),
+            capture: CaptureState::default(),
+            quick_note: "14 words Â· Chrome".to_string(),
+            screen_time: ScreenTimeStats::preview_sample(),
+            notification: None,
+            purge_anim_until: None,
+            shelf_items: vec![
+                ShelfItem {
+                    kind: ShelfKind::Text,
+                    label: "https://iamlayzee.com/".to_string(),
+                    payload: "https://iamlayzee.com/".to_string(),
+                },
+                ShelfItem {
+                    kind: ShelfKind::Text,
+                    label: "cargo build --release".to_string(),
+                    payload: "cargo build --release".to_string(),
+                },
+                ShelfItem {
+                    kind: ShelfKind::File,
+                    label: "CyNotch_Design_Spec.pdf".to_string(),
+                    payload: "C:\\Users\\muhna\\Documents\\CyNotch_Design_Spec.pdf".to_string(),
+                },
+            ],
+            shelf_scroll: 0,
+            tasks: vec![
+                TaskItem { text: "Update CSM tns kalo sempet".to_string(), completed: false },
+                TaskItem { text: "Sketsa Logo Edu".to_string(), completed: false },
+                TaskItem { text: "CyNotch Mahamatra Memory Purge".to_string(), completed: true },
+            ],
+            tasks_scroll: 0,
+            anim_time: 0.0,
+            volume_pct: 0.70,
+            pre_mute_volume: 0.70,
+            autostart: false,
+            chime_enabled: true,
+            water_interval_mins: 45,
+            persistence_enabled: false,
+        };
+        st.sync_switches_immediate();
+        st.sync_collapsed_targets();
+        st.current_width = st.target_width;
+        st.current_height = st.target_height;
+        st
+    }
+
+    pub fn set_hovered(&mut self, hovered: bool) {
+        self.is_hovered = hovered;
+        if hovered {
+            self.target_width = self.expanded_width();
+            self.target_height = self.expanded_height();
+        } else {
+            self.target_width = self.collapsed_width();
+            self.target_height = self.collapsed_height();
+        }
+    }
+
+    pub fn set_mode(&mut self, mode: NotchMode) {
+        if self.mode != mode {
+            self.mode = mode;
+            self.hover_target_idx = None;
+            self.hover_slots = [0.0; 48];
+        }
+    }
+
+    pub fn set_settings_category(&mut self, cat: SettingsCategory) {
+        if self.settings_category != cat {
+            self.settings_category = cat;
+            self.settings_hover_idx = None;
+            self.settings_hover_slots = [0.0; 48];
+        }
+    }
+
+    pub fn toggle_mem_area(&mut self, idx: u8) {
+        match idx {
+            0 => self.mem_reduct.clean_working_sets = !self.mem_reduct.clean_working_sets,
+            1 => self.mem_reduct.clean_system_ws = !self.mem_reduct.clean_system_ws,
+            2 => self.mem_reduct.clean_standby_list = !self.mem_reduct.clean_standby_list,
+            3 => self.mem_reduct.clean_modified_page_list = !self.mem_reduct.clean_modified_page_list,
+            4 => self.mem_reduct.clean_standby_low = !self.mem_reduct.clean_standby_low,
+            5 => self.mem_reduct.clean_modified_file_cache = !self.mem_reduct.clean_modified_file_cache,
+            6 => self.mem_reduct.clean_registry_cache = !self.mem_reduct.clean_registry_cache,
+            7 => self.mem_reduct.clean_combine_memory_lists = !self.mem_reduct.clean_combine_memory_lists,
+            _ => {}
+        }
+        self.save_config();
+    }
+
+    pub fn cycle_threshold(&mut self) {
+        self.mem_reduct.when_above_pct = match self.mem_reduct.when_above_pct {
+            70 => 80,
+            80 => 90,
+            90 => 0,
+            0 => 60,
+            _ => 70,
+        };
+        self.save_config();
+    }
+
+    pub fn cycle_interval(&mut self) {
+        self.mem_reduct.every_mins = match self.mem_reduct.every_mins {
+            0 => 5,
+            5 => 15,
+            15 => 30,
+            30 => 60,
+            60 => 90,
+            _ => 0,
+        };
+        self.save_config();
+    }
+
+    pub fn should_trigger_threshold_clean(&self, secs_since_last: u64) -> bool {
+        if !self.mem_reduct.auto_clean_enabled || self.mem_reduct.when_above_pct == 0 {
+            return false;
+        }
+        self.telemetry.memory_percent >= (self.mem_reduct.when_above_pct as f32)
+            && secs_since_last >= 60
+    }
+
+    pub fn should_trigger_interval_clean(&self, secs_since_last: u64) -> bool {
+        if !self.mem_reduct.auto_clean_enabled || self.mem_reduct.every_mins == 0 {
+            return false;
+        }
+        secs_since_last >= (self.mem_reduct.every_mins as u64) * 60
+    }
+
+    pub fn reset_all_settings(&mut self) {
+        self.notch_style = NotchStyle::Floating;
+        self.placement = NotchPlacement::Top;
+        self.size_preset = NotchSizePreset::Standard;
+        self.expanded_size = ExpandedSizePreset::Standard;
+        self.type_scale = TypeScale::Standard;
+        self.idle_metric = IdleMetric::Ram;
+        self.minimized_island = false;
+        self.click_to_open = false;
+        self.hide_in_fullscreen = true;
+        self.show_mascot = true;
+        self.progress_arc_enabled = true;
+        self.health_reminders_enabled = true;
+        self.motion_preset = MotionPreset::Gentle;
+        self.fps_cap = 0;
+        self.micro_interactions = true;
+        self.equalizer_enabled = true;
+        self.notifications_enabled = true;
+        self.notification_secs = 4;
+        self.lyric_size = LyricSize::Standard;
+        self.lyric_style = LyricStyle::ClassicList;
+        self.frosted_glass_enabled = true;
+        self.frosted_opacity_pct = 68;
+        self.frosted_blur_px = 20;
+        self.notif_listener_enabled = true;
+        self.notif_exclusive_mode = false;
+        self.notif_auto_clear_action_center = false;
+        self.notif_over_fullscreen = false;
+        if self.notif_listener_status == "Off" {
+            self.notif_listener_status = "Connecting...".to_string();
+        }
+        self.settings_scroll = [0.0; SettingsCategory::COUNT];
+        self.modules = ModuleVisibility::default();
+        self.lyrics_enabled = true;
+        self.clipboard_watch_enabled = true;
+        self.capture_to_clipboard = true;
+        self.screentime_enabled = true;
+        self.chime_enabled = true;
+        self.water_interval_mins = 45;
+        self.move_reminder_mins = 0;
+        self.default_focus_mins = 25;
+        self.default_break_mins = 5;
+        self.water.goal_ml = 1500;
+        self.water.glass_ml = 250;
+        self.mem_reduct.clean_working_sets = true;
+        self.mem_reduct.clean_system_ws = true;
+        self.mem_reduct.clean_standby_list = true;
+        self.mem_reduct.clean_modified_page_list = true;
+        self.mem_reduct.clean_standby_low = false;
+        self.mem_reduct.clean_modified_file_cache = false;
+        self.mem_reduct.clean_registry_cache = false;
+        self.mem_reduct.clean_combine_memory_lists = false;
+        self.mem_reduct.show_clean_results = true;
+        self.mem_reduct.when_above_pct = 70;
+        self.mem_reduct.every_mins = 0;
+        self.mem_reduct.auto_clean_enabled = true;
+        self.x_offset = 0;
+        self.y_offset = 0;
+        self.reset_anchor_for_placement();
+        if self.motion_preset == MotionPreset::Reduced {
+            self.anim_anchor_x = self.target_anchor_x;
+            self.anim_anchor_y = self.target_anchor_y;
+        }
+        if self.is_hovered {
+            self.target_width = self.expanded_width();
+            self.target_height = self.expanded_height();
+        } else {
+            self.target_width = self.idle_width();
+            self.target_height = self.idle_height();
+        }
+        self.save_water();
+        self.save_config();
+    }
+
+    pub fn drink_water(&mut self, ml: u32) {
+        let today = Local::now().format("%Y-%m-%d").to_string();
+        if self.water.date != today {
+            self.water.date = today;
+            self.water.taken_ml = 0;
+        }
+        self.water.taken_ml = (self.water.taken_ml + ml).min(6000);
+        self.save_water();
+        self.set_notification(
+            format!("Hydrated +{} ml", ml),
+            format!("Daily goal: {} / {} ml", self.water.taken_ml, self.water.goal_ml),
+            NotificationKind::Water,
+            true,
+        );
+    }
+
+    pub fn set_notification(&mut self, title: String, subtitle: String, kind: NotificationKind, is_success: bool) {
+        if !self.notifications_enabled {
+            return;
+        }
+        let app_name = match kind {
+            NotificationKind::SystemToast => "Windows".to_string(),
+            NotificationKind::Water => "Hydration".to_string(),
+            NotificationKind::MemoryPurge => "MemReduct".to_string(),
+            NotificationKind::Capture => "Capture".to_string(),
+            NotificationKind::Pasted => "Shelf".to_string(),
+            NotificationKind::General => "CyNotch".to_string(),
+        };
+        let secs = self.notification_secs.clamp(2, 10);
+        self.notification = Some(NotificationBanner {
+            app_name,
+            title,
+            subtitle,
+            kind,
+            is_success,
+            total_secs: secs as f32,
+            expires_at: Instant::now() + std::time::Duration::from_secs(secs as u64),
+        });
+        self.sync_collapsed_targets();
+    }
+
+    pub fn set_system_toast(&mut self, app_name: String, title: String, subtitle: String) {
+        if !self.notifications_enabled {
+            return;
+        }
+        let secs = self.notification_secs.clamp(2, 10).max(4);
+        self.notification = Some(NotificationBanner {
+            app_name,
+            title,
+            subtitle,
+            kind: NotificationKind::SystemToast,
+            is_success: true,
+            total_secs: secs as f32,
+            expires_at: Instant::now() + std::time::Duration::from_secs(secs as u64),
+        });
+        self.sync_collapsed_targets();
+    }
+
+    pub fn set_water_reminder(&mut self) {
+        if !self.health_reminders_enabled {
+            return;
+        }
+        self.set_notification(
+            "Time for some water".to_string(),
+            format!("{} / {} ml today â€¢ Click to log +{} ml", self.water.taken_ml, self.water.goal_ml, self.water.glass_ml),
+            NotificationKind::Water,
+            true,
+        );
+    }
+
+    pub fn set_move_reminder(&mut self) {
+        if !self.health_reminders_enabled {
+            return;
+        }
+        self.set_notification(
+            "Posture & Stretch Check".to_string(),
+            format!("Every {}m â€¢ Stand up and rest your eyes", self.move_reminder_mins),
+            NotificationKind::General,
+            true,
+        );
+    }
+
+    pub fn push_clipboard(&mut self, text: String, app_name: &str) {
+        let words = text.split_whitespace().count();
+        self.quick_note = format!("{} words Â· {}", words, app_name);
+        let single_line = text.lines().next().unwrap_or(&text).trim().to_string();
+        if !self.shelf_items.iter().any(|s| s.kind == ShelfKind::Text && s.payload == text) {
+            self.shelf_items.insert(
+                0,
+                ShelfItem {
+                    kind: ShelfKind::Text,
+                    label: single_line,
+                    payload: text,
+                },
+            );
+            if self.shelf_items.len() > 24 {
+                self.shelf_items.pop();
+            }
+            self.shelf_scroll = 0;
+            self.save_shelf();
+        }
+        self.set_notification("Pasted".to_string(), self.quick_note.clone(), NotificationKind::Pasted, true);
+    }
+
+    pub fn push_dropped_file(&mut self, full_path: String) {
+        let label = std::path::Path::new(&full_path)
+            .file_name()
+            .and_then(|s| s.to_str())
+            .unwrap_or(&full_path)
+            .to_string();
+        if !self.shelf_items.iter().any(|s| s.kind == ShelfKind::File && s.payload == full_path) {
+            self.shelf_items.insert(
+                0,
+                ShelfItem {
+                    kind: ShelfKind::File,
+                    label: label.clone(),
+                    payload: full_path,
+                },
+            );
+            if self.shelf_items.len() > 24 {
+                self.shelf_items.pop();
+            }
+            self.shelf_scroll = 0;
+            self.save_shelf();
+        }
+        self.set_notification(
+            "Parked on Shelf".to_string(),
+            label,
+            NotificationKind::Pasted,
+            true,
+        );
+    }
+
+    pub fn on_focus_second_tick(&mut self) -> bool {
+        if self.timer.is_running && self.timer.remaining_secs > 0 {
+            self.timer.remaining_secs = self.timer.remaining_secs.saturating_sub(1);
+            if self.timer.remaining_secs == 0 {
+                if !self.timer.is_break {
+                    // Focus finished -> increment cycle & auto-switch to Break
+                    self.timer.cycles_completed += 1;
+                    self.timer.is_break = true;
+                    let brk = self.default_break_mins.max(1);
+                    self.timer.total_secs = brk * 60;
+                    self.timer.remaining_secs = brk * 60;
+                    self.timer.is_running = false;
+                    self.set_notification(
+                        "Focus Session Done!".to_string(),
+                        format!("Cycle #{} complete â€¢ {}m Break ready", self.timer.cycles_completed, brk),
+                        NotificationKind::General,
+                        true,
+                    );
+                } else {
+                    // Break finished -> reset to Deep Work
+                    self.timer.is_break = false;
+                    let foc = self.default_focus_mins.max(5);
+                    self.timer.total_secs = foc * 60;
+                    self.timer.remaining_secs = foc * 60;
+                    self.timer.is_running = false;
+                    self.set_notification(
+                        "Break Finished".to_string(),
+                        format!("Ready for the next {}m Deep Work sprint", foc),
+                        NotificationKind::General,
+                        true,
+                    );
+                }
+                return true;
+            }
+        }
+        false
+    }
+
+    pub fn toggle_timer_phase(&mut self) {
+        self.timer.is_running = false;
+        self.timer.is_break = !self.timer.is_break;
+        let mins = if self.timer.is_break {
+            self.default_break_mins.max(1)
+        } else {
+            self.default_focus_mins.max(5)
+        };
+        self.timer.total_secs = mins * 60;
+        self.timer.remaining_secs = mins * 60;
+    }
+
+    pub fn expire_notification(&mut self) -> bool {
+        let now = Instant::now();
+        let mut changed = false;
+        if let Some(ref notif) = self.notification
+            && now >= notif.expires_at {
+                self.notification = None;
+                self.sync_collapsed_targets();
+                changed = true;
+            }
+        if let Some(until) = self.purge_anim_until
+            && now >= until {
+                self.purge_anim_until = None;
+                changed = true;
+            }
+        changed
+    }
+
+    pub fn mascot_mood(&self) -> MascotMood {
+        if self.mem_reduct.is_purging
+            || matches!(&self.notification, Some(n) if n.kind == NotificationKind::MemoryPurge)
+            || matches!(self.purge_anim_until, Some(until) if Instant::now() < until)
+        {
+            MascotMood::Purging
+        } else if matches!(&self.notification, Some(n) if n.kind == NotificationKind::Capture) {
+            MascotMood::Capture
+        } else if matches!(&self.notification, Some(n) if n.kind == NotificationKind::Water) {
+            MascotMood::Hydrate
+        } else if self.timer.is_running {
+            MascotMood::Focus
+        } else if self.media.is_playing {
+            MascotMood::Music
+        } else {
+            MascotMood::Idle
+        }
+    }
+
+    pub fn is_mascot_visible(&self) -> bool {
+        if !self.is_hovered {
+            self.show_mascot
+        } else {
+            match self.mode {
+                NotchMode::Home => true,
+                NotchMode::Music => self.show_mascot && self.media.is_playing,
+                NotchMode::MemReduct => self.show_mascot && self.mascot_mood() == MascotMood::Purging,
+                _ => false,
+            }
+        }
+    }
+
+    pub fn is_size_moving(&self) -> bool {
+        let expand_target = if self.is_hovered { 1.0 } else { 0.0 };
+        (self.target_width - self.current_width).abs() >= 0.5
+            || (self.target_height - self.current_height).abs() >= 0.5
+            || (expand_target - self.anim_expand_t).abs() >= 0.01
+            || (self.target_anchor_x - self.anim_anchor_x).abs() >= 0.01
+            || (self.target_anchor_y - self.anim_anchor_y).abs() >= 0.01
+    }
+
+    pub fn is_micro_animating(&self) -> bool {
+        if !self.micro_interactions || self.motion_preset == MotionPreset::Reduced {
+            return false;
+        }
+        let (dx, dw) = self.active_dock_target();
+        if (dx - self.anim_dock_x).abs() >= 0.35 || (dw - self.anim_dock_w).abs() >= 0.35 {
+            return true;
+        }
+        let water_t = (self.water.taken_ml as f32 / self.water.goal_ml.max(1) as f32).clamp(0.0, 1.0);
+        let ram_t = (self.telemetry.memory_percent / 100.0).clamp(0.0, 1.0);
+        if (self.volume_pct.clamp(0.0, 1.0) - self.anim_vol_pct).abs() >= 0.005
+            || (water_t - self.anim_water_pct).abs() >= 0.005
+            || (ram_t - self.anim_ram_pct).abs() >= 0.005
+        {
+            return true;
+        }
+        for (i, &val) in self.hover_slots.iter().enumerate() {
+            let tgt = if self.hover_target_idx == Some(i) { 1.0 } else { 0.0 };
+            if (tgt - val).abs() >= 0.015 {
+                return true;
+            }
+        }
+        false
+    }
+
+    pub fn is_settings_animating(&self) -> bool {
+        if self.motion_preset == MotionPreset::Reduced {
+            return false;
+        }
+        for id in ToggleId::ALL {
+            let tgt = if self.toggle_target(id) { 1.0 } else { 0.0 };
+            if (tgt - self.switch_t[id as usize]).abs() >= 0.01 {
+                return true;
+            }
+        }
+        if self.micro_interactions {
+            for (i, &val) in self.settings_hover_slots.iter().enumerate() {
+                let tgt = if self.settings_hover_idx == Some(i) { 1.0 } else { 0.0 };
+                if (tgt - val).abs() >= 0.015 {
+                    return true;
+                }
+            }
+        }
+        false
+    }
+
+    pub fn needs_settings_timer_ms(&self) -> Option<u32> {
+        if self.settings_open && self.is_settings_animating() {
+            Some(self.desired_active_interval_ms())
+        } else {
+            None
+        }
+    }
+
+    pub fn is_equalizer_visible(&self) -> bool {
+        if !self.equalizer_enabled || !self.media.is_playing {
+            return false;
+        }
+        if !self.is_hovered {
+            self.notification.is_none() && !self.timer.is_running
+        } else {
+            self.mode == NotchMode::Music && !self.show_lyrics
+        }
+    }
+
+    /// Returns desired high-frequency timer interval (ms) or None when static.
+    pub fn needs_animation_timer_ms(&self) -> Option<u32> {
+        let act = self.desired_active_interval_ms();
+        if self.is_size_moving() || self.is_micro_animating() || self.mem_reduct.is_purging {
+            Some(act)
+        } else if self.motion_preset == MotionPreset::Reduced {
+            None
+        } else {
+            let mascot_vis = self.is_mascot_visible();
+            let mood = self.mascot_mood();
+            let high_refresh = act < 16;
+            if mascot_vis && mood == MascotMood::Purging {
+                Some(act.min(16))
+            } else if mascot_vis && mood == MascotMood::Capture {
+                Some(if high_refresh { act } else { 20 })
+            } else if self.is_equalizer_visible()
+                || (mascot_vis
+                    && matches!(mood, MascotMood::Music | MascotMood::Focus | MascotMood::Hydrate))
+            {
+                Some(if high_refresh { act } else { act.max(20) })
+            } else if mascot_vis {
+                Some(if high_refresh { act } else { 28 })
+            } else {
+                None
+            }
+        }
+    }
+
+    pub fn update_animation(&mut self, dt: f32) -> bool {
+        self.anim_time += dt;
+        let expired = self.expire_notification();
+
+        let (k_size, k_fast) = match self.motion_preset {
+            MotionPreset::Gentle => (15.0, 18.0),
+            MotionPreset::Balanced => (22.0, 26.0),
+            MotionPreset::Reduced => (1000.0, 1000.0),
+        };
+
+        let mut moved = false;
+        if self.motion_preset == MotionPreset::Reduced {
+            if (self.target_width - self.current_width).abs() > 0.01
+                || (self.target_height - self.current_height).abs() > 0.01
+            {
+                self.current_width = self.target_width;
+                self.current_height = self.target_height;
+                moved = true;
+            }
+            let et = if self.is_hovered { 1.0 } else { 0.0 };
+            if (et - self.anim_expand_t).abs() > 0.005 {
+                self.anim_expand_t = et;
+                moved = true;
+            }
+            if (self.target_anchor_x - self.anim_anchor_x).abs() > 0.005
+                || (self.target_anchor_y - self.anim_anchor_y).abs() > 0.005
+            {
+                self.anim_anchor_x = self.target_anchor_x;
+                self.anim_anchor_y = self.target_anchor_y;
+                moved = true;
+            }
+            let (dx, dw) = self.active_dock_target();
+            self.anim_dock_x = dx;
+            self.anim_dock_w = dw;
+            self.anim_vol_pct = self.volume_pct.clamp(0.0, 1.0);
+            self.anim_water_pct = (self.water.taken_ml as f32 / self.water.goal_ml.max(1) as f32).clamp(0.0, 1.0);
+            self.anim_ram_pct = (self.telemetry.memory_percent / 100.0).clamp(0.0, 1.0);
+            for (i, slot) in self.hover_slots.iter_mut().enumerate() {
+                *slot = if self.hover_target_idx == Some(i) { 1.0 } else { 0.0 };
+            }
+        } else {
+            let (nw, mw) = ease_exp(self.current_width, self.target_width, k_size, dt, 0.5);
+            let (nh, mh) = ease_exp(self.current_height, self.target_height, k_size, dt, 0.5);
+            self.current_width = nw;
+            self.current_height = nh;
+            let expand_tgt = if self.is_hovered { 1.0 } else { 0.0 };
+            let (nt, mt) = ease_exp(self.anim_expand_t, expand_tgt, k_size, dt, 0.008);
+            self.anim_expand_t = nt;
+            let (nax, max_chg) = ease_exp(self.anim_anchor_x, self.target_anchor_x, k_fast, dt, 0.005);
+            let (nay, may_chg) = ease_exp(self.anim_anchor_y, self.target_anchor_y, k_fast, dt, 0.005);
+            self.anim_anchor_x = nax;
+            self.anim_anchor_y = nay;
+            moved |= mw || mh || mt || max_chg || may_chg;
+
+            let (dx_tgt, dw_tgt) = self.active_dock_target();
+            if self.micro_interactions {
+                let (ndx, mdx) = ease_exp(self.anim_dock_x, dx_tgt, k_fast, dt, 0.35);
+                let (ndw, mdw) = ease_exp(self.anim_dock_w, dw_tgt, k_fast, dt, 0.35);
+                self.anim_dock_x = ndx;
+                self.anim_dock_w = ndw;
+
+                let (nv, mv) = ease_exp(self.anim_vol_pct, self.volume_pct.clamp(0.0, 1.0), k_fast, dt, 0.004);
+                let wt = (self.water.taken_ml as f32 / self.water.goal_ml.max(1) as f32).clamp(0.0, 1.0);
+                let (nwa, mwa) = ease_exp(self.anim_water_pct, wt, k_fast * 0.85, dt, 0.004);
+                let rt = (self.telemetry.memory_percent / 100.0).clamp(0.0, 1.0);
+                let (nr, mr) = ease_exp(self.anim_ram_pct, rt, k_fast * 0.85, dt, 0.004);
+                self.anim_vol_pct = nv;
+                self.anim_water_pct = nwa;
+                self.anim_ram_pct = nr;
+                moved |= mdx || mdw || mv || mwa || mr;
+
+                for (i, slot) in self.hover_slots.iter_mut().enumerate() {
+                    let tgt = if self.hover_target_idx == Some(i) { 1.0 } else { 0.0 };
+                    let (next, chg) = ease_exp(*slot, tgt, k_fast * 1.1, dt, 0.012);
+                    *slot = next;
+                    moved |= chg;
+                }
+            } else {
+                self.anim_dock_x = dx_tgt;
+                self.anim_dock_w = dw_tgt;
+                self.anim_vol_pct = self.volume_pct.clamp(0.0, 1.0);
+                self.anim_water_pct = (self.water.taken_ml as f32 / self.water.goal_ml.max(1) as f32).clamp(0.0, 1.0);
+                self.anim_ram_pct = (self.telemetry.memory_percent / 100.0).clamp(0.0, 1.0);
+            }
+        }
+
+        // Redraw on active morphs, equalizer, expiration, or continuous mascot animations.
+        let mascot_anim = self.motion_preset != MotionPreset::Reduced && self.is_mascot_visible();
+        moved || self.is_equalizer_visible() || mascot_anim || self.mem_reduct.is_purging || expired
+    }
+
+    pub fn update_settings_animation(&mut self, dt: f32) -> bool {
+        let k = match self.motion_preset {
+            MotionPreset::Gentle => 18.0,
+            MotionPreset::Balanced => 25.0,
+            MotionPreset::Reduced => 1000.0,
+        };
+        let mut changed = false;
+        let cat_tgt = Self::settings_cat_pill_y(self.settings_category);
+        if self.motion_preset == MotionPreset::Reduced {
+            if (cat_tgt - self.anim_settings_cat_y).abs() > 0.1 {
+                self.anim_settings_cat_y = cat_tgt;
+                changed = true;
+            }
+            self.sync_switches_immediate();
+            for (i, slot) in self.settings_hover_slots.iter_mut().enumerate() {
+                *slot = if self.settings_hover_idx == Some(i) { 1.0 } else { 0.0 };
+            }
+            return changed;
+        }
+
+        self.anim_settings_cat_y = cat_tgt;
+
+        for id in ToggleId::ALL {
+            let tgt = if self.toggle_target(id) { 1.0 } else { 0.0 };
+            let (nt, mt) = ease_exp(self.switch_t[id as usize], tgt, k * 1.35, dt, 0.008);
+            self.switch_t[id as usize] = nt;
+            changed |= mt;
+        }
+
+        if self.micro_interactions {
+            for (i, slot) in self.settings_hover_slots.iter_mut().enumerate() {
+                let tgt = if self.settings_hover_idx == Some(i) { 1.0 } else { 0.0 };
+                let (next, chg) = ease_exp(*slot, tgt, k * 1.35, dt, 0.012);
+                *slot = next;
+                changed |= chg;
+            }
+        }
+        changed
+    }
+
+    pub fn sync_preview_settled(&mut self) {
+        self.target_width = if self.is_hovered { self.expanded_width() } else { self.collapsed_width() };
+        self.target_height = if self.is_hovered { self.expanded_height() } else { self.collapsed_height() };
+        self.current_width = self.target_width;
+        self.current_height = self.target_height;
+        self.anim_expand_t = if self.is_hovered { 1.0 } else { 0.0 };
+        self.anim_anchor_x = self.target_anchor_x;
+        self.anim_anchor_y = self.target_anchor_y;
+        let (dx, dw) = self.active_dock_target();
+        self.anim_dock_x = dx;
+        self.anim_dock_w = dw;
+        self.anim_settings_cat_y = Self::settings_cat_pill_y(self.settings_category);
+        self.anim_vol_pct = self.volume_pct.clamp(0.0, 1.0);
+        self.anim_water_pct = (self.water.taken_ml as f32 / self.water.goal_ml.max(1) as f32).clamp(0.0, 1.0);
+        self.anim_ram_pct = (self.telemetry.memory_percent / 100.0).clamp(0.0, 1.0);
+        self.sync_switches_immediate();
+    }
+
+    pub fn apply_clean_result(&mut self, res: CleanResult) {
+        self.mem_reduct.last_freed_mb = res.freed_mb;
+        let priv_lbl = if res.is_elevated { "Admin" } else { "User" };
+        self.mem_reduct.last_cleaned_status = if res.kernel_caches_purged {
+            format!(
+                "{} procs + kernel â€¢ {:.0} MB ({}%->{}%)",
+                res.trimmed_processes, res.freed_mb, res.old_load_pct, res.new_load_pct
+            )
+        } else {
+            format!(
+                "{} procs ({}) â€¢ {:.0} MB ({}%->{}%)",
+                res.trimmed_processes, priv_lbl, res.freed_mb, res.old_load_pct, res.new_load_pct
+            )
+        };
+        self.mem_reduct.cyno_quote = if res.freed_mb > 300.0 {
+            "Judgment is passed! Excess RAM purged.".to_string()
+        } else {
+            "Processes comply with Mahamatra doctrine.".to_string()
+        };
+        self.purge_anim_until = Some(Instant::now() + std::time::Duration::from_millis(3600));
+        self.save_config();
+        if self.mem_reduct.show_clean_results {
+            self.set_notification(
+                "Memory Cleaned".to_string(),
+                format!(
+                    "{:.0} MB freed ({}% -> {}%) â€¢ {}",
+                    res.freed_mb, res.old_load_pct, res.new_load_pct, priv_lbl
+                ),
+                NotificationKind::MemoryPurge,
+                true,
+            );
+        }
+    }
+}
+
+impl Default for AppState {
+    fn default() -> Self {
+        Self::new()
+    }
+}
