@@ -25,13 +25,10 @@
 - **Live Synced Lyrics** powered by the [LRCLIB](https://lrclib.net) API.
 - **Inline Controls:** Play/Pause directly from the notch.
 
-### 4. ⏱️ Pomodoro Focus Timer
-- 25/5-minute focus timer with a circular progress indicator and live countdown.
-
-### 5. 📊 Real-Time Hardware Telemetry
+### 4. 📊 Real-Time Hardware Telemetry
 - Live CPU load, RAM usage, and network speed monitoring.
 
-### 6. 📋 Quick Shelf
+### 5. 📋 Quick Shelf
 - Instant scratchpad for quick notes right inside the expanded hub.
 
 ---
