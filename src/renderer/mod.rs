@@ -262,6 +262,7 @@ impl Renderer {
         let can_cache_expanded = settled_expanded
             && !state.placement.is_vertical()
             && state.notification.is_none()
+            && !state.show_notif_history
             && matches!(state.mode, NotchMode::Home | NotchMode::Music);
         let exp_sig = if can_cache_expanded {
             Self::compute_expanded_static_sig(state, &chrome_key, pointer)
@@ -316,13 +317,11 @@ impl Renderer {
                         .copy_from_slice(&src[off + col_start..off + col_end]);
                 }
             }
-            let mut hits = cached_hits
-                .iter()
-                .map(|h| Hit {
-                    rect: h.rect,
-                    action: h.action.clone(),
-                })
-                .collect::<Vec<Hit>>();
+            let mut hits = std::mem::take(&mut self.hits);
+            hits.extend(cached_hits.iter().map(|h| Hit {
+                rect: h.rect,
+                action: h.action.clone(),
+            }));
             let mut p = Painter {
                 pm: &mut self.pixmap,
                 clip_mask: &mut self.clip_mask,
@@ -696,20 +695,25 @@ impl Renderer {
     }
 
     pub(super) fn draw_expanded_anim_overlay(p: &mut Painter, state: &AppState) {
+        if state.show_notif_history {
+            return;
+        }
         let card_y = 60.0;
         let anim_t = state.anim_time;
         match state.mode {
             NotchMode::Home => {
-                let margin_x = 20.0;
-                Self::draw_cyno_mascot(
-                    p,
-                    margin_x + 30.0,
-                    card_y + 30.5,
-                    0.96,
-                    state.mascot_mood(),
-                    anim_t,
-                    false,
-                );
+                if state.show_mascot {
+                    let margin_x = 20.0;
+                    Self::draw_cyno_mascot(
+                        p,
+                        margin_x + 30.0,
+                        card_y + 30.5,
+                        0.96,
+                        state.mascot_mood(),
+                        anim_t,
+                        false,
+                    );
+                }
             }
             NotchMode::Music => {
                 let card_x = 20.0;
@@ -1177,6 +1181,13 @@ impl Renderer {
     // VERTICAL IDLE CAPSULE (52 × 168/204/248 for Left / Right Edges)
     // ─────────────────────────────────────────────────────────────────────────────
     pub(super) fn draw_expanded(p: &mut Painter, state: &AppState, w: f32, h: f32, settled: bool) {
+        if state.notification.is_none() {
+            Self::draw_expanded_header(p, state, w);
+        }
+        Self::draw_expanded_body(p, state, w, h, settled);
+    }
+
+    fn draw_expanded_header(p: &mut Painter, state: &AppState, w: f32) {
         let dock_x = 20.0;
         let dock_y = 14.0;
         let dock_h = 34.0;
@@ -1454,7 +1465,9 @@ impl Renderer {
                 NotchMode::Settings => draw_title(p, "Quick Settings"),
             }
         }
+    }
 
+    fn draw_expanded_body(p: &mut Painter, state: &AppState, w: f32, h: f32, settled: bool) {
         let card_y = 60.0;
         let mut draw_anim_here = !settled || state.notification.is_some();
         if state.show_notif_history {

@@ -274,6 +274,13 @@ impl Renderer {
         h: f32,
         _settled: bool,
     ) {
+        if state.notification.is_none() {
+            Self::draw_expanded_vertical_header(p, state, w);
+        }
+        Self::draw_expanded_vertical_body(p, state, w, h);
+    }
+
+    fn draw_expanded_vertical_header(p: &mut Painter, state: &AppState, w: f32) {
         // Row 1 Header: [Mode Title] ... [Lyrics?] [Pin] [Settings Gear] [Grip]
         let btn_y = 12.0;
         let right_x = w - 14.0;
@@ -537,7 +544,9 @@ impl Renderer {
             icons::draw(p, icon, ix + (item_w - 13.5) / 2.0, iy + 5.25, 13.5, col);
             p.hit(ix, iy, item_w, 24.0, Action::SetMode(*mode));
         }
+    }
 
+    fn draw_expanded_vertical_body(p: &mut Painter, state: &AppState, w: f32, h: f32) {
         let card_y = 88.0;
         if state.show_notif_history {
             Self::draw_notif_history_view(p, state, w, h, card_y);
@@ -572,16 +581,18 @@ impl Renderer {
             16.0,
             Some((42.0, 34.0, 74.0, tok::cyno_violet())),
         );
-        let anim_t = state.anim_time;
-        Self::draw_cyno_mascot(
-            p,
-            mx + 30.0,
-            card_y + 31.0,
-            0.96,
-            state.mascot_mood(),
-            anim_t,
-            false,
-        );
+        if state.show_mascot {
+            let anim_t = state.anim_time;
+            Self::draw_cyno_mascot(
+                p,
+                mx + 30.0,
+                card_y + 31.0,
+                0.96,
+                state.mascot_mood(),
+                anim_t,
+                false,
+            );
+        }
 
         p.text(
             "General Cyno",

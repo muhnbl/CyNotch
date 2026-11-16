@@ -1892,7 +1892,7 @@ fn test_v19_frosted_glass_alpha_and_config_roundtrip() {
     state.mode = NotchMode::Home;
     state.sync_preview_settled();
 
-    // Frosted glass feature was removed: is_frosted_active() is always false (opaque Obsidian mode)
+    // Frosted glass feature is disabled: is_frosted_active() is always false (opaque Obsidian mode)
     state.windows_transparency_enabled = true;
     state.frosted_glass_enabled = true;
     assert!(!state.is_frosted_active());
@@ -2615,7 +2615,7 @@ fn test_v26_frosted_opacity_blur_exclusivity() {
     st.windows_transparency_enabled = true;
     assert!(!st.is_frosted_active());
 
-    // Frosted opacity/blur actions are no-ops now that frosted glass is removed.
+    // Frosted opacity/blur actions are no-ops now that frosted glass is disabled.
     st.apply_setting_action(Action::SetFrostedOpacity(52));
     assert_eq!(st.frosted_opacity_pct, 68);
     st.apply_setting_action(Action::SetFrostedBlur(32));

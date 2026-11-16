@@ -1614,21 +1614,11 @@ impl AppState {
                 eff.sync_windows_borders = Some(self.remove_windows_borders);
                 eff.redraw_notch = false;
             }
-            Action::SetFrostedOpacity(pct) => {
-                if self.is_frosted_active() {
-                    self.frosted_opacity_pct = pct.clamp(25, 95);
-                    self.save_config();
-                } else {
-                    eff.redraw_notch = false;
-                }
+            Action::SetFrostedOpacity(_pct) => {
+                eff.redraw_notch = false;
             }
-            Action::SetFrostedBlur(px) => {
-                if self.is_frosted_active() {
-                    self.frosted_blur_px = px.clamp(4, 40);
-                    self.save_config();
-                } else {
-                    eff.redraw_notch = false;
-                }
+            Action::SetFrostedBlur(_px) => {
+                eff.redraw_notch = false;
             }
             Action::ToggleNotifListener => {
                 self.notif_listener_enabled = !self.notif_listener_enabled;
