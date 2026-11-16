@@ -1,6 +1,6 @@
 use crate::memreduct::{CleanAreas, CleanResult};
-use chrono::Local;
 use serde::{Deserialize, Serialize};
+use std::collections::VecDeque;
 use std::time::Instant;
 
 /// Per-user state directory (`%LOCALAPPDATA%\CyNotch`).
@@ -152,13 +152,6 @@ impl IdleMetric {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-pub enum MotionPreset {
-    Gentle,
-    Balanced,
-    Reduced,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum TypeScale {
     Compact,
     Standard,
@@ -296,18 +289,16 @@ pub enum SettingsCategory {
     Motion,
     Modules,
     Notifications,
-    Health,
     System,
 }
 
 impl SettingsCategory {
-    pub const COUNT: usize = 6;
-    pub const ALL: [SettingsCategory; 6] = [
+    pub const COUNT: usize = 5;
+    pub const ALL: [SettingsCategory; 5] = [
         SettingsCategory::General,
         SettingsCategory::Motion,
         SettingsCategory::Modules,
         SettingsCategory::Notifications,
-        SettingsCategory::Health,
         SettingsCategory::System,
     ];
 
@@ -317,8 +308,7 @@ impl SettingsCategory {
             Self::Motion => 1,
             Self::Modules => 2,
             Self::Notifications => 3,
-            Self::Health => 4,
-            Self::System => 5,
+            Self::System => 4,
         }
     }
 
@@ -328,7 +318,6 @@ impl SettingsCategory {
             Self::Motion => "Motion & Perf",
             Self::Modules => "Dock & Modules",
             Self::Notifications => "Notifications",
-            Self::Health => "Health & Focus",
             Self::System => "Memory & System",
         }
     }
@@ -339,7 +328,6 @@ pub struct ModuleVisibility {
     pub music: bool,
     pub volume: bool,
     pub mem_reduct: bool,
-    pub focus_timer: bool,
     pub tasks: bool,
     pub shelf: bool,
     pub capture: bool,
@@ -352,7 +340,6 @@ impl Default for ModuleVisibility {
             music: true,
             volume: true,
             mem_reduct: true,
-            focus_timer: true,
             tasks: true,
             shelf: true,
             capture: true,
@@ -384,7 +371,6 @@ pub enum ToggleId {
     ModMusic = 17,
     ModVolume = 18,
     ModMemReduct = 19,
-    ModFocus = 20,
     ModTasks = 21,
     ModShelf = 22,
     ModCapture = 23,
@@ -396,7 +382,6 @@ pub enum ToggleId {
     AreaRegistry = 29,
     AreaCombine = 30,
     ShowCleanResults = 31,
-    HealthReminders = 32,
     FrostedGlass = 33,
     NotifListener = 34,
     NotifExclusive = 35,
@@ -406,7 +391,7 @@ pub enum ToggleId {
 }
 
 impl ToggleId {
-    pub const ALL: [ToggleId; 39] = [
+    pub const ALL: [ToggleId; 37] = [
         ToggleId::Autostart,
         ToggleId::Chime,
         ToggleId::ClickToOpen,
@@ -427,7 +412,6 @@ impl ToggleId {
         ToggleId::ModMusic,
         ToggleId::ModVolume,
         ToggleId::ModMemReduct,
-        ToggleId::ModFocus,
         ToggleId::ModTasks,
         ToggleId::ModShelf,
         ToggleId::ModCapture,
@@ -439,7 +423,6 @@ impl ToggleId {
         ToggleId::AreaRegistry,
         ToggleId::AreaCombine,
         ToggleId::ShowCleanResults,
-        ToggleId::HealthReminders,
         ToggleId::FrostedGlass,
         ToggleId::NotifListener,
         ToggleId::NotifExclusive,
@@ -486,7 +469,6 @@ pub enum NotchMode {
     Music,
     Volume,
     MemReduct,
-    FocusTimer,
     Tasks,
     Shelf,
     Capture,
@@ -497,7 +479,6 @@ pub enum NotchMode {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum NotificationKind {
     Pasted,
-    Water,
     MemoryPurge,
     Capture,
     General,
@@ -509,8 +490,6 @@ pub enum MascotMood {
     Idle,
     Purging,
     Music,
-    Focus,
-    Hydrate,
     Capture,
 }
 
@@ -520,7 +499,6 @@ pub enum Action {
     TogglePin,
     StartGripDrag,
     ResetPosition,
-    DrinkWater(u32),
     ToggleLyrics,
     ScrollLyrics(i32),
     CycleLyricSize,
@@ -532,16 +510,12 @@ pub enum Action {
     NextTrack,
     PurgeRam,
     ToggleAutoClean,
-    ToggleArea(u8),     // 0..=7 matching Mem Reduct areas
-    CycleThreshold,     // 70 -> 80 -> 90 -> 0 (Disable) -> 60 -> 70
-    CycleInterval,      // 0 (Disable) -> 5 -> 15 -> 30 -> 60 -> 90 -> 0
+    ToggleArea(u8), // 0..=7 matching Mem Reduct areas
+    CycleThreshold, // 70 -> 80 -> 90 -> 0 (Disable) -> 60 -> 70
+    CycleInterval,  // 0 (Disable) -> 5 -> 15 -> 30 -> 60 -> 90 -> 0
     SetCleanThreshold(u32),
     SetCleanInterval(u32),
     ToggleShowCleanResults,
-    ToggleFocusTimer,
-    ResetFocusTimer,
-    SetFocusDuration(u32),
-    ToggleTimerPhase,
     ToggleTask(usize),
     DeleteTask(usize),
     ClearCompletedTasks,
@@ -569,8 +543,6 @@ pub enum Action {
     ToggleHideFullscreen,
     ToggleShowMascot,
     ToggleProgressArc,
-    ToggleHealthReminders,
-    SetMotionPreset(MotionPreset),
     SetFpsCap(u32),
     ToggleMicroInteractions,
     ToggleEqualizer,
@@ -588,21 +560,21 @@ pub enum Action {
     OpenWinPersonalizeColors,
     SendTestNotification,
     DismissNotification,
+    ActivateNotification,
+    ClearNotificationQueue,
+    ToggleNotifHistory,
+    ActivateHistoryItem(usize),
+    DismissHistoryItem(usize),
+    ClearNotifHistory,
     ToggleModule(NotchMode),
     ToggleLyricsMonitor,
     ToggleClipboardWatch,
     ToggleCaptureClipboard,
-    SetWaterGoal(u32),
-    SetWaterGlass(u32),
-    SetMoveInterval(u32),
-    SetDefaultFocus(u32),
-    SetDefaultBreak(u32),
     ToggleScreenTime,
     ResetScreenTimeToday,
     ResetAllSettings,
     ToggleAutostart,
     ToggleChime,
-    SetWaterInterval(u32),
     Quit,
 }
 
@@ -623,25 +595,6 @@ pub struct ShelfItem {
     pub kind: ShelfKind,
     pub label: String,
     pub payload: String,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct WaterTracker {
-    pub date: String,
-    pub taken_ml: u32,
-    pub goal_ml: u32,
-    pub glass_ml: u32,
-}
-
-impl Default for WaterTracker {
-    fn default() -> Self {
-        Self {
-            date: Local::now().format("%Y-%m-%d").to_string(),
-            taken_ml: 0,
-            goal_ml: 1500,
-            glass_ml: 250,
-        }
-    }
 }
 
 #[derive(Debug, Clone, Default)]
@@ -710,12 +663,24 @@ impl ScreenTimeStats {
 #[derive(Debug, Clone)]
 pub struct NotificationBanner {
     pub app_name: String,
+    pub aumid: Option<String>,
     pub title: String,
     pub subtitle: String,
     pub kind: NotificationKind,
     pub is_success: bool,
     pub total_secs: f32,
     pub expires_at: Instant,
+    pub grouped_count: u32,
+    pub received_at: Instant,
+}
+
+#[derive(Debug, Clone)]
+pub struct NotifHistoryEntry {
+    pub app_name: String,
+    pub aumid: Option<String>,
+    pub title: String,
+    pub subtitle: String,
+    pub received_at: Instant,
 }
 
 #[derive(Debug, Clone)]
@@ -766,27 +731,6 @@ impl MediaTrack {
 pub struct LyricLine {
     pub seconds: f64,
     pub text: String,
-}
-
-#[derive(Debug, Clone)]
-pub struct PomodoroTimer {
-    pub is_running: bool,
-    pub is_break: bool,
-    pub remaining_secs: u32,
-    pub total_secs: u32,
-    pub cycles_completed: u32,
-}
-
-impl Default for PomodoroTimer {
-    fn default() -> Self {
-        Self {
-            is_running: false,
-            is_break: false,
-            remaining_secs: 25 * 60,
-            total_secs: 25 * 60,
-            cycles_completed: 0,
-        }
-    }
 }
 
 #[derive(Debug, Clone, Default)]
@@ -866,7 +810,7 @@ impl Default for MemReductConfig {
             when_above_pct: 70,
             every_mins: 0,
             auto_clean_enabled: true,
-            last_cleaned_status: "Ready â€¢ Click to purge standby & WS".to_string(),
+            last_cleaned_status: "Ready • Click to purge standby & WS".to_string(),
             last_freed_mb: 0.0,
             is_purging: false,
             cyno_quote: "Through me, the law is made manifest.".to_string(),
@@ -877,7 +821,7 @@ impl Default for MemReductConfig {
 impl MemReductConfig {
     pub fn preview_sample() -> Self {
         Self {
-            last_cleaned_status: "14 procs trimmed â€¢ 420 MB freed".to_string(),
+            last_cleaned_status: "14 procs trimmed • 420 MB freed".to_string(),
             last_freed_mb: 420.0,
             ..Self::default()
         }
@@ -919,8 +863,6 @@ pub struct AppState {
     pub hide_in_fullscreen: bool,
     pub show_mascot: bool,
     pub progress_arc_enabled: bool,
-    pub health_reminders_enabled: bool,
-    pub motion_preset: MotionPreset,
     pub fps_cap: u32,
     pub detected_hz: u32,
     pub micro_interactions: bool,
@@ -945,9 +887,6 @@ pub struct AppState {
     pub clipboard_watch_enabled: bool,
     pub capture_to_clipboard: bool,
     pub screentime_enabled: bool,
-    pub move_reminder_mins: u32,
-    pub default_focus_mins: u32,
-    pub default_break_mins: u32,
 
     // Settings Window UI State
     pub settings_open: bool,
@@ -960,6 +899,7 @@ pub struct AppState {
     pub target_width: f32,
     pub target_height: f32,
     pub anim_expand_t: f32,
+    pub anim_notif_t: f32,
     pub target_anchor_x: f32,
     pub target_anchor_y: f32,
     pub anim_anchor_x: f32,
@@ -968,7 +908,6 @@ pub struct AppState {
     pub anim_dock_w: f32,
     pub anim_settings_cat_y: f32,
     pub anim_vol_pct: f32,
-    pub anim_water_pct: f32,
     pub anim_ram_pct: f32,
     pub hover_target_idx: Option<usize>,
     pub hover_slots: [f32; 48],
@@ -981,14 +920,15 @@ pub struct AppState {
     pub lyrics: Vec<LyricLine>,
     pub current_lyric_index: Option<usize>,
     pub current_lyric_text: String,
-    pub timer: PomodoroTimer,
     pub telemetry: HardwareTelemetry,
     pub mem_reduct: MemReductConfig,
-    pub water: WaterTracker,
     pub capture: CaptureState,
     pub quick_note: String,
     pub screen_time: ScreenTimeStats,
     pub notification: Option<NotificationBanner>,
+    pub notif_queue: VecDeque<NotificationBanner>,
+    pub notif_history: VecDeque<NotifHistoryEntry>,
+    pub show_notif_history: bool,
     pub purge_anim_until: Option<Instant>,
     pub shelf_items: Vec<ShelfItem>,
     pub shelf_scroll: usize,
@@ -999,14 +939,12 @@ pub struct AppState {
     pub pre_mute_volume: f32,
     pub autostart: bool,
     pub chime_enabled: bool,
-    pub water_interval_mins: u32,
     pub persistence_enabled: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 struct PersistedConfig {
     chime_enabled: bool,
-    water_interval_mins: u32,
     clean_working_sets: bool,
     clean_system_ws: bool,
     clean_standby_list: bool,
@@ -1058,10 +996,6 @@ struct PersistedConfig {
     show_mascot: bool,
     #[serde(default = "default_true", alias = "status_ring_enabled")]
     progress_arc_enabled: bool,
-    #[serde(default = "default_true")]
-    health_reminders_enabled: bool,
-    #[serde(default = "default_motion_preset")]
-    motion_preset: MotionPreset,
     #[serde(default)]
     fps_cap: u32,
     #[serde(default = "default_true")]
@@ -1082,12 +1016,6 @@ struct PersistedConfig {
     capture_to_clipboard: bool,
     #[serde(default = "default_true")]
     screentime_enabled: bool,
-    #[serde(default)]
-    move_reminder_mins: u32,
-    #[serde(default = "default_focus_mins")]
-    default_focus_mins: u32,
-    #[serde(default = "default_break_mins")]
-    default_break_mins: u32,
     #[serde(default = "default_lyric_size")]
     lyric_size: LyricSize,
     #[serde(default = "default_lyric_style")]
@@ -1117,7 +1045,9 @@ struct PersistedConfig {
     config_rev: u32,
 }
 
-fn default_true() -> bool { true }
+fn default_true() -> bool {
+    true
+}
 
 /// v2: Windows Notification Bridge is ON by default (configs saved earlier are migrated to ON once).
 const CONFIG_REV: u32 = 2;
@@ -1127,20 +1057,39 @@ impl PersistedConfig {
         self.notif_listener_enabled || self.config_rev < 2
     }
 }
-fn default_notch_style() -> NotchStyle { NotchStyle::Floating }
-fn default_placement() -> NotchPlacement { NotchPlacement::Top }
-fn default_size_preset() -> NotchSizePreset { NotchSizePreset::Standard }
-fn default_expanded_size() -> ExpandedSizePreset { ExpandedSizePreset::Standard }
-fn default_type_scale() -> TypeScale { TypeScale::Standard }
-fn default_idle_metric() -> IdleMetric { IdleMetric::Ram }
-fn default_motion_preset() -> MotionPreset { MotionPreset::Gentle }
-fn default_lyric_size() -> LyricSize { LyricSize::Standard }
-fn default_lyric_style() -> LyricStyle { LyricStyle::ClassicList }
-fn default_notif_secs() -> u32 { 4 }
-fn default_focus_mins() -> u32 { 25 }
-fn default_break_mins() -> u32 { 5 }
-fn default_frosted_opacity() -> u32 { 68 }
-fn default_frosted_blur() -> u32 { 20 }
+fn default_notch_style() -> NotchStyle {
+    NotchStyle::Floating
+}
+fn default_placement() -> NotchPlacement {
+    NotchPlacement::Top
+}
+fn default_size_preset() -> NotchSizePreset {
+    NotchSizePreset::Standard
+}
+fn default_expanded_size() -> ExpandedSizePreset {
+    ExpandedSizePreset::Standard
+}
+fn default_type_scale() -> TypeScale {
+    TypeScale::Standard
+}
+fn default_idle_metric() -> IdleMetric {
+    IdleMetric::Ram
+}
+fn default_lyric_size() -> LyricSize {
+    LyricSize::Standard
+}
+fn default_lyric_style() -> LyricStyle {
+    LyricStyle::ClassicList
+}
+fn default_notif_secs() -> u32 {
+    4
+}
+fn default_frosted_opacity() -> u32 {
+    68
+}
+fn default_frosted_blur() -> u32 {
+    20
+}
 
 impl AppState {
     pub const MINIMIZED_WIDTH: f32 = 86.0;
@@ -1303,9 +1252,8 @@ impl AppState {
         let h = self.current_height.max(1.0);
         let exp_w = self.expanded_width();
         let exp_h = self.expanded_height();
-        let settled_expanded = self.is_hovered
-            && (w - exp_w).abs() < 0.5
-            && (h - exp_h).abs() < 0.5;
+        let settled_expanded =
+            self.is_hovered && (w - exp_w).abs() < 0.5 && (h - exp_h).abs() < 0.5;
         let t = if settled_expanded {
             1.0
         } else {
@@ -1433,14 +1381,27 @@ impl AppState {
     pub fn visible_dock_modes(&self) -> Vec<NotchMode> {
         let mut modes = Vec::with_capacity(9);
         modes.push(NotchMode::Home);
-        if self.modules.music { modes.push(NotchMode::Music); }
-        if self.modules.volume { modes.push(NotchMode::Volume); }
-        if self.modules.mem_reduct { modes.push(NotchMode::MemReduct); }
-        if self.modules.focus_timer { modes.push(NotchMode::FocusTimer); }
-        if self.modules.tasks { modes.push(NotchMode::Tasks); }
-        if self.modules.shelf { modes.push(NotchMode::Shelf); }
-        if self.modules.capture { modes.push(NotchMode::Capture); }
-        if self.modules.telemetry { modes.push(NotchMode::Telemetry); }
+        if self.modules.music {
+            modes.push(NotchMode::Music);
+        }
+        if self.modules.volume {
+            modes.push(NotchMode::Volume);
+        }
+        if self.modules.mem_reduct {
+            modes.push(NotchMode::MemReduct);
+        }
+        if self.modules.tasks {
+            modes.push(NotchMode::Tasks);
+        }
+        if self.modules.shelf {
+            modes.push(NotchMode::Shelf);
+        }
+        if self.modules.capture {
+            modes.push(NotchMode::Capture);
+        }
+        if self.modules.telemetry {
+            modes.push(NotchMode::Telemetry);
+        }
         modes
     }
 
@@ -1482,7 +1443,6 @@ impl AppState {
             ToggleId::HideFullscreen => self.hide_in_fullscreen,
             ToggleId::ShowMascot => self.show_mascot,
             ToggleId::ProgressArc => self.progress_arc_enabled,
-            ToggleId::HealthReminders => self.health_reminders_enabled,
             ToggleId::MicroInteractions => self.micro_interactions,
             ToggleId::Equalizer => self.equalizer_enabled,
             ToggleId::Notifications => self.notifications_enabled,
@@ -1497,7 +1457,6 @@ impl AppState {
             ToggleId::ModMusic => self.modules.music,
             ToggleId::ModVolume => self.modules.volume,
             ToggleId::ModMemReduct => self.modules.mem_reduct,
-            ToggleId::ModFocus => self.modules.focus_timer,
             ToggleId::ModTasks => self.modules.tasks,
             ToggleId::ModShelf => self.modules.shelf,
             ToggleId::ModCapture => self.modules.capture,
@@ -1559,7 +1518,7 @@ impl AppState {
                     } else {
                         self.sync_collapsed_targets();
                     }
-                    if axis_changed || self.motion_preset == MotionPreset::Reduced {
+                    if axis_changed {
                         self.current_width = self.target_width;
                         self.current_height = self.target_height;
                         self.anim_anchor_x = self.target_anchor_x;
@@ -1574,10 +1533,6 @@ impl AppState {
             Action::SetSizePreset(preset) => {
                 self.size_preset = preset;
                 self.sync_collapsed_targets();
-                if !self.is_hovered && self.motion_preset == MotionPreset::Reduced {
-                    self.current_width = self.target_width;
-                    self.current_height = self.target_height;
-                }
                 self.save_config();
             }
             Action::SetExpandedSize(preset) => {
@@ -1623,22 +1578,6 @@ impl AppState {
                 self.progress_arc_enabled = !self.progress_arc_enabled;
                 self.save_config();
             }
-            Action::ToggleHealthReminders => {
-                self.health_reminders_enabled = !self.health_reminders_enabled;
-                if !self.health_reminders_enabled
-                    && matches!(&self.notification, Some(n) if n.kind == NotificationKind::Water)
-                {
-                    self.notification = None;
-                }
-                self.save_config();
-            }
-            Action::SetMotionPreset(preset) => {
-                self.motion_preset = preset;
-                if preset == MotionPreset::Reduced {
-                    self.sync_preview_settled();
-                }
-                self.save_config();
-            }
             Action::SetFpsCap(cap) => {
                 self.fps_cap = cap;
                 self.save_config();
@@ -1654,6 +1593,7 @@ impl AppState {
             Action::ToggleNotifications => {
                 self.notifications_enabled = !self.notifications_enabled;
                 if !self.notifications_enabled {
+                    self.notif_queue.clear();
                     self.notification = None;
                     self.sync_collapsed_targets();
                 }
@@ -1735,21 +1675,58 @@ impl AppState {
                 eff.redraw_notch = false;
             }
             Action::SendTestNotification => {
+                let now = Instant::now();
+                let secs = self.notification_secs.clamp(2, 10).max(4);
                 self.notification = Some(NotificationBanner {
                     app_name: "Discord".to_string(),
+                    aumid: None,
                     title: "Kai (#dev-sync)".to_string(),
-                    subtitle: "Notification bridge verified — messages from apps will pop here cleanly".to_string(),
+                    subtitle:
+                        "Notification bridge verified — messages from apps will pop here cleanly"
+                            .to_string(),
                     kind: NotificationKind::SystemToast,
                     is_success: true,
-                    total_secs: self.notification_secs.clamp(2, 10).max(4) as f32,
-                    expires_at: Instant::now() + std::time::Duration::from_secs(self.notification_secs.clamp(2, 10).max(4) as u64),
+                    total_secs: secs as f32,
+                    expires_at: now + std::time::Duration::from_secs(secs as u64),
+                    grouped_count: 1,
+                    received_at: now,
                 });
+                self.record_notif_history(
+                    "Discord".to_string(),
+                    None,
+                    "Kai (#dev-sync)".to_string(),
+                    "Notification bridge verified — messages from apps will pop here cleanly"
+                        .to_string(),
+                );
                 self.sync_collapsed_targets();
                 eff.redraw_notch = true;
             }
             Action::DismissNotification => {
+                self.advance_notification_queue();
+                eff.redraw_notch = true;
+            }
+            Action::ClearNotificationQueue => {
+                self.notif_queue.clear();
                 self.notification = None;
                 self.sync_collapsed_targets();
+                eff.redraw_notch = true;
+            }
+            Action::ToggleNotifHistory => {
+                self.show_notif_history = !self.show_notif_history;
+                self.hover_target_idx = None;
+                self.hover_slots = [0.0; 48];
+                eff.redraw_notch = true;
+            }
+            Action::DismissHistoryItem(idx) => {
+                if idx < self.notif_history.len() {
+                    self.notif_history.remove(idx);
+                    self.hover_target_idx = None;
+                    eff.redraw_notch = true;
+                }
+            }
+            Action::ClearNotifHistory => {
+                self.notif_history.clear();
+                self.hover_target_idx = None;
                 eff.redraw_notch = true;
             }
             Action::CycleLyricSize => {
@@ -1773,7 +1750,6 @@ impl AppState {
                     NotchMode::Music => self.modules.music = !self.modules.music,
                     NotchMode::Volume => self.modules.volume = !self.modules.volume,
                     NotchMode::MemReduct => self.modules.mem_reduct = !self.modules.mem_reduct,
-                    NotchMode::FocusTimer => self.modules.focus_timer = !self.modules.focus_timer,
                     NotchMode::Tasks => self.modules.tasks = !self.modules.tasks,
                     NotchMode::Shelf => self.modules.shelf = !self.modules.shelf,
                     NotchMode::Capture => self.modules.capture = !self.modules.capture,
@@ -1795,38 +1771,6 @@ impl AppState {
             }
             Action::ToggleCaptureClipboard => {
                 self.capture_to_clipboard = !self.capture_to_clipboard;
-                self.save_config();
-            }
-            Action::SetWaterGoal(ml) => {
-                self.water.goal_ml = ml.clamp(500, 5000);
-                self.save_water();
-            }
-            Action::SetWaterGlass(ml) => {
-                self.water.glass_ml = ml.clamp(100, 1000);
-                self.save_water();
-            }
-            Action::SetWaterInterval(mins) => {
-                self.water_interval_mins = mins;
-                self.save_config();
-            }
-            Action::SetMoveInterval(mins) => {
-                self.move_reminder_mins = mins;
-                self.save_config();
-            }
-            Action::SetDefaultFocus(mins) => {
-                self.default_focus_mins = mins.clamp(5, 90);
-                if !self.timer.is_running && !self.timer.is_break {
-                    self.timer.total_secs = self.default_focus_mins * 60;
-                    self.timer.remaining_secs = self.timer.total_secs;
-                }
-                self.save_config();
-            }
-            Action::SetDefaultBreak(mins) => {
-                self.default_break_mins = mins.clamp(1, 30);
-                if !self.timer.is_running && self.timer.is_break {
-                    self.timer.total_secs = self.default_break_mins * 60;
-                    self.timer.remaining_secs = self.timer.total_secs;
-                }
                 self.save_config();
             }
             Action::ToggleAutoClean => {
@@ -1877,10 +1821,6 @@ impl AppState {
                 self.x_offset = 0;
                 self.y_offset = 0;
                 self.reset_anchor_for_placement();
-                if self.motion_preset == MotionPreset::Reduced {
-                    self.anim_anchor_x = self.target_anchor_x;
-                    self.anim_anchor_y = self.target_anchor_y;
-                }
                 self.save_config();
             }
             Action::ResetAllSettings => {
@@ -1910,10 +1850,15 @@ impl AppState {
         crate::models::appdata_dir()
     }
 
-    fn config_path() -> std::path::PathBuf { Self::appdata_dir().join("config.json") }
-    fn tasks_path() -> std::path::PathBuf { Self::appdata_dir().join("tasks.json") }
-    fn shelf_path() -> std::path::PathBuf { Self::appdata_dir().join("shelf.json") }
-    fn water_path() -> std::path::PathBuf { Self::appdata_dir().join("water.json") }
+    fn config_path() -> std::path::PathBuf {
+        Self::appdata_dir().join("config.json")
+    }
+    fn tasks_path() -> std::path::PathBuf {
+        Self::appdata_dir().join("tasks.json")
+    }
+    fn shelf_path() -> std::path::PathBuf {
+        Self::appdata_dir().join("shelf.json")
+    }
 
     pub fn save_config(&self) {
         if !self.persistence_enabled {
@@ -1921,7 +1866,6 @@ impl AppState {
         }
         let cfg = PersistedConfig {
             chime_enabled: self.chime_enabled,
-            water_interval_mins: self.water_interval_mins,
             clean_working_sets: self.mem_reduct.clean_working_sets,
             clean_system_ws: self.mem_reduct.clean_system_ws,
             clean_standby_list: self.mem_reduct.clean_standby_list,
@@ -1950,8 +1894,6 @@ impl AppState {
             hide_in_fullscreen: self.hide_in_fullscreen,
             show_mascot: self.show_mascot,
             progress_arc_enabled: self.progress_arc_enabled,
-            health_reminders_enabled: self.health_reminders_enabled,
-            motion_preset: self.motion_preset,
             fps_cap: self.fps_cap,
             micro_interactions: self.micro_interactions,
             equalizer_enabled: self.equalizer_enabled,
@@ -1962,9 +1904,6 @@ impl AppState {
             clipboard_watch_enabled: self.clipboard_watch_enabled,
             capture_to_clipboard: self.capture_to_clipboard,
             screentime_enabled: self.screentime_enabled,
-            move_reminder_mins: self.move_reminder_mins,
-            default_focus_mins: self.default_focus_mins,
-            default_break_mins: self.default_break_mins,
             lyric_size: self.lyric_size,
             lyric_style: self.lyric_style,
             frosted_glass_enabled: self.frosted_glass_enabled,
@@ -1999,7 +1938,6 @@ impl AppState {
         };
         let listener_eff = cfg.listener_effective();
         self.chime_enabled = cfg.chime_enabled;
-        self.water_interval_mins = cfg.water_interval_mins;
         self.mem_reduct.clean_working_sets = cfg.clean_working_sets;
         self.mem_reduct.clean_system_ws = cfg.clean_system_ws;
         self.mem_reduct.clean_standby_list = cfg.clean_standby_list;
@@ -2018,7 +1956,9 @@ impl AppState {
         self.y_offset = cfg.y_offset;
         if cfg.last_freed_mb > 0.0 || !cfg.last_cleaned_status.is_empty() {
             self.mem_reduct.last_freed_mb = cfg.last_freed_mb;
-            if !cfg.last_cleaned_status.is_empty() && !cfg.last_cleaned_status.starts_with("Cleaning") {
+            if !cfg.last_cleaned_status.is_empty()
+                && !cfg.last_cleaned_status.starts_with("Cleaning")
+            {
                 self.mem_reduct.last_cleaned_status = cfg.last_cleaned_status;
             }
         }
@@ -2033,8 +1973,6 @@ impl AppState {
         self.hide_in_fullscreen = cfg.hide_in_fullscreen;
         self.show_mascot = cfg.show_mascot;
         self.progress_arc_enabled = cfg.progress_arc_enabled;
-        self.health_reminders_enabled = cfg.health_reminders_enabled;
-        self.motion_preset = cfg.motion_preset;
         self.fps_cap = cfg.fps_cap;
         self.micro_interactions = cfg.micro_interactions;
         self.equalizer_enabled = cfg.equalizer_enabled;
@@ -2045,9 +1983,6 @@ impl AppState {
         self.clipboard_watch_enabled = cfg.clipboard_watch_enabled;
         self.capture_to_clipboard = cfg.capture_to_clipboard;
         self.screentime_enabled = cfg.screentime_enabled;
-        self.move_reminder_mins = cfg.move_reminder_mins;
-        self.default_focus_mins = cfg.default_focus_mins.clamp(5, 90);
-        self.default_break_mins = cfg.default_break_mins.clamp(1, 30);
         self.lyric_size = cfg.lyric_size;
         self.lyric_style = cfg.lyric_style;
         self.frosted_glass_enabled = cfg.frosted_glass_enabled;
@@ -2066,10 +2001,6 @@ impl AppState {
             self.target_height = self.expanded_height();
         } else {
             self.sync_collapsed_targets();
-        }
-        if !self.timer.is_running && !self.timer.is_break {
-            self.timer.total_secs = self.default_focus_mins * 60;
-            self.timer.remaining_secs = self.timer.total_secs;
         }
         self.sync_preview_settled();
         true
@@ -2117,9 +2048,10 @@ impl AppState {
 
     fn load_initial_tasks() -> Vec<TaskItem> {
         if let Ok(json) = std::fs::read_to_string(Self::tasks_path())
-            && let Ok(items) = serde_json::from_str::<Vec<TaskItem>>(&json) {
-                return items;
-            }
+            && let Ok(items) = serde_json::from_str::<Vec<TaskItem>>(&json)
+        {
+            return items;
+        }
         let nusa_path = "C:\\Users\\muhna\\AppData\\Local\\Packages\\citoxstd.Nusa_r9cmnhct3ptgm\\LocalCache\\Roaming\\Nusa\\tasks.txt";
         if let Ok(content) = std::fs::read_to_string(nusa_path) {
             let parsed = Self::parse_tsv_tasks(&content);
@@ -2143,40 +2075,16 @@ impl AppState {
 
     fn load_initial_shelf() -> Vec<ShelfItem> {
         if let Ok(json) = std::fs::read_to_string(Self::shelf_path())
-            && let Ok(items) = serde_json::from_str::<Vec<ShelfItem>>(&json) {
-                return items;
-            }
+            && let Ok(items) = serde_json::from_str::<Vec<ShelfItem>>(&json)
+        {
+            return items;
+        }
         Vec::new()
-    }
-
-    pub fn save_water(&self) {
-        if !self.persistence_enabled {
-            return;
-        }
-        let dir = Self::appdata_dir();
-        let _ = std::fs::create_dir_all(&dir);
-        if let Ok(json) = serde_json::to_string_pretty(&self.water) {
-            let _ = std::fs::write(Self::water_path(), json);
-        }
-    }
-
-    fn load_initial_water() -> WaterTracker {
-        let today = Local::now().format("%Y-%m-%d").to_string();
-        if let Ok(json) = std::fs::read_to_string(Self::water_path())
-            && let Ok(mut w) = serde_json::from_str::<WaterTracker>(&json) {
-                if w.date != today {
-                    w.date = today;
-                    w.taken_ml = 0;
-                }
-                return w;
-            }
-        WaterTracker::default()
     }
 
     pub fn new() -> Self {
         let mut mem_reduct = MemReductConfig::default();
         let mut chime_enabled = true;
-        let mut water_interval_mins = 45;
         let mut is_pinned = false;
         let mut x_offset = 0;
         let mut y_offset = 0;
@@ -2191,8 +2099,6 @@ impl AppState {
         let mut hide_in_fullscreen = true;
         let mut show_mascot = true;
         let mut progress_arc_enabled = true;
-        let mut health_reminders_enabled = true;
-        let mut motion_preset = MotionPreset::Gentle;
         let mut fps_cap = 0;
         let mut micro_interactions = true;
         let mut equalizer_enabled = true;
@@ -2203,9 +2109,6 @@ impl AppState {
         let mut clipboard_watch_enabled = true;
         let mut capture_to_clipboard = true;
         let mut screentime_enabled = true;
-        let mut move_reminder_mins = 0;
-        let mut default_focus_mins = 25;
-        let mut default_break_mins = 5;
         let mut lyric_size = LyricSize::Standard;
         let mut lyric_style = LyricStyle::ClassicList;
         let mut frosted_glass_enabled = true;
@@ -2223,7 +2126,6 @@ impl AppState {
         if let Some(cfg) = Self::load_config() {
             let listener_eff = cfg.listener_effective();
             chime_enabled = cfg.chime_enabled;
-            water_interval_mins = cfg.water_interval_mins;
             mem_reduct.clean_working_sets = cfg.clean_working_sets;
             mem_reduct.clean_system_ws = cfg.clean_system_ws;
             mem_reduct.clean_standby_list = cfg.clean_standby_list;
@@ -2241,7 +2143,9 @@ impl AppState {
             y_offset = cfg.y_offset;
             if cfg.last_freed_mb > 0.0 || !cfg.last_cleaned_status.is_empty() {
                 mem_reduct.last_freed_mb = cfg.last_freed_mb;
-                if !cfg.last_cleaned_status.is_empty() && !cfg.last_cleaned_status.starts_with("Cleaning") {
+                if !cfg.last_cleaned_status.is_empty()
+                    && !cfg.last_cleaned_status.starts_with("Cleaning")
+                {
                     mem_reduct.last_cleaned_status = cfg.last_cleaned_status;
                 }
             }
@@ -2256,8 +2160,6 @@ impl AppState {
             hide_in_fullscreen = cfg.hide_in_fullscreen;
             show_mascot = cfg.show_mascot;
             progress_arc_enabled = cfg.progress_arc_enabled;
-            health_reminders_enabled = cfg.health_reminders_enabled;
-            motion_preset = cfg.motion_preset;
             fps_cap = cfg.fps_cap;
             micro_interactions = cfg.micro_interactions;
             equalizer_enabled = cfg.equalizer_enabled;
@@ -2268,9 +2170,6 @@ impl AppState {
             clipboard_watch_enabled = cfg.clipboard_watch_enabled;
             capture_to_clipboard = cfg.capture_to_clipboard;
             screentime_enabled = cfg.screentime_enabled;
-            move_reminder_mins = cfg.move_reminder_mins;
-            default_focus_mins = cfg.default_focus_mins.clamp(5, 90);
-            default_break_mins = cfg.default_break_mins.clamp(1, 30);
             lyric_size = cfg.lyric_size;
             lyric_style = cfg.lyric_style;
             frosted_glass_enabled = cfg.frosted_glass_enabled;
@@ -2296,17 +2195,19 @@ impl AppState {
 
         let vol = crate::audio::get_master_volume().unwrap_or(0.50);
         let pre_mute = if vol > 0.05 { vol } else { 0.50 };
-        let initial_clip = crate::capture::read_clipboard_text(windows::Win32::Foundation::HWND::default());
+        let initial_clip =
+            crate::capture::read_clipboard_text(windows::Win32::Foundation::HWND::default());
         let quick_note = if let Some(ref clip_text) = initial_clip {
-            format!("{} words Â· Clipboard", clip_text.split_whitespace().count())
+            format!(
+                "{} words · Clipboard",
+                clip_text.split_whitespace().count()
+            )
         } else {
             "Clipboard empty".to_string()
         };
 
         let telemetry = HardwareTelemetry::initial_real();
-        let water = Self::load_initial_water();
         let ram_pct = (telemetry.memory_percent / 100.0).clamp(0.0, 1.0);
-        let water_pct = (water.taken_ml as f32 / water.goal_ml.max(1) as f32).clamp(0.0, 1.0);
         let idle_s = type_scale.idle_ui_scale();
         let idle_w = if placement.is_vertical() {
             if minimized_island {
@@ -2343,13 +2244,6 @@ impl AppState {
             Self::EXPANDED_HEIGHT
         } * exp_s)
             .round();
-        let init_timer = PomodoroTimer {
-            is_running: false,
-            is_break: false,
-            remaining_secs: default_focus_mins * 60,
-            total_secs: default_focus_mins * 60,
-            cycles_completed: 0,
-        };
 
         let (def_ax, def_ay) = Self::default_anchor_for_placement(placement);
         let target_anchor_x = loaded_anchor_x.unwrap_or(def_ax).clamp(0.0, 1.0);
@@ -2374,8 +2268,6 @@ impl AppState {
             hide_in_fullscreen,
             show_mascot,
             progress_arc_enabled,
-            health_reminders_enabled,
-            motion_preset,
             fps_cap,
             detected_hz: 60,
             micro_interactions,
@@ -2400,9 +2292,6 @@ impl AppState {
             clipboard_watch_enabled,
             capture_to_clipboard,
             screentime_enabled,
-            move_reminder_mins,
-            default_focus_mins,
-            default_break_mins,
             settings_open: false,
             settings_category: SettingsCategory::General,
             settings_scroll: [0.0; SettingsCategory::COUNT],
@@ -2411,6 +2300,7 @@ impl AppState {
             target_width: if is_pinned { exp_w } else { idle_w },
             target_height: if is_pinned { exp_h } else { idle_h },
             anim_expand_t: if is_pinned { 1.0 } else { 0.0 },
+            anim_notif_t: 0.0,
             target_anchor_x,
             target_anchor_y,
             anim_anchor_x: target_anchor_x,
@@ -2419,7 +2309,6 @@ impl AppState {
             anim_dock_w: 32.0,
             anim_settings_cat_y: Self::settings_cat_pill_y(SettingsCategory::General),
             anim_vol_pct: vol.clamp(0.0, 1.0),
-            anim_water_pct: water_pct,
             anim_ram_pct: ram_pct,
             hover_target_idx: None,
             hover_slots: [0.0; 48],
@@ -2430,14 +2319,15 @@ impl AppState {
             lyrics: Vec::new(),
             current_lyric_index: None,
             current_lyric_text: "Play a track to sync lyrics".to_string(),
-            timer: init_timer,
             telemetry,
             mem_reduct,
-            water,
             capture: CaptureState::default(),
             quick_note,
             screen_time: ScreenTimeStats::default(),
             notification: None,
+            notif_queue: VecDeque::new(),
+            notif_history: VecDeque::new(),
+            show_notif_history: false,
             purge_anim_until: None,
             shelf_items: Self::load_initial_shelf(),
             shelf_scroll: 0,
@@ -2448,7 +2338,6 @@ impl AppState {
             pre_mute_volume: pre_mute,
             autostart: crate::autostart::is_autostart_enabled(),
             chime_enabled,
-            water_interval_mins,
             persistence_enabled: true,
         };
         let (dx, dw) = st.active_dock_target();
@@ -2484,8 +2373,6 @@ impl AppState {
             hide_in_fullscreen: true,
             show_mascot: true,
             progress_arc_enabled: true,
-            health_reminders_enabled: true,
-            motion_preset: MotionPreset::Gentle,
             fps_cap: 0,
             detected_hz: 60,
             micro_interactions: true,
@@ -2510,9 +2397,6 @@ impl AppState {
             clipboard_watch_enabled: true,
             capture_to_clipboard: true,
             screentime_enabled: true,
-            move_reminder_mins: 60,
-            default_focus_mins: 25,
-            default_break_mins: 5,
             settings_open: false,
             settings_category: SettingsCategory::General,
             settings_scroll: [0.0; SettingsCategory::COUNT],
@@ -2521,6 +2405,7 @@ impl AppState {
             target_width: Self::IDLE_WIDTH,
             target_height: Self::IDLE_HEIGHT,
             anim_expand_t: 0.0,
+            anim_notif_t: 0.0,
             target_anchor_x: 0.5,
             target_anchor_y: 0.5,
             anim_anchor_x: 0.5,
@@ -2529,7 +2414,6 @@ impl AppState {
             anim_dock_w: 32.0,
             anim_settings_cat_y: Self::settings_cat_pill_y(SettingsCategory::General),
             anim_vol_pct: 0.70,
-            anim_water_pct: 0.0,
             anim_ram_pct: 0.57,
             hover_target_idx: None,
             hover_slots: [0.0; 48],
@@ -2540,14 +2424,15 @@ impl AppState {
             lyrics: demo_lyrics,
             current_lyric_index: Some(2),
             current_lyric_text: "Nowhere else we need to go".to_string(),
-            timer: PomodoroTimer::default(),
             telemetry: HardwareTelemetry::default(),
             mem_reduct: MemReductConfig::preview_sample(),
-            water: WaterTracker::default(),
             capture: CaptureState::default(),
-            quick_note: "14 words Â· Chrome".to_string(),
+            quick_note: "14 words · Chrome".to_string(),
             screen_time: ScreenTimeStats::preview_sample(),
             notification: None,
+            notif_queue: VecDeque::new(),
+            notif_history: VecDeque::new(),
+            show_notif_history: false,
             purge_anim_until: None,
             shelf_items: vec![
                 ShelfItem {
@@ -2568,9 +2453,18 @@ impl AppState {
             ],
             shelf_scroll: 0,
             tasks: vec![
-                TaskItem { text: "Update CSM tns kalo sempet".to_string(), completed: false },
-                TaskItem { text: "Sketsa Logo Edu".to_string(), completed: false },
-                TaskItem { text: "CyNotch Mahamatra Memory Purge".to_string(), completed: true },
+                TaskItem {
+                    text: "Update CSM tns kalo sempet".to_string(),
+                    completed: false,
+                },
+                TaskItem {
+                    text: "Sketsa Logo Edu".to_string(),
+                    completed: false,
+                },
+                TaskItem {
+                    text: "CyNotch Mahamatra Memory Purge".to_string(),
+                    completed: true,
+                },
             ],
             tasks_scroll: 0,
             anim_time: 0.0,
@@ -2578,7 +2472,6 @@ impl AppState {
             pre_mute_volume: 0.70,
             autostart: false,
             chime_enabled: true,
-            water_interval_mins: 45,
             persistence_enabled: false,
         };
         st.sync_switches_immediate();
@@ -2600,8 +2493,9 @@ impl AppState {
     }
 
     pub fn set_mode(&mut self, mode: NotchMode) {
-        if self.mode != mode {
+        if self.mode != mode || self.show_notif_history {
             self.mode = mode;
+            self.show_notif_history = false;
             self.hover_target_idx = None;
             self.hover_slots = [0.0; 48];
         }
@@ -2620,11 +2514,19 @@ impl AppState {
             0 => self.mem_reduct.clean_working_sets = !self.mem_reduct.clean_working_sets,
             1 => self.mem_reduct.clean_system_ws = !self.mem_reduct.clean_system_ws,
             2 => self.mem_reduct.clean_standby_list = !self.mem_reduct.clean_standby_list,
-            3 => self.mem_reduct.clean_modified_page_list = !self.mem_reduct.clean_modified_page_list,
+            3 => {
+                self.mem_reduct.clean_modified_page_list = !self.mem_reduct.clean_modified_page_list
+            }
             4 => self.mem_reduct.clean_standby_low = !self.mem_reduct.clean_standby_low,
-            5 => self.mem_reduct.clean_modified_file_cache = !self.mem_reduct.clean_modified_file_cache,
+            5 => {
+                self.mem_reduct.clean_modified_file_cache =
+                    !self.mem_reduct.clean_modified_file_cache
+            }
             6 => self.mem_reduct.clean_registry_cache = !self.mem_reduct.clean_registry_cache,
-            7 => self.mem_reduct.clean_combine_memory_lists = !self.mem_reduct.clean_combine_memory_lists,
+            7 => {
+                self.mem_reduct.clean_combine_memory_lists =
+                    !self.mem_reduct.clean_combine_memory_lists
+            }
             _ => {}
         }
         self.save_config();
@@ -2680,8 +2582,6 @@ impl AppState {
         self.hide_in_fullscreen = true;
         self.show_mascot = true;
         self.progress_arc_enabled = true;
-        self.health_reminders_enabled = true;
-        self.motion_preset = MotionPreset::Gentle;
         self.fps_cap = 0;
         self.micro_interactions = true;
         self.equalizer_enabled = true;
@@ -2706,12 +2606,6 @@ impl AppState {
         self.capture_to_clipboard = true;
         self.screentime_enabled = true;
         self.chime_enabled = true;
-        self.water_interval_mins = 45;
-        self.move_reminder_mins = 0;
-        self.default_focus_mins = 25;
-        self.default_break_mins = 5;
-        self.water.goal_ml = 1500;
-        self.water.glass_ml = 250;
         self.mem_reduct.clean_working_sets = true;
         self.mem_reduct.clean_system_ws = true;
         self.mem_reduct.clean_standby_list = true;
@@ -2727,10 +2621,6 @@ impl AppState {
         self.x_offset = 0;
         self.y_offset = 0;
         self.reset_anchor_for_placement();
-        if self.motion_preset == MotionPreset::Reduced {
-            self.anim_anchor_x = self.target_anchor_x;
-            self.anim_anchor_y = self.target_anchor_y;
-        }
         if self.is_hovered {
             self.target_width = self.expanded_width();
             self.target_height = self.expanded_height();
@@ -2738,97 +2628,229 @@ impl AppState {
             self.target_width = self.idle_width();
             self.target_height = self.idle_height();
         }
-        self.save_water();
         self.save_config();
     }
 
-    pub fn drink_water(&mut self, ml: u32) {
-        let today = Local::now().format("%Y-%m-%d").to_string();
-        if self.water.date != today {
-            self.water.date = today;
-            self.water.taken_ml = 0;
-        }
-        self.water.taken_ml = (self.water.taken_ml + ml).min(6000);
-        self.save_water();
-        self.set_notification(
-            format!("Hydrated +{} ml", ml),
-            format!("Daily goal: {} / {} ml", self.water.taken_ml, self.water.goal_ml),
-            NotificationKind::Water,
-            true,
-        );
-    }
-
-    pub fn set_notification(&mut self, title: String, subtitle: String, kind: NotificationKind, is_success: bool) {
+    pub fn set_notification(
+        &mut self,
+        title: String,
+        subtitle: String,
+        kind: NotificationKind,
+        is_success: bool,
+    ) {
         if !self.notifications_enabled {
             return;
         }
         let app_name = match kind {
             NotificationKind::SystemToast => "Windows".to_string(),
-            NotificationKind::Water => "Hydration".to_string(),
             NotificationKind::MemoryPurge => "MemReduct".to_string(),
             NotificationKind::Capture => "Capture".to_string(),
             NotificationKind::Pasted => "Shelf".to_string(),
             NotificationKind::General => "CyNotch".to_string(),
         };
         let secs = self.notification_secs.clamp(2, 10);
+        let now = Instant::now();
         self.notification = Some(NotificationBanner {
             app_name,
+            aumid: None,
             title,
             subtitle,
             kind,
             is_success,
             total_secs: secs as f32,
-            expires_at: Instant::now() + std::time::Duration::from_secs(secs as u64),
+            expires_at: now + std::time::Duration::from_secs(secs as u64),
+            grouped_count: 1,
+            received_at: now,
         });
+        self.anim_notif_t = 0.0;
         self.sync_collapsed_targets();
     }
 
     pub fn set_system_toast(&mut self, app_name: String, title: String, subtitle: String) {
+        self.set_system_toast_with_aumid(app_name, title, subtitle, None);
+    }
+
+    pub fn set_system_toast_with_aumid(
+        &mut self,
+        app_name: String,
+        title: String,
+        subtitle: String,
+        aumid: Option<String>,
+    ) {
         if !self.notifications_enabled {
             return;
         }
+        let now = Instant::now();
         let secs = self.notification_secs.clamp(2, 10).max(4);
         self.notification = Some(NotificationBanner {
             app_name,
+            aumid,
             title,
             subtitle,
             kind: NotificationKind::SystemToast,
             is_success: true,
             total_secs: secs as f32,
-            expires_at: Instant::now() + std::time::Duration::from_secs(secs as u64),
+            expires_at: now + std::time::Duration::from_secs(secs as u64),
+            grouped_count: 1,
+            received_at: now,
         });
+        self.anim_notif_t = 0.0;
         self.sync_collapsed_targets();
     }
 
-    pub fn set_water_reminder(&mut self) {
-        if !self.health_reminders_enabled {
-            return;
+    fn same_notif_source(
+        a_app: &str,
+        a_aumid: Option<&str>,
+        b_app: &str,
+        b_aumid: Option<&str>,
+    ) -> bool {
+        if let (Some(aa), Some(ba)) = (a_aumid, b_aumid)
+            && !aa.is_empty()
+            && !ba.is_empty()
+        {
+            return aa.eq_ignore_ascii_case(ba);
         }
-        self.set_notification(
-            "Time for some water".to_string(),
-            format!("{} / {} ml today â€¢ Click to log +{} ml", self.water.taken_ml, self.water.goal_ml, self.water.glass_ml),
-            NotificationKind::Water,
-            true,
-        );
+        a_app.eq_ignore_ascii_case(b_app)
     }
 
-    pub fn set_move_reminder(&mut self) {
-        if !self.health_reminders_enabled {
+    pub fn record_notif_history(
+        &mut self,
+        app_name: String,
+        aumid: Option<String>,
+        title: String,
+        subtitle: String,
+    ) {
+        self.notif_history.push_front(NotifHistoryEntry {
+            app_name,
+            aumid,
+            title,
+            subtitle,
+            received_at: Instant::now(),
+        });
+        while self.notif_history.len() > 20 {
+            self.notif_history.pop_back();
+        }
+    }
+
+    /// Enqueues a system toast with per-app coalescing and history recording.
+    pub fn push_system_toast(
+        &mut self,
+        app_name: String,
+        title: String,
+        subtitle: String,
+        aumid: Option<String>,
+    ) {
+        self.record_notif_history(
+            app_name.clone(),
+            aumid.clone(),
+            title.clone(),
+            subtitle.clone(),
+        );
+        if !self.notifications_enabled {
             return;
         }
-        self.set_notification(
-            "Posture & Stretch Check".to_string(),
-            format!("Every {}m â€¢ Stand up and rest your eyes", self.move_reminder_mins),
-            NotificationKind::General,
-            true,
-        );
+        let now = Instant::now();
+        let secs = self.notification_secs.clamp(2, 10).max(4);
+        let expires_at = now + std::time::Duration::from_secs(secs as u64);
+
+        // Coalesce with the currently displayed banner if it came from the same source app.
+        if let Some(ref mut active) = self.notification
+            && active.kind == NotificationKind::SystemToast
+            && Self::same_notif_source(
+                &active.app_name,
+                active.aumid.as_deref(),
+                &app_name,
+                aumid.as_deref(),
+            )
+        {
+            active.title = title;
+            active.subtitle = subtitle;
+            active.grouped_count = active.grouped_count.saturating_add(1);
+            active.total_secs = secs as f32;
+            active.expires_at = expires_at;
+            active.received_at = now;
+            self.anim_notif_t = self.anim_notif_t.min(0.86);
+            return;
+        }
+
+        // If no banner is currently visible, show immediately with full slide-in.
+        if self.notification.is_none() {
+            self.notification = Some(NotificationBanner {
+                app_name,
+                aumid,
+                title,
+                subtitle,
+                kind: NotificationKind::SystemToast,
+                is_success: true,
+                total_secs: secs as f32,
+                expires_at,
+                grouped_count: 1,
+                received_at: now,
+            });
+            self.anim_notif_t = 0.0;
+            self.sync_collapsed_targets();
+            return;
+        }
+
+        // Otherwise coalesce into an existing queued entry for the same app, or enqueue.
+        if let Some(queued) = self.notif_queue.iter_mut().find(|q| {
+            Self::same_notif_source(&q.app_name, q.aumid.as_deref(), &app_name, aumid.as_deref())
+        }) {
+            queued.title = title;
+            queued.subtitle = subtitle;
+            queued.grouped_count = queued.grouped_count.saturating_add(1);
+            queued.total_secs = secs as f32;
+            queued.expires_at = expires_at;
+            queued.received_at = now;
+            return;
+        }
+
+        if self.notif_queue.len() >= 12 {
+            self.notif_queue.pop_front();
+        }
+        self.notif_queue.push_back(NotificationBanner {
+            app_name,
+            aumid,
+            title,
+            subtitle,
+            kind: NotificationKind::SystemToast,
+            is_success: true,
+            total_secs: secs as f32,
+            expires_at,
+            grouped_count: 1,
+            received_at: now,
+        });
+    }
+
+    /// Advances to the next queued notification (keeping the banner seamlessly open),
+    /// or collapses back to idle if the queue is empty. Returns true if a queued banner became active.
+    pub fn advance_notification_queue(&mut self) -> bool {
+        if let Some(mut next) = self.notif_queue.pop_front() {
+            let secs = self.notification_secs.clamp(2, 10).max(4);
+            let now = Instant::now();
+            next.total_secs = secs as f32;
+            next.expires_at = now + std::time::Duration::from_secs(secs as u64);
+            let was_open = self.notification.is_some();
+            self.notification = Some(next);
+            self.anim_notif_t = if was_open { 0.78 } else { 0.0 };
+            self.sync_collapsed_targets();
+            true
+        } else {
+            self.notification = None;
+            self.sync_collapsed_targets();
+            false
+        }
     }
 
     pub fn push_clipboard(&mut self, text: String, app_name: &str) {
         let words = text.split_whitespace().count();
-        self.quick_note = format!("{} words Â· {}", words, app_name);
+        self.quick_note = format!("{} words · {}", words, app_name);
         let single_line = text.lines().next().unwrap_or(&text).trim().to_string();
-        if !self.shelf_items.iter().any(|s| s.kind == ShelfKind::Text && s.payload == text) {
+        if !self
+            .shelf_items
+            .iter()
+            .any(|s| s.kind == ShelfKind::Text && s.payload == text)
+        {
             self.shelf_items.insert(
                 0,
                 ShelfItem {
@@ -2843,7 +2865,12 @@ impl AppState {
             self.shelf_scroll = 0;
             self.save_shelf();
         }
-        self.set_notification("Pasted".to_string(), self.quick_note.clone(), NotificationKind::Pasted, true);
+        self.set_notification(
+            "Pasted".to_string(),
+            self.quick_note.clone(),
+            NotificationKind::Pasted,
+            true,
+        );
     }
 
     pub fn push_dropped_file(&mut self, full_path: String) {
@@ -2852,7 +2879,11 @@ impl AppState {
             .and_then(|s| s.to_str())
             .unwrap_or(&full_path)
             .to_string();
-        if !self.shelf_items.iter().any(|s| s.kind == ShelfKind::File && s.payload == full_path) {
+        if !self
+            .shelf_items
+            .iter()
+            .any(|s| s.kind == ShelfKind::File && s.payload == full_path)
+        {
             self.shelf_items.insert(
                 0,
                 ShelfItem {
@@ -2875,70 +2906,21 @@ impl AppState {
         );
     }
 
-    pub fn on_focus_second_tick(&mut self) -> bool {
-        if self.timer.is_running && self.timer.remaining_secs > 0 {
-            self.timer.remaining_secs = self.timer.remaining_secs.saturating_sub(1);
-            if self.timer.remaining_secs == 0 {
-                if !self.timer.is_break {
-                    // Focus finished -> increment cycle & auto-switch to Break
-                    self.timer.cycles_completed += 1;
-                    self.timer.is_break = true;
-                    let brk = self.default_break_mins.max(1);
-                    self.timer.total_secs = brk * 60;
-                    self.timer.remaining_secs = brk * 60;
-                    self.timer.is_running = false;
-                    self.set_notification(
-                        "Focus Session Done!".to_string(),
-                        format!("Cycle #{} complete â€¢ {}m Break ready", self.timer.cycles_completed, brk),
-                        NotificationKind::General,
-                        true,
-                    );
-                } else {
-                    // Break finished -> reset to Deep Work
-                    self.timer.is_break = false;
-                    let foc = self.default_focus_mins.max(5);
-                    self.timer.total_secs = foc * 60;
-                    self.timer.remaining_secs = foc * 60;
-                    self.timer.is_running = false;
-                    self.set_notification(
-                        "Break Finished".to_string(),
-                        format!("Ready for the next {}m Deep Work sprint", foc),
-                        NotificationKind::General,
-                        true,
-                    );
-                }
-                return true;
-            }
-        }
-        false
-    }
-
-    pub fn toggle_timer_phase(&mut self) {
-        self.timer.is_running = false;
-        self.timer.is_break = !self.timer.is_break;
-        let mins = if self.timer.is_break {
-            self.default_break_mins.max(1)
-        } else {
-            self.default_focus_mins.max(5)
-        };
-        self.timer.total_secs = mins * 60;
-        self.timer.remaining_secs = mins * 60;
-    }
-
     pub fn expire_notification(&mut self) -> bool {
         let now = Instant::now();
         let mut changed = false;
         if let Some(ref notif) = self.notification
-            && now >= notif.expires_at {
-                self.notification = None;
-                self.sync_collapsed_targets();
-                changed = true;
-            }
+            && now >= notif.expires_at
+        {
+            self.advance_notification_queue();
+            changed = true;
+        }
         if let Some(until) = self.purge_anim_until
-            && now >= until {
-                self.purge_anim_until = None;
-                changed = true;
-            }
+            && now >= until
+        {
+            self.purge_anim_until = None;
+            changed = true;
+        }
         changed
     }
 
@@ -2950,10 +2932,6 @@ impl AppState {
             MascotMood::Purging
         } else if matches!(&self.notification, Some(n) if n.kind == NotificationKind::Capture) {
             MascotMood::Capture
-        } else if matches!(&self.notification, Some(n) if n.kind == NotificationKind::Water) {
-            MascotMood::Hydrate
-        } else if self.timer.is_running {
-            MascotMood::Focus
         } else if self.media.is_playing {
             MascotMood::Music
         } else {
@@ -2968,7 +2946,9 @@ impl AppState {
             match self.mode {
                 NotchMode::Home => true,
                 NotchMode::Music => self.show_mascot && self.media.is_playing,
-                NotchMode::MemReduct => self.show_mascot && self.mascot_mood() == MascotMood::Purging,
+                NotchMode::MemReduct => {
+                    self.show_mascot && self.mascot_mood() == MascotMood::Purging
+                }
                 _ => false,
             }
         }
@@ -2979,28 +2959,33 @@ impl AppState {
         (self.target_width - self.current_width).abs() >= 0.5
             || (self.target_height - self.current_height).abs() >= 0.5
             || (expand_target - self.anim_expand_t).abs() >= 0.01
+            || (self.notification.is_some()
+                && !self.is_hovered
+                && (1.0 - self.anim_notif_t).abs() >= 0.01)
             || (self.target_anchor_x - self.anim_anchor_x).abs() >= 0.01
             || (self.target_anchor_y - self.anim_anchor_y).abs() >= 0.01
     }
 
     pub fn is_micro_animating(&self) -> bool {
-        if !self.micro_interactions || self.motion_preset == MotionPreset::Reduced {
+        if !self.micro_interactions {
             return false;
         }
         let (dx, dw) = self.active_dock_target();
         if (dx - self.anim_dock_x).abs() >= 0.35 || (dw - self.anim_dock_w).abs() >= 0.35 {
             return true;
         }
-        let water_t = (self.water.taken_ml as f32 / self.water.goal_ml.max(1) as f32).clamp(0.0, 1.0);
         let ram_t = (self.telemetry.memory_percent / 100.0).clamp(0.0, 1.0);
         if (self.volume_pct.clamp(0.0, 1.0) - self.anim_vol_pct).abs() >= 0.005
-            || (water_t - self.anim_water_pct).abs() >= 0.005
             || (ram_t - self.anim_ram_pct).abs() >= 0.005
         {
             return true;
         }
         for (i, &val) in self.hover_slots.iter().enumerate() {
-            let tgt = if self.hover_target_idx == Some(i) { 1.0 } else { 0.0 };
+            let tgt = if self.hover_target_idx == Some(i) {
+                1.0
+            } else {
+                0.0
+            };
             if (tgt - val).abs() >= 0.015 {
                 return true;
             }
@@ -3009,9 +2994,6 @@ impl AppState {
     }
 
     pub fn is_settings_animating(&self) -> bool {
-        if self.motion_preset == MotionPreset::Reduced {
-            return false;
-        }
         for id in ToggleId::ALL {
             let tgt = if self.toggle_target(id) { 1.0 } else { 0.0 };
             if (tgt - self.switch_t[id as usize]).abs() >= 0.01 {
@@ -3020,7 +3002,11 @@ impl AppState {
         }
         if self.micro_interactions {
             for (i, &val) in self.settings_hover_slots.iter().enumerate() {
-                let tgt = if self.settings_hover_idx == Some(i) { 1.0 } else { 0.0 };
+                let tgt = if self.settings_hover_idx == Some(i) {
+                    1.0
+                } else {
+                    0.0
+                };
                 if (tgt - val).abs() >= 0.015 {
                     return true;
                 }
@@ -3042,7 +3028,7 @@ impl AppState {
             return false;
         }
         if !self.is_hovered {
-            self.notification.is_none() && !self.timer.is_running
+            self.notification.is_none()
         } else {
             self.mode == NotchMode::Music && !self.show_lyrics
         }
@@ -3053,8 +3039,6 @@ impl AppState {
         let act = self.desired_active_interval_ms();
         if self.is_size_moving() || self.is_micro_animating() || self.mem_reduct.is_purging {
             Some(act)
-        } else if self.motion_preset == MotionPreset::Reduced {
-            None
         } else {
             let mascot_vis = self.is_mascot_visible();
             let mood = self.mascot_mood();
@@ -3063,10 +3047,7 @@ impl AppState {
                 Some(act.min(16))
             } else if mascot_vis && mood == MascotMood::Capture {
                 Some(if high_refresh { act } else { 20 })
-            } else if self.is_equalizer_visible()
-                || (mascot_vis
-                    && matches!(mood, MascotMood::Music | MascotMood::Focus | MascotMood::Hydrate))
-            {
+            } else if self.is_equalizer_visible() || (mascot_vis && mood == MascotMood::Music) {
                 Some(if high_refresh { act } else { act.max(20) })
             } else if mascot_vis {
                 Some(if high_refresh { act } else { 28 })
@@ -3080,112 +3061,86 @@ impl AppState {
         self.anim_time += dt;
         let expired = self.expire_notification();
 
-        let (k_size, k_fast) = match self.motion_preset {
-            MotionPreset::Gentle => (15.0, 18.0),
-            MotionPreset::Balanced => (22.0, 26.0),
-            MotionPreset::Reduced => (1000.0, 1000.0),
-        };
+        let (k_size, k_fast) = (22.0, 26.0);
 
         let mut moved = false;
-        if self.motion_preset == MotionPreset::Reduced {
-            if (self.target_width - self.current_width).abs() > 0.01
-                || (self.target_height - self.current_height).abs() > 0.01
-            {
-                self.current_width = self.target_width;
-                self.current_height = self.target_height;
-                moved = true;
-            }
-            let et = if self.is_hovered { 1.0 } else { 0.0 };
-            if (et - self.anim_expand_t).abs() > 0.005 {
-                self.anim_expand_t = et;
-                moved = true;
-            }
-            if (self.target_anchor_x - self.anim_anchor_x).abs() > 0.005
-                || (self.target_anchor_y - self.anim_anchor_y).abs() > 0.005
-            {
-                self.anim_anchor_x = self.target_anchor_x;
-                self.anim_anchor_y = self.target_anchor_y;
-                moved = true;
-            }
-            let (dx, dw) = self.active_dock_target();
-            self.anim_dock_x = dx;
-            self.anim_dock_w = dw;
-            self.anim_vol_pct = self.volume_pct.clamp(0.0, 1.0);
-            self.anim_water_pct = (self.water.taken_ml as f32 / self.water.goal_ml.max(1) as f32).clamp(0.0, 1.0);
-            self.anim_ram_pct = (self.telemetry.memory_percent / 100.0).clamp(0.0, 1.0);
-            for (i, slot) in self.hover_slots.iter_mut().enumerate() {
-                *slot = if self.hover_target_idx == Some(i) { 1.0 } else { 0.0 };
-            }
+        let banner_sliding = self.notification.is_some() && !self.is_hovered;
+        let (nw, mw, nh, mh) = if banner_sliding {
+            // Snap to full banner size immediately so the banner slides in from the
+            // notch's edge instead of scaling from small to large.
+            let w_chg = (self.target_width - self.current_width).abs() > 0.5;
+            let h_chg = (self.target_height - self.current_height).abs() > 0.5;
+            (self.target_width, w_chg, self.target_height, h_chg)
         } else {
             let (nw, mw) = ease_exp(self.current_width, self.target_width, k_size, dt, 0.5);
             let (nh, mh) = ease_exp(self.current_height, self.target_height, k_size, dt, 0.5);
-            self.current_width = nw;
-            self.current_height = nh;
-            let expand_tgt = if self.is_hovered { 1.0 } else { 0.0 };
-            let (nt, mt) = ease_exp(self.anim_expand_t, expand_tgt, k_size, dt, 0.008);
-            self.anim_expand_t = nt;
-            let (nax, max_chg) = ease_exp(self.anim_anchor_x, self.target_anchor_x, k_fast, dt, 0.005);
-            let (nay, may_chg) = ease_exp(self.anim_anchor_y, self.target_anchor_y, k_fast, dt, 0.005);
-            self.anim_anchor_x = nax;
-            self.anim_anchor_y = nay;
-            moved |= mw || mh || mt || max_chg || may_chg;
+            (nw, mw, nh, mh)
+        };
+        self.current_width = nw;
+        self.current_height = nh;
+        let mut m_notif = false;
+        if banner_sliding {
+            let (nn, mn) = ease_exp(self.anim_notif_t, 1.0, k_fast, dt, 0.005);
+            self.anim_notif_t = nn;
+            m_notif = mn;
+        } else if self.notification.is_none() {
+            self.anim_notif_t = 0.0;
+        }
+        let expand_tgt = if self.is_hovered { 1.0 } else { 0.0 };
+        let (nt, mt) = ease_exp(self.anim_expand_t, expand_tgt, k_size, dt, 0.008);
+        self.anim_expand_t = nt;
+        let (nax, max_chg) = ease_exp(self.anim_anchor_x, self.target_anchor_x, k_fast, dt, 0.005);
+        let (nay, may_chg) = ease_exp(self.anim_anchor_y, self.target_anchor_y, k_fast, dt, 0.005);
+        self.anim_anchor_x = nax;
+        self.anim_anchor_y = nay;
+        moved |= mw || mh || mt || m_notif || max_chg || may_chg;
 
-            let (dx_tgt, dw_tgt) = self.active_dock_target();
-            if self.micro_interactions {
-                let (ndx, mdx) = ease_exp(self.anim_dock_x, dx_tgt, k_fast, dt, 0.35);
-                let (ndw, mdw) = ease_exp(self.anim_dock_w, dw_tgt, k_fast, dt, 0.35);
-                self.anim_dock_x = ndx;
-                self.anim_dock_w = ndw;
+        let (dx_tgt, dw_tgt) = self.active_dock_target();
+        if self.micro_interactions {
+            let (ndx, mdx) = ease_exp(self.anim_dock_x, dx_tgt, k_fast, dt, 0.35);
+            let (ndw, mdw) = ease_exp(self.anim_dock_w, dw_tgt, k_fast, dt, 0.35);
+            self.anim_dock_x = ndx;
+            self.anim_dock_w = ndw;
 
-                let (nv, mv) = ease_exp(self.anim_vol_pct, self.volume_pct.clamp(0.0, 1.0), k_fast, dt, 0.004);
-                let wt = (self.water.taken_ml as f32 / self.water.goal_ml.max(1) as f32).clamp(0.0, 1.0);
-                let (nwa, mwa) = ease_exp(self.anim_water_pct, wt, k_fast * 0.85, dt, 0.004);
-                let rt = (self.telemetry.memory_percent / 100.0).clamp(0.0, 1.0);
-                let (nr, mr) = ease_exp(self.anim_ram_pct, rt, k_fast * 0.85, dt, 0.004);
-                self.anim_vol_pct = nv;
-                self.anim_water_pct = nwa;
-                self.anim_ram_pct = nr;
-                moved |= mdx || mdw || mv || mwa || mr;
+            let (nv, mv) = ease_exp(
+                self.anim_vol_pct,
+                self.volume_pct.clamp(0.0, 1.0),
+                k_fast,
+                dt,
+                0.004,
+            );
+            let rt = (self.telemetry.memory_percent / 100.0).clamp(0.0, 1.0);
+            let (nr, mr) = ease_exp(self.anim_ram_pct, rt, k_fast * 0.85, dt, 0.004);
+            self.anim_vol_pct = nv;
+            self.anim_ram_pct = nr;
+            moved |= mdx || mdw || mv || mr;
 
-                for (i, slot) in self.hover_slots.iter_mut().enumerate() {
-                    let tgt = if self.hover_target_idx == Some(i) { 1.0 } else { 0.0 };
-                    let (next, chg) = ease_exp(*slot, tgt, k_fast * 1.1, dt, 0.012);
-                    *slot = next;
-                    moved |= chg;
-                }
-            } else {
-                self.anim_dock_x = dx_tgt;
-                self.anim_dock_w = dw_tgt;
-                self.anim_vol_pct = self.volume_pct.clamp(0.0, 1.0);
-                self.anim_water_pct = (self.water.taken_ml as f32 / self.water.goal_ml.max(1) as f32).clamp(0.0, 1.0);
-                self.anim_ram_pct = (self.telemetry.memory_percent / 100.0).clamp(0.0, 1.0);
+            for (i, slot) in self.hover_slots.iter_mut().enumerate() {
+                let tgt = if self.hover_target_idx == Some(i) {
+                    1.0
+                } else {
+                    0.0
+                };
+                let (next, chg) = ease_exp(*slot, tgt, k_fast * 1.1, dt, 0.012);
+                *slot = next;
+                moved |= chg;
             }
+        } else {
+            self.anim_dock_x = dx_tgt;
+            self.anim_dock_w = dw_tgt;
+            self.anim_vol_pct = self.volume_pct.clamp(0.0, 1.0);
+            self.anim_ram_pct = (self.telemetry.memory_percent / 100.0).clamp(0.0, 1.0);
         }
 
         // Redraw on active morphs, equalizer, expiration, or continuous mascot animations.
-        let mascot_anim = self.motion_preset != MotionPreset::Reduced && self.is_mascot_visible();
+        let mascot_anim = self.is_mascot_visible();
         moved || self.is_equalizer_visible() || mascot_anim || self.mem_reduct.is_purging || expired
     }
 
     pub fn update_settings_animation(&mut self, dt: f32) -> bool {
-        let k = match self.motion_preset {
-            MotionPreset::Gentle => 18.0,
-            MotionPreset::Balanced => 25.0,
-            MotionPreset::Reduced => 1000.0,
-        };
+        let k = 25.0;
         let mut changed = false;
         let cat_tgt = Self::settings_cat_pill_y(self.settings_category);
-        if self.motion_preset == MotionPreset::Reduced {
-            if (cat_tgt - self.anim_settings_cat_y).abs() > 0.1 {
-                self.anim_settings_cat_y = cat_tgt;
-                changed = true;
-            }
-            self.sync_switches_immediate();
-            for (i, slot) in self.settings_hover_slots.iter_mut().enumerate() {
-                *slot = if self.settings_hover_idx == Some(i) { 1.0 } else { 0.0 };
-            }
-            return changed;
-        }
 
         self.anim_settings_cat_y = cat_tgt;
 
@@ -3198,7 +3153,11 @@ impl AppState {
 
         if self.micro_interactions {
             for (i, slot) in self.settings_hover_slots.iter_mut().enumerate() {
-                let tgt = if self.settings_hover_idx == Some(i) { 1.0 } else { 0.0 };
+                let tgt = if self.settings_hover_idx == Some(i) {
+                    1.0
+                } else {
+                    0.0
+                };
                 let (next, chg) = ease_exp(*slot, tgt, k * 1.35, dt, 0.012);
                 *slot = next;
                 changed |= chg;
@@ -3208,11 +3167,24 @@ impl AppState {
     }
 
     pub fn sync_preview_settled(&mut self) {
-        self.target_width = if self.is_hovered { self.expanded_width() } else { self.collapsed_width() };
-        self.target_height = if self.is_hovered { self.expanded_height() } else { self.collapsed_height() };
+        self.target_width = if self.is_hovered {
+            self.expanded_width()
+        } else {
+            self.collapsed_width()
+        };
+        self.target_height = if self.is_hovered {
+            self.expanded_height()
+        } else {
+            self.collapsed_height()
+        };
         self.current_width = self.target_width;
         self.current_height = self.target_height;
         self.anim_expand_t = if self.is_hovered { 1.0 } else { 0.0 };
+        self.anim_notif_t = if self.notification.is_some() {
+            1.0
+        } else {
+            0.0
+        };
         self.anim_anchor_x = self.target_anchor_x;
         self.anim_anchor_y = self.target_anchor_y;
         let (dx, dw) = self.active_dock_target();
@@ -3220,7 +3192,6 @@ impl AppState {
         self.anim_dock_w = dw;
         self.anim_settings_cat_y = Self::settings_cat_pill_y(self.settings_category);
         self.anim_vol_pct = self.volume_pct.clamp(0.0, 1.0);
-        self.anim_water_pct = (self.water.taken_ml as f32 / self.water.goal_ml.max(1) as f32).clamp(0.0, 1.0);
         self.anim_ram_pct = (self.telemetry.memory_percent / 100.0).clamp(0.0, 1.0);
         self.sync_switches_immediate();
     }
@@ -3230,12 +3201,12 @@ impl AppState {
         let priv_lbl = if res.is_elevated { "Admin" } else { "User" };
         self.mem_reduct.last_cleaned_status = if res.kernel_caches_purged {
             format!(
-                "{} procs + kernel â€¢ {:.0} MB ({}%->{}%)",
+                "{} procs + kernel • {:.0} MB ({}%->{}%)",
                 res.trimmed_processes, res.freed_mb, res.old_load_pct, res.new_load_pct
             )
         } else {
             format!(
-                "{} procs ({}) â€¢ {:.0} MB ({}%->{}%)",
+                "{} procs ({}) • {:.0} MB ({}%->{}%)",
                 res.trimmed_processes, priv_lbl, res.freed_mb, res.old_load_pct, res.new_load_pct
             )
         };
@@ -3250,7 +3221,7 @@ impl AppState {
             self.set_notification(
                 "Memory Cleaned".to_string(),
                 format!(
-                    "{:.0} MB freed ({}% -> {}%) â€¢ {}",
+                    "{:.0} MB freed ({}% -> {}%) • {}",
                     res.freed_mb, res.old_load_pct, res.new_load_pct, priv_lbl
                 ),
                 NotificationKind::MemoryPurge,

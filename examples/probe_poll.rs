@@ -15,8 +15,8 @@ fn ms(f: impl FnOnce()) -> f64 {
 
 /// Process CPU time in ms (probe is single-threaded, so this is the call's CPU cost).
 fn cpu_ms() -> f64 {
-    use windows::Win32::System::Threading::{GetCurrentProcess, GetProcessTimes};
     use windows::Win32::Foundation::FILETIME;
+    use windows::Win32::System::Threading::{GetCurrentProcess, GetProcessTimes};
     unsafe {
         let (mut c, mut e, mut k, mut u) = (
             FILETIME::default(),
@@ -41,7 +41,10 @@ fn watch(secs: u64) {
         println!("no listener");
         return;
     };
-    if listener.RequestAccessAsync().ok().and_then(|o| o.get().ok())
+    if listener
+        .RequestAccessAsync()
+        .ok()
+        .and_then(|o| o.get().ok())
         != Some(
             windows::UI::Notifications::Management::UserNotificationListenerAccessStatus::Allowed,
         )
@@ -85,8 +88,8 @@ fn watch(secs: u64) {
 /// Removes only the toasts created by this probe ("CyNotch probe" in the title),
 /// so benchmarking never counts the test load or pollutes the user's Action Center.
 fn clean_probe_toasts() {
-    use windows::UI::Notifications::NotificationKinds;
     use windows::UI::Notifications::Management::UserNotificationListener;
+    use windows::UI::Notifications::NotificationKinds;
     let Ok(l) = UserNotificationListener::Current() else {
         return;
     };
@@ -128,7 +131,10 @@ fn split() {
         return;
     };
     let fetch = || -> Option<_> {
-        l.GetNotificationsAsync(NotificationKinds::Toast).ok()?.get().ok()
+        l.GetNotificationsAsync(NotificationKinds::Toast)
+            .ok()?
+            .get()
+            .ok()
     };
     struct Row {
         n: u32,
@@ -178,8 +184,14 @@ fn split() {
     }
     let avg = |f: fn(&Row) -> f64| rows.iter().map(f).sum::<f64>() / rows.len() as f64;
     println!("toasts          : {}", avg(|r| r.n as f64));
-    println!("GetNotificationsAsync().get() : {:>7.2} ms", avg(|r| r.fetch));
-    println!("list.Size()                   : {:>7.2} ms", avg(|r| r.size));
+    println!(
+        "GetNotificationsAsync().get() : {:>7.2} ms",
+        avg(|r| r.fetch)
+    );
+    println!(
+        "list.Size()                   : {:>7.2} ms",
+        avg(|r| r.size)
+    );
     println!("GetAt(i) + Id() for all       : {:>7.2} ms", avg(|r| r.ids));
     println!(
         "GetAt(i) + Notification().Visual().Bindings() : {:>7.2} ms",
@@ -236,7 +248,7 @@ fn list_toasts() {
 /// with the DB-signature-gated one. Prints CPU time, which is what the change targets.
 fn sim_loop(secs: u64) {
     use cynotch::notifications::{
-        notifications_db_signature, should_poll_toasts, SystemNotificationBridge,
+        SystemNotificationBridge, notifications_db_signature, should_poll_toasts,
     };
 
     let mut bridge = SystemNotificationBridge::new();
@@ -274,8 +286,14 @@ fn sim_loop(secs: u64) {
     let old = run(&mut bridge, secs, false);
     let new = run(&mut bridge, secs, true);
     let pct = |ms: f64| ms / (secs as f64 * 1000.0) * 100.0;
-    println!("old (blind 1 Hz poll) : {old:8.1} ms CPU in {secs}s = {:5.2}% of one core", pct(old));
-    println!("new (signature gated) : {new:8.1} ms CPU in {secs}s = {:5.2}% of one core", pct(new));
+    println!(
+        "old (blind 1 Hz poll) : {old:8.1} ms CPU in {secs}s = {:5.2}% of one core",
+        pct(old)
+    );
+    println!(
+        "new (signature gated) : {new:8.1} ms CPU in {secs}s = {:5.2}% of one core",
+        pct(new)
+    );
     println!("(the remaining new cost is the forced 5 s safety poll)");
     if old > 0.0 {
         println!("saving: {:.0}%", (1.0 - new / old) * 100.0);
@@ -286,7 +304,7 @@ fn main() {
     let mut args = std::env::args().skip(1);
     let iters: u32 = args.next().and_then(|v| v.parse().ok()).unwrap_or(5);
     unsafe {
-        use windows::Win32::System::Com::{CoInitializeEx, COINIT_MULTITHREADED};
+        use windows::Win32::System::Com::{COINIT_MULTITHREADED, CoInitializeEx};
         let _ = CoInitializeEx(None, COINIT_MULTITHREADED);
     }
     if std::env::args().any(|a| a == "--sim-loop") {
@@ -396,9 +414,6 @@ fn main() {
     }
     println!(
         "TOTAL poll thread   {:>8.2}% of one core",
-        per(media_ms) * 0.2
-            + per(audio_ms) * 0.2
-            + per(telem_ms) * 0.1
-            + per(notif_ms) * 0.1
+        per(media_ms) * 0.2 + per(audio_ms) * 0.2 + per(telem_ms) * 0.1 + per(notif_ms) * 0.1
     );
 }

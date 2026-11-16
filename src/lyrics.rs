@@ -1,7 +1,10 @@
 use crate::models::LyricLine;
 
 pub fn fetch_lyrics(track_title: &str, artist_name: &str) -> Vec<LyricLine> {
-    if track_title.is_empty() || track_title == "No media active" || track_title == "No Media Playing" {
+    if track_title.is_empty()
+        || track_title == "No media active"
+        || track_title == "No Media Playing"
+    {
         return Vec::new();
     }
 
@@ -52,12 +55,13 @@ pub fn parse_lrc(lrc_text: &str) -> Vec<LyricLine> {
             let text = trimmed[close_bracket + 1..].trim();
 
             if let Some(secs) = parse_timestamp(timestamp_str)
-                && !text.is_empty() {
-                    lines.push(LyricLine {
-                        seconds: secs,
-                        text: text.to_string(),
-                    });
-                }
+                && !text.is_empty()
+            {
+                lines.push(LyricLine {
+                    seconds: secs,
+                    text: text.to_string(),
+                });
+            }
         }
     }
 

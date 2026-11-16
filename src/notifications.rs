@@ -3,20 +3,34 @@
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, HashSet};
 use std::path::PathBuf;
-use windows::core::{HSTRING, PCWSTR, PWSTR};
 use windows::Foundation::IReference;
 use windows::UI::Notifications::Management::{
     UserNotificationListener, UserNotificationListenerAccessStatus,
 };
 use windows::UI::Notifications::{KnownNotificationBindings, NotificationKinds};
-use windows::Win32::Foundation::{ERROR_NO_MORE_ITEMS, ERROR_SUCCESS, FILETIME};
-use windows::Win32::System::Registry::{
-    RegCloseKey, RegDeleteValueW, RegEnumKeyExW, RegOpenKeyExW, RegQueryValueExW, RegSetValueExW,
-    HKEY, HKEY_CURRENT_USER, KEY_ENUMERATE_SUB_KEYS, KEY_READ, KEY_WRITE, REG_DWORD,
-    REG_VALUE_TYPE,
+use windows::Win32::Foundation::{
+    BOOL, CloseHandle, ERROR_NO_MORE_ITEMS, ERROR_SUCCESS, FILETIME, HWND, LPARAM, S_FALSE, S_OK,
 };
-use windows::Win32::UI::Shell::ShellExecuteW;
-use windows::Win32::UI::WindowsAndMessaging::SW_SHOWNORMAL;
+use windows::Win32::System::Com::{
+    CLSCTX_LOCAL_SERVER, COINIT_APARTMENTTHREADED, CoCreateInstance, CoInitializeEx, CoUninitialize,
+};
+use windows::Win32::System::Registry::{
+    HKEY, HKEY_CURRENT_USER, KEY_ENUMERATE_SUB_KEYS, KEY_READ, KEY_WRITE, REG_DWORD,
+    REG_VALUE_TYPE, RegCloseKey, RegDeleteValueW, RegEnumKeyExW, RegOpenKeyExW, RegQueryValueExW,
+    RegSetValueExW,
+};
+use windows::Win32::System::Threading::{
+    GetCurrentProcessId, OpenProcess, PROCESS_NAME_FORMAT, PROCESS_QUERY_LIMITED_INFORMATION,
+    QueryFullProcessImageNameW,
+};
+use windows::Win32::UI::Shell::{
+    AO_NONE, ApplicationActivationManager, IApplicationActivationManager, ShellExecuteW,
+};
+use windows::Win32::UI::WindowsAndMessaging::{
+    EnumWindows, GetWindowTextW, GetWindowThreadProcessId, IsIconic, IsWindowVisible, SW_RESTORE,
+    SW_SHOWNORMAL, SetForegroundWindow, ShowWindow,
+};
+use windows::core::{HSTRING, PCWSTR, PWSTR};
 
 const PERSONALIZE_SUBKEY: PCWSTR =
     windows::core::w!("Software\\Microsoft\\Windows\\CurrentVersion\\Themes\\Personalize");
@@ -252,13 +266,19 @@ pub fn set_exclusive_windows_banners(enable: bool) -> usize {
                     if RegOpenKeyExW(root, &sub_h, 0, KEY_READ | KEY_WRITE, &mut app_key)
                         == ERROR_SUCCESS
                     {
-                        store.apps.entry(name.clone()).or_insert_with(|| BannerBackupEntry {
-                            show_banner: query_reg_dword(app_key, windows::core::w!("ShowBanner")),
-                            show_in_action_center: query_reg_dword(
-                                app_key,
-                                windows::core::w!("ShowInActionCenter"),
-                            ),
-                        });
+                        store
+                            .apps
+                            .entry(name.clone())
+                            .or_insert_with(|| BannerBackupEntry {
+                                show_banner: query_reg_dword(
+                                    app_key,
+                                    windows::core::w!("ShowBanner"),
+                                ),
+                                show_in_action_center: query_reg_dword(
+                                    app_key,
+                                    windows::core::w!("ShowInActionCenter"),
+                                ),
+                            });
                         if set_reg_dword(app_key, windows::core::w!("ShowBanner"), 0) {
                             modified += 1;
                         }
@@ -308,10 +328,8 @@ pub fn set_exclusive_windows_banners(enable: bool) -> usize {
                                     );
                                 }
                                 None => {
-                                    let _ = RegDeleteValueW(
-                                        app_key,
-                                        windows::core::w!("ShowBanner"),
-                                    );
+                                    let _ =
+                                        RegDeleteValueW(app_key, windows::core::w!("ShowBanner"));
                                 }
                             }
                             match entry.show_in_action_center {
@@ -502,6 +520,15 @@ impl SystemNotificationBridge {
     /// Polls Windows for newly arrived toast notifications since the last tick.
     /// Returns `(notification_id, app_name, title, subtitle)` tuples.
     pub fn poll_new_toasts(&mut self) -> Vec<(u32, String, String, String)> {
+        self.poll_new_toasts_with_aumid()
+            .into_iter()
+            .map(|(id, app, title, sub, _)| (id, app, title, sub))
+            .collect()
+    }
+
+    pub fn poll_new_toasts_with_aumid(
+        &mut self,
+    ) -> Vec<(u32, String, String, String, Option<String>)> {
         let Some(ref listener) = self.listener else {
             return Vec::new();
         };
@@ -537,9 +564,14 @@ impl SystemNotificationBridge {
             }
             self.seen_ids.insert(id);
 
-            let app_name = notif
-                .AppInfo()
-                .ok()
+            let app_info = notif.AppInfo().ok();
+            let aumid = app_info
+                .as_ref()
+                .and_then(|ai| ai.AppUserModelId().ok())
+                .map(|s| s.to_string_lossy())
+                .filter(|s| !s.trim().is_empty());
+            let app_name = app_info
+                .as_ref()
                 .and_then(|ai| ai.DisplayInfo().ok())
                 .and_then(|di| di.DisplayName().ok())
                 .map(|s| sanitize_notification_text(&s.to_string_lossy()))
@@ -595,7 +627,7 @@ impl SystemNotificationBridge {
                 format!("New notification from {}", app_name)
             };
 
-            incoming.push((id, app_name, title, subtitle));
+            incoming.push((id, app_name, title, subtitle, aumid));
         }
 
         // Prevent unbounded growth of seen_ids once notifications are dismissed.
@@ -609,6 +641,127 @@ impl SystemNotificationBridge {
             let _ = listener.RemoveNotification(id);
         }
     }
+}
+
+/// Brings the notification's source application to the foreground (or launches it via AUMID).
+pub fn activate_source_app(app_name: &str, aumid: Option<&str>) -> bool {
+    if let Some(id) = aumid.map(str::trim).filter(|s| !s.is_empty()) {
+        unsafe {
+            let hr = CoInitializeEx(None, COINIT_APARTMENTTHREADED);
+            let need_uninit = hr == S_OK || hr == S_FALSE;
+            let activated = (|| -> bool {
+                let Ok(mgr) = CoCreateInstance::<_, IApplicationActivationManager>(
+                    &ApplicationActivationManager,
+                    None,
+                    CLSCTX_LOCAL_SERVER,
+                ) else {
+                    return false;
+                };
+                mgr.ActivateApplication(&HSTRING::from(id), PCWSTR::null(), AO_NONE)
+                    .is_ok()
+            })();
+            if need_uninit {
+                CoUninitialize();
+            }
+            if activated {
+                return true;
+            }
+        }
+    }
+
+    // Fallback: locate a visible top-level window matching the app name or AUMID tail.
+    let needle_app = app_name.trim().to_lowercase();
+    let needle_aumid = aumid
+        .and_then(|s| s.rsplit(['.', '!', '\\', '/']).next())
+        .map(|s| s.trim().to_lowercase())
+        .filter(|s| s.len() >= 3);
+
+    if (needle_app.is_empty() || needle_app == "windows") && needle_aumid.is_none() {
+        return false;
+    }
+
+    struct SearchCtx {
+        self_pid: u32,
+        needle_app: String,
+        needle_aumid: Option<String>,
+        found: Option<HWND>,
+    }
+
+    unsafe extern "system" fn enum_cb(hwnd: HWND, lparam: LPARAM) -> BOOL {
+        let ctx = &mut *(lparam.0 as *mut SearchCtx);
+        if !IsWindowVisible(hwnd).as_bool() {
+            return BOOL(1);
+        }
+        let mut pid = 0u32;
+        GetWindowThreadProcessId(hwnd, Some(&mut pid));
+        if pid == 0 || pid == ctx.self_pid {
+            return BOOL(1);
+        }
+
+        let mut title_buf = [0u16; 256];
+        let title_len = GetWindowTextW(hwnd, &mut title_buf);
+        if title_len <= 0 {
+            return BOOL(1);
+        }
+        let title = String::from_utf16_lossy(&title_buf[..title_len as usize]).to_lowercase();
+
+        let mut proc_stem = String::new();
+        if let Ok(proc_h) = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, false, pid) {
+            let mut path_buf = [0u16; 512];
+            let mut size = path_buf.len() as u32;
+            if QueryFullProcessImageNameW(
+                proc_h,
+                PROCESS_NAME_FORMAT(0),
+                PWSTR(path_buf.as_mut_ptr()),
+                &mut size,
+            )
+            .is_ok()
+            {
+                let path_str = String::from_utf16_lossy(&path_buf[..size as usize]);
+                if let Some(stem) = std::path::Path::new(&path_str)
+                    .file_stem()
+                    .and_then(|s| s.to_str())
+                {
+                    proc_stem = stem.to_lowercase();
+                }
+            }
+            let _ = CloseHandle(proc_h);
+        }
+
+        let matches_app = !ctx.needle_app.is_empty()
+            && ctx.needle_app != "windows"
+            && ((!proc_stem.is_empty()
+                && (proc_stem.contains(&ctx.needle_app) || ctx.needle_app.contains(&proc_stem)))
+                || title.contains(&ctx.needle_app));
+        let matches_aumid = ctx.needle_aumid.as_ref().is_some_and(|n| {
+            (!proc_stem.is_empty() && (proc_stem.contains(n) || n.contains(&proc_stem)))
+                || title.contains(n)
+        });
+
+        if matches_app || matches_aumid {
+            ctx.found = Some(hwnd);
+            return BOOL(0);
+        }
+        BOOL(1)
+    }
+
+    let mut ctx = SearchCtx {
+        self_pid: unsafe { GetCurrentProcessId() },
+        needle_app,
+        needle_aumid,
+        found: None,
+    };
+    unsafe {
+        let _ = EnumWindows(Some(enum_cb), LPARAM(&mut ctx as *mut SearchCtx as isize));
+        if let Some(target_hwnd) = ctx.found {
+            if IsIconic(target_hwnd).as_bool() {
+                let _ = ShowWindow(target_hwnd, SW_RESTORE);
+            }
+            let _ = SetForegroundWindow(target_hwnd);
+            return true;
+        }
+    }
+    false
 }
 
 // Keep unused import check quiet in case PropertyValue helpers are needed elsewhere

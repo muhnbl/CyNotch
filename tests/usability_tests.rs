@@ -1,9 +1,9 @@
 use cynotch::font::FontRenderer;
 use cynotch::models::{
-    ease_exp, Action, AppState, ExpandedSizePreset, HardwareTelemetry, IdleMetric, LyricSize,
-    LyricStyle, MascotMood, MediaTrack, MemReductConfig, MotionPreset, NotchMode, NotchPlacement,
-    NotchSizePreset, NotchStyle, NotificationKind, ScreenTimeStats, SettingsCategory, ShelfItem,
-    ShelfKind, TaskItem, TypeScale,
+    Action, AppState, ExpandedSizePreset, HardwareTelemetry, IdleMetric, LyricSize, LyricStyle,
+    MascotMood, MediaTrack, MemReductConfig, NotchMode, NotchPlacement, NotchSizePreset,
+    NotchStyle, NotificationKind, ScreenTimeStats, SettingsCategory, ShelfItem, ShelfKind,
+    TaskItem, TypeScale, ease_exp,
 };
 use cynotch::notifications::sanitize_notification_text;
 use cynotch::painter::tok;
@@ -12,7 +12,7 @@ use cynotch::screentime::{compute_peak_hour, compute_seven_day_avg, format_hour_
 use cynotch::settings_window::{
     render_settings_pixmap, render_settings_pixmap_with_meta, settings_dims_for_state,
 };
-use cynotch::telemetry::{format_speed_long, format_speed_short, TelemetryCollector};
+use cynotch::telemetry::{TelemetryCollector, format_speed_long, format_speed_short};
 use std::collections::HashMap;
 use tiny_skia::{Color, Mask, Pixmap};
 
@@ -112,7 +112,10 @@ fn test_interactive_dock_hit_targets() {
     state.set_hovered(true);
     state.sync_preview_settled();
 
-    let mut r = Renderer::new(state.expanded_width() as u32, state.expanded_height() as u32);
+    let mut r = Renderer::new(
+        state.expanded_width() as u32,
+        state.expanded_height() as u32,
+    );
     r.render(&state);
 
     let expected_modes = [
@@ -120,7 +123,6 @@ fn test_interactive_dock_hit_targets() {
         NotchMode::Music,
         NotchMode::Volume,
         NotchMode::MemReduct,
-        NotchMode::FocusTimer,
         NotchMode::Tasks,
         NotchMode::Shelf,
         NotchMode::Capture,
@@ -131,40 +133,77 @@ fn test_interactive_dock_hit_targets() {
         let hit = r.hits.iter().find(|h| h.action == Action::SetMode(mode));
         assert!(hit.is_some(), "Dock missing hit target for mode {:?}", mode);
         let h = hit.unwrap();
-        assert!(h.rect.width() >= 20.0, "Hit target too narrow for {:?}: {}", mode, h.rect.width());
-        assert!(h.rect.height() >= 20.0, "Hit target too short for {:?}: {}", mode, h.rect.height());
+        assert!(
+            h.rect.width() >= 20.0,
+            "Hit target too narrow for {:?}: {}",
+            mode,
+            h.rect.width()
+        );
+        assert!(
+            h.rect.height() >= 20.0,
+            "Hit target too short for {:?}: {}",
+            mode,
+            h.rect.height()
+        );
     }
 
-    assert!(r.hits.iter().any(|h| h.action == Action::TogglePin), "Missing TogglePin hit target");
-    assert!(r.hits.iter().any(|h| h.action == Action::OpenSettings), "Missing Settings gear hit target");
-    assert!(r.hits.iter().any(|h| h.action == Action::StartGripDrag), "Missing Grip drag hit target");
+    assert!(
+        r.hits.iter().any(|h| h.action == Action::TogglePin),
+        "Missing TogglePin hit target"
+    );
+    assert!(
+        r.hits.iter().any(|h| h.action == Action::OpenSettings),
+        "Missing Settings gear hit target"
+    );
+    assert!(
+        r.hits.iter().any(|h| h.action == Action::StartGripDrag),
+        "Missing Grip drag hit target"
+    );
 }
 
 #[test]
-fn test_home_hub_controls_and_water_tracker() {
+fn test_home_hub_controls_and_live_network_card() {
     let mut state = AppState::new_for_preview();
     state.set_hovered(true);
     state.mode = NotchMode::Home;
     state.sync_preview_settled();
 
-    let mut r = Renderer::new(state.expanded_width() as u32, state.expanded_height() as u32);
+    let mut r = Renderer::new(
+        state.expanded_width() as u32,
+        state.expanded_height() as u32,
+    );
     r.render(&state);
 
-    assert!(r.hits.iter().any(|h| h.action == Action::PurgeRam), "Home missing PurgeRam hit");
     assert!(
-        r.hits.iter().any(|h| matches!(h.action, Action::DrinkWater(_))),
-        "Home missing DrinkWater hit"
+        r.hits.iter().any(|h| h.action == Action::PurgeRam),
+        "Home missing PurgeRam hit"
     );
-    assert!(r.hits.iter().any(|h| h.action == Action::TogglePlayPause), "Home missing mini play/pause hit");
-    assert!(r.hits.iter().any(|h| h.action == Action::CaptureScreen), "Home missing quick capture hit");
-    assert!(r.hits.iter().any(|h| h.action == Action::SetMode(NotchMode::Tasks)), "Home missing Tasks card hit");
-    assert!(r.hits.iter().any(|h| h.action == Action::SetMode(NotchMode::Music)), "Home missing Media card hit");
-
-    let initial_ml = state.water.taken_ml;
-    state.water.date = "1999-01-01".to_string(); // simulate stale yesterday date
-    state.drink_water(250);
-    assert_eq!(state.water.taken_ml, 250, "DrinkWater should reset stale date before adding glass");
-    assert_ne!(initial_ml, u32::MAX);
+    assert!(
+        r.hits
+            .iter()
+            .any(|h| h.action == Action::SetMode(NotchMode::Telemetry)),
+        "Home missing Live Network (Telemetry) card hit"
+    );
+    assert!(
+        r.hits.iter().any(|h| h.action == Action::TogglePlayPause),
+        "Home missing mini play/pause hit"
+    );
+    assert!(
+        r.hits.iter().any(|h| h.action == Action::CaptureScreen),
+        "Home missing quick capture hit"
+    );
+    assert!(
+        r.hits
+            .iter()
+            .any(|h| h.action == Action::SetMode(NotchMode::Tasks)),
+        "Home missing Tasks card hit"
+    );
+    assert!(
+        r.hits
+            .iter()
+            .any(|h| h.action == Action::SetMode(NotchMode::Music)),
+        "Home missing Media card hit"
+    );
 }
 
 #[test]
@@ -175,25 +214,63 @@ fn test_media_controls_and_synced_lyrics_mode() {
     state.show_lyrics = false;
     state.sync_preview_settled();
 
-    let mut r = Renderer::new(state.expanded_width() as u32, state.expanded_height() as u32);
+    let mut r = Renderer::new(
+        state.expanded_width() as u32,
+        state.expanded_height() as u32,
+    );
     r.render(&state);
 
-    assert!(r.hits.iter().any(|h| h.action == Action::PrevTrack), "Missing PrevTrack hit");
-    assert!(r.hits.iter().any(|h| h.action == Action::TogglePlayPause), "Missing TogglePlayPause hit");
-    assert!(r.hits.iter().any(|h| h.action == Action::NextTrack), "Missing NextTrack hit");
-    assert!(r.hits.iter().any(|h| h.action == Action::ToggleLyrics), "Missing ToggleLyrics hit");
-    let seek_count = r.hits.iter().filter(|h| matches!(h.action, Action::SeekMusic(_))).count();
-    assert_eq!(seek_count, 10, "Expected 10 scrubber seek hit segments in Now Playing");
+    assert!(
+        r.hits.iter().any(|h| h.action == Action::PrevTrack),
+        "Missing PrevTrack hit"
+    );
+    assert!(
+        r.hits.iter().any(|h| h.action == Action::TogglePlayPause),
+        "Missing TogglePlayPause hit"
+    );
+    assert!(
+        r.hits.iter().any(|h| h.action == Action::NextTrack),
+        "Missing NextTrack hit"
+    );
+    assert!(
+        r.hits.iter().any(|h| h.action == Action::ToggleLyrics),
+        "Missing ToggleLyrics hit"
+    );
+    let seek_count = r
+        .hits
+        .iter()
+        .filter(|h| matches!(h.action, Action::SeekMusic(_)))
+        .count();
+    assert_eq!(
+        seek_count, 10,
+        "Expected 10 scrubber seek hit segments in Now Playing"
+    );
 
     // Switch to Synced Lyrics multi-line mode
     state.show_lyrics = true;
     state.current_lyric_index = Some(2);
     r.render(&state);
-    assert!(r.hits.iter().any(|h| h.action == Action::ScrollLyrics(-1)), "Missing previous lyric line scroll hit");
-    assert!(r.hits.iter().any(|h| h.action == Action::ScrollLyrics(1)), "Missing next lyric line scroll hit");
-    assert!(r.hits.iter().any(|h| h.action == Action::TogglePlayPause), "Lyrics view missing TogglePlayPause");
-    let mini_seek_count = r.hits.iter().filter(|h| matches!(h.action, Action::SeekMusic(_))).count();
-    assert_eq!(mini_seek_count, 8, "Expected 8 scrubber seek segments in Synced Lyrics mode");
+    assert!(
+        r.hits.iter().any(|h| h.action == Action::ScrollLyrics(-1)),
+        "Missing previous lyric line scroll hit"
+    );
+    assert!(
+        r.hits.iter().any(|h| h.action == Action::ScrollLyrics(1)),
+        "Missing next lyric line scroll hit"
+    );
+    assert!(
+        r.hits.iter().any(|h| h.action == Action::TogglePlayPause),
+        "Lyrics view missing TogglePlayPause"
+    );
+    let mini_seek_count = r
+        .hits
+        .iter()
+        .filter(|h| matches!(h.action, Action::SeekMusic(_)))
+        .count();
+    assert_eq!(
+        mini_seek_count, 8,
+        "Expected 8 scrubber seek segments in Synced Lyrics mode"
+    );
 }
 
 #[test]
@@ -203,20 +280,37 @@ fn test_memory_reduct_controls_and_cycles() {
     state.mode = NotchMode::MemReduct;
     state.sync_preview_settled();
 
-    let mut r = Renderer::new(state.expanded_width() as u32, state.expanded_height() as u32);
+    let mut r = Renderer::new(
+        state.expanded_width() as u32,
+        state.expanded_height() as u32,
+    );
     r.render(&state);
 
     for area_idx in 0u8..8u8 {
         assert!(
-            r.hits.iter().any(|h| h.action == Action::ToggleArea(area_idx)),
+            r.hits
+                .iter()
+                .any(|h| h.action == Action::ToggleArea(area_idx)),
             "Missing ToggleArea({}) hit in MemReduct view",
             area_idx
         );
     }
-    assert!(r.hits.iter().any(|h| h.action == Action::ToggleAutoClean), "Missing Auto Clean ON/OFF toggle hit");
-    assert!(r.hits.iter().any(|h| h.action == Action::CycleThreshold), "Missing CycleThreshold hit");
-    assert!(r.hits.iter().any(|h| h.action == Action::CycleInterval), "Missing CycleInterval hit");
-    assert!(r.hits.iter().any(|h| h.action == Action::PurgeRam), "Missing PurgeRam hit");
+    assert!(
+        r.hits.iter().any(|h| h.action == Action::ToggleAutoClean),
+        "Missing Auto Clean ON/OFF toggle hit"
+    );
+    assert!(
+        r.hits.iter().any(|h| h.action == Action::CycleThreshold),
+        "Missing CycleThreshold hit"
+    );
+    assert!(
+        r.hits.iter().any(|h| h.action == Action::CycleInterval),
+        "Missing CycleInterval hit"
+    );
+    assert!(
+        r.hits.iter().any(|h| h.action == Action::PurgeRam),
+        "Missing PurgeRam hit"
+    );
 
     // Threshold cycle: 70 -> 80 -> 90 -> 0 (Disable) -> 60 -> 70
     state.mem_reduct.when_above_pct = 70;
@@ -258,77 +352,60 @@ fn test_memory_reduct_controls_and_cycles() {
 }
 
 #[test]
-fn test_focus_timer_phase_and_cycle_completion() {
-    let mut state = AppState::new_for_preview();
-    state.set_hovered(true);
-    state.mode = NotchMode::FocusTimer;
-    state.sync_preview_settled();
-
-    let mut r = Renderer::new(state.expanded_width() as u32, state.expanded_height() as u32);
-    r.render(&state);
-
-    assert!(r.hits.iter().any(|h| h.action == Action::ToggleFocusTimer), "Missing ToggleFocusTimer hit");
-    assert!(r.hits.iter().any(|h| h.action == Action::ResetFocusTimer), "Missing ResetFocusTimer hit");
-    assert!(r.hits.iter().any(|h| h.action == Action::ToggleTimerPhase), "Missing ToggleTimerPhase hit");
-    for mins in [5, 15, 25, 45] {
-        assert!(
-            r.hits.iter().any(|h| h.action == Action::SetFocusDuration(mins)),
-            "Missing {}m duration preset",
-            mins
-        );
-    }
-
-    // Manual phase toggle Work <-> Break 5m
-    assert!(!state.timer.is_break);
-    state.toggle_timer_phase();
-    assert!(state.timer.is_break);
-    assert_eq!(state.timer.remaining_secs, 5 * 60);
-    state.toggle_timer_phase();
-    assert!(!state.timer.is_break);
-    assert_eq!(state.timer.remaining_secs, 25 * 60);
-
-    // Cycle completion Work -> Break transition
-    state.timer.is_running = true;
-    state.timer.remaining_secs = 1;
-    let finished_work = state.on_focus_second_tick();
-    assert!(finished_work, "Tick to 0 should report cycle completion");
-    assert_eq!(state.timer.cycles_completed, 1);
-    assert!(state.timer.is_break);
-    assert_eq!(state.timer.remaining_secs, 5 * 60);
-    assert!(!state.timer.is_running);
-
-    // Break completion -> back to Deep Work
-    state.timer.is_running = true;
-    state.timer.remaining_secs = 1;
-    let finished_break = state.on_focus_second_tick();
-    assert!(finished_break);
-    assert!(!state.timer.is_break);
-    assert_eq!(state.timer.remaining_secs, 25 * 60);
-}
-
-#[test]
 fn test_tasks_toggle_delete_scroll_and_actions() {
     let mut state = AppState::new_for_preview();
     state.set_hovered(true);
     state.mode = NotchMode::Tasks;
     state.sync_preview_settled();
     state.tasks = vec![
-        TaskItem { text: "Task Alpha".to_string(), completed: false },
-        TaskItem { text: "Task Beta".to_string(), completed: true },
-        TaskItem { text: "Task Gamma".to_string(), completed: false },
-        TaskItem { text: "Task Delta".to_string(), completed: false },
+        TaskItem {
+            text: "Task Alpha".to_string(),
+            completed: false,
+        },
+        TaskItem {
+            text: "Task Beta".to_string(),
+            completed: true,
+        },
+        TaskItem {
+            text: "Task Gamma".to_string(),
+            completed: false,
+        },
+        TaskItem {
+            text: "Task Delta".to_string(),
+            completed: false,
+        },
     ];
     state.tasks_scroll = 1;
 
-    let mut r = Renderer::new(state.expanded_width() as u32, state.expanded_height() as u32);
+    let mut r = Renderer::new(
+        state.expanded_width() as u32,
+        state.expanded_height() as u32,
+    );
     r.render(&state);
 
     // Scrolled window starts at index 1 -> indices 1, 2, 3 must be rendered with Toggle + Delete hits
-    assert!(r.hits.iter().any(|h| h.action == Action::ToggleTask(1)), "Missing ToggleTask(1) when scrolled");
-    assert!(r.hits.iter().any(|h| h.action == Action::DeleteTask(1)), "Missing DeleteTask(1) when scrolled");
-    assert!(r.hits.iter().any(|h| h.action == Action::ToggleTask(3)), "Missing ToggleTask(3) when scrolled");
-    assert!(r.hits.iter().any(|h| h.action == Action::PasteAsTask), "Missing PasteAsTask hit");
-    assert!(r.hits.iter().any(|h| h.action == Action::ClearCompletedTasks), "Missing ClearCompletedTasks hit");
+    assert!(
+        r.hits.iter().any(|h| h.action == Action::ToggleTask(1)),
+        "Missing ToggleTask(1) when scrolled"
+    );
+    assert!(
+        r.hits.iter().any(|h| h.action == Action::DeleteTask(1)),
+        "Missing DeleteTask(1) when scrolled"
+    );
+    assert!(
+        r.hits.iter().any(|h| h.action == Action::ToggleTask(3)),
+        "Missing ToggleTask(3) when scrolled"
+    );
+    assert!(
+        r.hits.iter().any(|h| h.action == Action::PasteAsTask),
+        "Missing PasteAsTask hit"
+    );
+    assert!(
+        r.hits
+            .iter()
+            .any(|h| h.action == Action::ClearCompletedTasks),
+        "Missing ClearCompletedTasks hit"
+    );
 
     // Verify empty JSON vec serialization does not coerce into non-empty
     let empty: Vec<TaskItem> = Vec::new();
@@ -357,34 +434,48 @@ fn test_shelf_text_files_and_notifications() {
     ];
     state.shelf_scroll = 0;
 
-    let mut r = Renderer::new(state.expanded_width() as u32, state.expanded_height() as u32);
+    let mut r = Renderer::new(
+        state.expanded_width() as u32,
+        state.expanded_height() as u32,
+    );
     r.render(&state);
 
-    assert!(r.hits.iter().any(|h| h.action == Action::ActivateShelfItem(0)), "Missing ActivateShelfItem(0)");
-    assert!(r.hits.iter().any(|h| h.action == Action::DeleteShelfItem(0)), "Missing DeleteShelfItem(0)");
-    assert!(r.hits.iter().any(|h| h.action == Action::ActivateShelfItem(1)), "Missing ActivateShelfItem(1)");
-    assert!(r.hits.iter().any(|h| h.action == Action::DeleteShelfItem(1)), "Missing DeleteShelfItem(1)");
-    assert!(r.hits.iter().any(|h| h.action == Action::ClearShelf), "Missing ClearShelf hit");
+    assert!(
+        r.hits
+            .iter()
+            .any(|h| h.action == Action::ActivateShelfItem(0)),
+        "Missing ActivateShelfItem(0)"
+    );
+    assert!(
+        r.hits
+            .iter()
+            .any(|h| h.action == Action::DeleteShelfItem(0)),
+        "Missing DeleteShelfItem(0)"
+    );
+    assert!(
+        r.hits
+            .iter()
+            .any(|h| h.action == Action::ActivateShelfItem(1)),
+        "Missing ActivateShelfItem(1)"
+    );
+    assert!(
+        r.hits
+            .iter()
+            .any(|h| h.action == Action::DeleteShelfItem(1)),
+        "Missing DeleteShelfItem(1)"
+    );
+    assert!(
+        r.hits.iter().any(|h| h.action == Action::ClearShelf),
+        "Missing ClearShelf hit"
+    );
 
-    // Push dropped file & clipboard & verify idle Water badge click
+    // Push dropped file & clipboard
     state.push_dropped_file("C:\\Users\\muhna\\Documents\\spec.pdf".to_string());
     assert_eq!(state.shelf_items[0].kind, ShelfKind::File);
     assert_eq!(state.shelf_items[0].label, "spec.pdf");
 
     state.push_clipboard("https://iamlayzee.com/ test url".to_string(), "Chrome");
     assert_eq!(state.notification.as_ref().unwrap().title, "Pasted");
-
-    // Idle water notification should create clickable DrinkWater badge hit
-    state.set_hovered(false);
-    state.set_water_reminder();
-    state.sync_preview_settled();
-    assert_eq!(state.notification.as_ref().unwrap().kind, NotificationKind::Water);
-    let mut r_idle = Renderer::new(state.canvas_width(), state.canvas_height());
-    r_idle.render(&state);
-    assert!(
-        r_idle.hits.iter().any(|h| matches!(h.action, Action::DrinkWater(_))),
-        "Idle Water reminder missing clickable DrinkWater badge hit"
-    );
 }
 
 #[test]
@@ -397,12 +488,24 @@ fn test_capture_view_hit_targets() {
     state.capture.last_filename = "shot.png".to_string();
     state.capture.last_dims = "1920 × 1080".to_string();
 
-    let mut r = Renderer::new(state.expanded_width() as u32, state.expanded_height() as u32);
+    let mut r = Renderer::new(
+        state.expanded_width() as u32,
+        state.expanded_height() as u32,
+    );
     r.render(&state);
 
-    assert!(r.hits.iter().any(|h| h.action == Action::CaptureScreen), "Missing CaptureScreen hit");
-    assert!(r.hits.iter().any(|h| h.action == Action::CaptureWindow), "Missing CaptureWindow hit");
-    assert!(r.hits.iter().any(|h| h.action == Action::OpenCaptureFolder), "Missing OpenCaptureFolder hit");
+    assert!(
+        r.hits.iter().any(|h| h.action == Action::CaptureScreen),
+        "Missing CaptureScreen hit"
+    );
+    assert!(
+        r.hits.iter().any(|h| h.action == Action::CaptureWindow),
+        "Missing CaptureWindow hit"
+    );
+    assert!(
+        r.hits.iter().any(|h| h.action == Action::OpenCaptureFolder),
+        "Missing OpenCaptureFolder hit"
+    );
 }
 
 #[test]
@@ -464,7 +567,10 @@ fn test_volume_controls_hit_targets_and_presets() {
     state.sync_preview_settled();
     state.mode = NotchMode::Volume;
 
-    let mut r = Renderer::new(state.expanded_width() as u32, state.expanded_height() as u32);
+    let mut r = Renderer::new(
+        state.expanded_width() as u32,
+        state.expanded_height() as u32,
+    );
     r.render(&state);
 
     let volume_hits: Vec<_> = r
@@ -476,11 +582,27 @@ fn test_volume_controls_hit_targets_and_presets() {
         })
         .collect();
 
-    assert!(volume_hits.len() >= 15, "Expected 10 slider segments + 5 presets, got {}", volume_hits.len());
-    assert!(volume_hits.iter().any(|&v| (v - 0.0).abs() < 0.01), "Missing Mute 0% preset");
-    assert!(volume_hits.iter().any(|&v| (v - 0.5).abs() < 0.01), "Missing 50% preset");
-    assert!(volume_hits.iter().any(|&v| (v - 1.0).abs() < 0.01), "Missing 100% preset");
-    assert!(r.hits.iter().any(|h| h.action == Action::ToggleMute), "Missing ToggleMute button hit");
+    assert!(
+        volume_hits.len() >= 15,
+        "Expected 10 slider segments + 5 presets, got {}",
+        volume_hits.len()
+    );
+    assert!(
+        volume_hits.iter().any(|&v| (v - 0.0).abs() < 0.01),
+        "Missing Mute 0% preset"
+    );
+    assert!(
+        volume_hits.iter().any(|&v| (v - 0.5).abs() < 0.01),
+        "Missing 50% preset"
+    );
+    assert!(
+        volume_hits.iter().any(|&v| (v - 1.0).abs() < 0.01),
+        "Missing 100% preset"
+    );
+    assert!(
+        r.hits.iter().any(|h| h.action == Action::ToggleMute),
+        "Missing ToggleMute button hit"
+    );
 }
 
 #[test]
@@ -491,16 +613,28 @@ fn test_settings_view_hits_and_center_notch() {
     state.mode = NotchMode::Settings;
     state.x_offset = 120;
 
-    let mut r = Renderer::new(state.expanded_width() as u32, state.expanded_height() as u32);
+    let mut r = Renderer::new(
+        state.expanded_width() as u32,
+        state.expanded_height() as u32,
+    );
     r.render(&state);
 
-    assert!(r.hits.iter().any(|h| h.action == Action::ToggleAutostart), "Missing ToggleAutostart hit");
-    assert!(r.hits.iter().any(|h| h.action == Action::ToggleChime), "Missing ToggleChime hit");
-    assert!(r.hits.iter().any(|h| h.action == Action::SetWaterInterval(30)), "Missing 30m water interval hit");
-    assert!(r.hits.iter().any(|h| h.action == Action::SetWaterInterval(45)), "Missing 45m water interval hit");
-    assert!(r.hits.iter().any(|h| h.action == Action::SetWaterInterval(0)), "Missing Off water interval hit");
-    assert!(r.hits.iter().any(|h| h.action == Action::ResetPosition), "Missing ResetPosition hit when offset != 0");
-    assert!(r.hits.iter().any(|h| h.action == Action::Quit), "Missing Quit hit target");
+    assert!(
+        r.hits.iter().any(|h| h.action == Action::ToggleAutostart),
+        "Missing ToggleAutostart hit"
+    );
+    assert!(
+        r.hits.iter().any(|h| h.action == Action::ToggleChime),
+        "Missing ToggleChime hit"
+    );
+    assert!(
+        r.hits.iter().any(|h| h.action == Action::ResetPosition),
+        "Missing ResetPosition hit when offset != 0"
+    );
+    assert!(
+        r.hits.iter().any(|h| h.action == Action::Quit),
+        "Missing Quit hit target"
+    );
 
     // When already centered, the inline button opens the dedicated Settings window
     state.x_offset = 0;
@@ -518,7 +652,10 @@ fn test_all_hit_targets_within_expanded_bounds() {
     state.sync_preview_settled();
     state.x_offset = 40;
 
-    let mut r = Renderer::new(state.expanded_width() as u32, state.expanded_height() as u32);
+    let mut r = Renderer::new(
+        state.expanded_width() as u32,
+        state.expanded_height() as u32,
+    );
 
     let cases = [
         (NotchMode::Home, false),
@@ -526,7 +663,6 @@ fn test_all_hit_targets_within_expanded_bounds() {
         (NotchMode::Music, true),
         (NotchMode::Volume, false),
         (NotchMode::MemReduct, false),
-        (NotchMode::FocusTimer, false),
         (NotchMode::Tasks, false),
         (NotchMode::Shelf, false),
         (NotchMode::Capture, false),
@@ -539,7 +675,12 @@ fn test_all_hit_targets_within_expanded_bounds() {
         state.show_lyrics = show_lyrics;
         r.render(&state);
 
-        assert!(!r.hits.is_empty(), "No hits rendered for {:?} (lyrics={})", mode, show_lyrics);
+        assert!(
+            !r.hits.is_empty(),
+            "No hits rendered for {:?} (lyrics={})",
+            mode,
+            show_lyrics
+        );
         for hit in &r.hits {
             assert!(
                 hit.rect.left() >= 0.0
@@ -576,14 +717,24 @@ fn test_real_defaults_have_no_dummy_data() {
     assert!(!mem_default.is_purging);
 
     let hw = HardwareTelemetry::initial_real();
-    assert!(hw.memory_total_gb > 0.5, "Expected real physical RAM > 0.5 GB, got {}", hw.memory_total_gb);
+    assert!(
+        hw.memory_total_gb > 0.5,
+        "Expected real physical RAM > 0.5 GB, got {}",
+        hw.memory_total_gb
+    );
 
     let (_, empty_peak) = compute_peak_hour(&[0u64; 24], 14);
-    assert_eq!(empty_peak, "--", "All-zero hourly array should report '--', not a guessed hour");
+    assert_eq!(
+        empty_peak, "--",
+        "All-zero hourly array should report '--', not a guessed hour"
+    );
 
     let mut real_state = AppState::new();
     real_state.persistence_enabled = false;
-    assert!(real_state.media.is_idle(), "Production AppState::new() must start idle with no fake song");
+    assert!(
+        real_state.media.is_idle(),
+        "Production AppState::new() must start idle with no fake song"
+    );
     assert!(!real_state.media.is_playing);
     assert_eq!(real_state.screen_time.today_secs, 0);
     assert_eq!(real_state.screen_time.top_app_name, "--");
@@ -618,11 +769,6 @@ fn test_adaptive_animation_timer_and_renderer_mask_reuse() {
     state.sync_preview_settled();
     assert_eq!(state.needs_animation_timer_ms(), Some(28));
 
-    // MotionPreset::Reduced disables idle animation timer cleanly
-    state.motion_preset = MotionPreset::Reduced;
-    assert_eq!(state.needs_animation_timer_ms(), None);
-    state.motion_preset = MotionPreset::Gentle;
-
     // Playing media with visible equalizer/mascot requests 20ms smooth timer (50 FPS)
     state.media = MediaTrack::preview_sample();
     state.set_hovered(true);
@@ -655,7 +801,10 @@ fn test_adaptive_animation_timer_and_renderer_mask_reuse() {
     state.set_hovered(true);
     state.current_width = AppState::EXPANDED_WIDTH;
     state.current_height = AppState::EXPANDED_HEIGHT;
-    r.resize(AppState::EXPANDED_WIDTH as u32, AppState::EXPANDED_HEIGHT as u32);
+    r.resize(
+        AppState::EXPANDED_WIDTH as u32,
+        AppState::EXPANDED_HEIGHT as u32,
+    );
     r.render(&state);
     assert_eq!(r.pixmap.width(), AppState::EXPANDED_WIDTH as u32);
     assert_eq!(r.pixmap.height(), AppState::EXPANDED_HEIGHT as u32);
@@ -721,7 +870,11 @@ fn test_settings_window_all_categories_render_and_bounds() {
             state.set_settings_scroll(cat, 0.0);
         }
 
-        assert!(!hits_top.is_empty(), "Expected hit targets in settings category {:?}", cat);
+        assert!(
+            !hits_top.is_empty(),
+            "Expected hit targets in settings category {:?}",
+            cat
+        );
         assert!(
             hits_top.iter().any(|h| h.action == Action::CloseSettings),
             "Category {:?} missing CloseSettings button",
@@ -729,7 +882,9 @@ fn test_settings_window_all_categories_render_and_bounds() {
         );
         for side_cat in SettingsCategory::ALL {
             assert!(
-                hits_top.iter().any(|h| h.action == Action::SetSettingsCategory(side_cat)),
+                hits_top
+                    .iter()
+                    .any(|h| h.action == Action::SetSettingsCategory(side_cat)),
                 "Sidebar missing category {:?} while rendering {:?}",
                 side_cat,
                 cat
@@ -755,7 +910,9 @@ fn test_settings_window_all_categories_render_and_bounds() {
                 assert!(combined_actions.contains(&Action::SetPlacement(NotchPlacement::Left)));
                 assert!(combined_actions.contains(&Action::SetPlacement(NotchPlacement::Right)));
                 assert!(combined_actions.contains(&Action::SetSizePreset(NotchSizePreset::Wide)));
-                assert!(combined_actions.contains(&Action::SetExpandedSize(ExpandedSizePreset::Large)));
+                assert!(
+                    combined_actions.contains(&Action::SetExpandedSize(ExpandedSizePreset::Large))
+                );
                 assert!(combined_actions.contains(&Action::SetTypeScale(TypeScale::Large)));
                 assert!(combined_actions.contains(&Action::SetTypeScale(TypeScale::ExtraLarge)));
                 assert!(combined_actions.contains(&Action::SetIdleMetric(IdleMetric::NetSpeed)));
@@ -767,7 +924,6 @@ fn test_settings_window_all_categories_render_and_bounds() {
                 assert!(combined_actions.contains(&Action::ToggleRemoveWindowsBorders));
             }
             SettingsCategory::Motion => {
-                assert!(combined_actions.contains(&Action::SetMotionPreset(MotionPreset::Balanced)));
                 assert!(combined_actions.contains(&Action::SetFpsCap(120)));
                 assert!(combined_actions.contains(&Action::ToggleMicroInteractions));
                 assert!(combined_actions.contains(&Action::ToggleEqualizer));
@@ -789,15 +945,6 @@ fn test_settings_window_all_categories_render_and_bounds() {
                 assert!(combined_actions.contains(&Action::ToggleNotifExclusive));
                 assert!(combined_actions.contains(&Action::ToggleNotifAutoClear));
                 assert!(combined_actions.contains(&Action::OpenWinNotifSettings));
-            }
-            SettingsCategory::Health => {
-                assert!(combined_actions.contains(&Action::ToggleHealthReminders));
-                assert!(combined_actions.contains(&Action::SetWaterGoal(2500)));
-                assert!(combined_actions.contains(&Action::SetWaterGlass(350)));
-                assert!(combined_actions.contains(&Action::SetWaterInterval(45)));
-                assert!(combined_actions.contains(&Action::SetMoveInterval(60)));
-                assert!(combined_actions.contains(&Action::SetDefaultFocus(25)));
-                assert!(combined_actions.contains(&Action::SetDefaultBreak(10)));
             }
             SettingsCategory::System => {
                 assert!(combined_actions.contains(&Action::ToggleAutoClean));
@@ -831,8 +978,18 @@ fn test_zero_bounce_monotonic_ease_exp_and_animations() {
     let target = 576.0f32;
     for _ in 0..80 {
         let (next, _) = ease_exp(cur, target, 15.0, 0.016, 0.5);
-        assert!(next >= cur, "Upward ease_exp dipped backward: {} -> {}", cur, next);
-        assert!(next <= target, "Upward ease_exp overshot target {}: {}", target, next);
+        assert!(
+            next >= cur,
+            "Upward ease_exp dipped backward: {} -> {}",
+            cur,
+            next
+        );
+        assert!(
+            next <= target,
+            "Upward ease_exp overshot target {}: {}",
+            target,
+            next
+        );
         cur = next;
     }
     assert_eq!(cur, target);
@@ -842,8 +999,18 @@ fn test_zero_bounce_monotonic_ease_exp_and_animations() {
     let low_target = 280.0f32;
     for _ in 0..80 {
         let (next, _) = ease_exp(down, low_target, 15.0, 0.016, 0.5);
-        assert!(next <= down, "Downward ease_exp bounced upward: {} -> {}", down, next);
-        assert!(next >= low_target, "Downward ease_exp undershot target {}: {}", low_target, next);
+        assert!(
+            next <= down,
+            "Downward ease_exp bounced upward: {} -> {}",
+            down,
+            next
+        );
+        assert!(
+            next >= low_target,
+            "Downward ease_exp undershot target {}: {}",
+            low_target,
+            next
+        );
         down = next;
     }
     assert_eq!(down, low_target);
@@ -862,8 +1029,14 @@ fn test_zero_bounce_monotonic_ease_exp_and_animations() {
     state.set_hovered(true);
     for _ in 0..60 {
         state.update_animation(0.016);
-        assert!(state.current_width >= prev_w, "Notch width bounced back while expanding");
-        assert!(state.current_width <= exp_w, "Notch width overshot expanded width");
+        assert!(
+            state.current_width >= prev_w,
+            "Notch width bounced back while expanding"
+        );
+        assert!(
+            state.current_width <= exp_w,
+            "Notch width overshot expanded width"
+        );
         prev_w = state.current_width;
     }
     assert_eq!(state.current_width, exp_w);
@@ -871,7 +1044,7 @@ fn test_zero_bounce_monotonic_ease_exp_and_animations() {
 
     // Settings sidebar pill slide + switch toggle convergence turns timer off cleanly
     state.settings_open = true;
-    state.apply_setting_action(Action::SetSettingsCategory(SettingsCategory::Health));
+    state.apply_setting_action(Action::SetSettingsCategory(SettingsCategory::System));
     state.apply_setting_action(Action::ToggleHideFullscreen);
     assert!(state.needs_settings_timer_ms().is_some());
     for _ in 0..60 {
@@ -901,7 +1074,10 @@ fn test_settings_actions_and_legacy_config_compat() {
     assert_eq!(state.notch_style, NotchStyle::EdgeFlush);
 
     state.apply_setting_action(Action::SetSizePreset(NotchSizePreset::Wide));
-    assert_eq!(state.idle_width(), (NotchSizePreset::Wide.idle_width() * state.type_scale.idle_ui_scale()).round());
+    assert_eq!(
+        state.idle_width(),
+        (NotchSizePreset::Wide.idle_width() * state.type_scale.idle_ui_scale()).round()
+    );
 
     state.apply_setting_action(Action::TogglePin);
     assert!(state.is_pinned && state.is_hovered);
@@ -912,30 +1088,14 @@ fn test_settings_actions_and_legacy_config_compat() {
     assert!(!state.modules.telemetry);
     assert_eq!(state.mode, NotchMode::Home);
 
-    state.apply_setting_action(Action::SetWaterGoal(2500));
-    state.apply_setting_action(Action::SetWaterGlass(350));
-    state.apply_setting_action(Action::SetMoveInterval(60));
-    assert_eq!(state.water.goal_ml, 2500);
-    assert_eq!(state.water.glass_ml, 350);
-    assert_eq!(state.move_reminder_mins, 60);
-
-    state.apply_setting_action(Action::SetDefaultFocus(35));
-    assert_eq!(state.default_focus_mins, 35);
-    assert_eq!(state.timer.remaining_secs, 35 * 60);
-    state.apply_setting_action(Action::SetDefaultBreak(10));
-    state.toggle_timer_phase();
-    assert_eq!(state.timer.remaining_secs, 10 * 60);
-
     state.apply_setting_action(Action::ResetScreenTimeToday);
     assert_eq!(state.screen_time.today_secs, 0);
 
     state.apply_setting_action(Action::ResetAllSettings);
     assert_eq!(state.notch_style, NotchStyle::Floating);
     assert_eq!(state.size_preset, NotchSizePreset::Standard);
-    assert_eq!(state.default_focus_mins, 25);
-    assert_eq!(state.water.goal_ml, 1500);
 
-    // Legacy v1.4 config JSON (only original keys) deserializes with safe v1.5 defaults
+    // Legacy v1.4 config JSON (only original keys, including removed water_interval_mins) deserializes with safe defaults
     let legacy_v14_json = r#"{
         "chime_enabled": false,
         "water_interval_mins": 60,
@@ -950,12 +1110,9 @@ fn test_settings_actions_and_legacy_config_compat() {
         "Legacy v1.4 PersistedConfig JSON should deserialize seamlessly"
     );
     assert!(!state.chime_enabled);
-    assert_eq!(state.water_interval_mins, 60);
     assert!(!state.mem_reduct.clean_system_ws);
     assert_eq!(state.mem_reduct.when_above_pct, 90);
-    assert_eq!(state.motion_preset, MotionPreset::Gentle);
     assert_eq!(state.notch_style, NotchStyle::Floating);
-    assert_eq!(state.default_focus_mins, 25);
     assert!(!state.minimized_island);
 }
 
@@ -967,8 +1124,14 @@ fn test_minimized_island_mode_centered_and_smooth_morph() {
     state.sync_preview_settled();
 
     assert!(!state.minimized_island);
-    assert_eq!(state.idle_width(), (AppState::IDLE_WIDTH * state.type_scale.idle_ui_scale()).round());
-    assert_eq!(state.idle_height(), (AppState::IDLE_HEIGHT * state.type_scale.idle_ui_scale()).round());
+    assert_eq!(
+        state.idle_width(),
+        (AppState::IDLE_WIDTH * state.type_scale.idle_ui_scale()).round()
+    );
+    assert_eq!(
+        state.idle_height(),
+        (AppState::IDLE_HEIGHT * state.type_scale.idle_ui_scale()).round()
+    );
 
     state.apply_setting_action(Action::ToggleMinimizedIsland);
     assert!(state.minimized_island);
@@ -991,29 +1154,32 @@ fn test_minimized_island_mode_centered_and_smooth_morph() {
     assert_eq!(state.current_height, AppState::MINIMIZED_HEIGHT);
 
     // Verify centered fixed-canvas rendering puts minimized capsule in center [267..353, 0..18]
-    state.set_water_reminder();
+    state.set_notification(
+        "Ping".to_string(),
+        "Body".to_string(),
+        NotificationKind::Capture,
+        false,
+    );
     let mut r = Renderer::new(
         AppState::EXPANDED_WIDTH as u32,
         AppState::EXPANDED_HEIGHT as u32,
     );
     r.render_centered(&state, None);
-    let water_hit = r
-        .hits
-        .iter()
-        .find(|h| matches!(h.action, Action::DrinkWater(_)))
-        .expect("Minimized Water notification must keep clickable DrinkWater badge hit");
     let expected_origin = (AppState::EXPANDED_WIDTH - AppState::MINIMIZED_WIDTH) * 0.5;
-    assert!(
-        water_hit.rect.left() >= expected_origin && water_hit.rect.right() <= expected_origin + AppState::MINIMIZED_WIDTH + 1.0,
-        "Centered minimized hit out of centered capsule X bounds: {:?} vs origin {}",
-        water_hit.rect,
-        expected_origin
-    );
-    assert!(
-        water_hit.rect.bottom() <= AppState::MINIMIZED_HEIGHT + 0.5,
-        "Minimized hit taller than capsule: {:?}",
-        water_hit.rect
-    );
+    for h in &r.hits {
+        assert!(
+            h.rect.left() >= expected_origin
+                && h.rect.right() <= expected_origin + AppState::MINIMIZED_WIDTH + 1.0,
+            "Centered minimized hit out of centered capsule X bounds: {:?} vs origin {}",
+            h.rect,
+            expected_origin
+        );
+        assert!(
+            h.rect.bottom() <= AppState::MINIMIZED_HEIGHT + 0.5,
+            "Minimized hit taller than capsule: {:?}",
+            h.rect
+        );
+    }
 
     // Expand smoothly from minimized (86x18) to scaled expanded dims without bounce
     let exp_w = state.expanded_width();
@@ -1037,7 +1203,11 @@ fn test_minimized_island_mode_centered_and_smooth_morph() {
 #[test]
 fn test_real_memory_pools_telemetry() {
     let pools = cynotch::memreduct::query_memory_pools();
-    assert!(pools.phys_total_gb > 0.5, "Expected real physical RAM > 0.5 GB, got {}", pools.phys_total_gb);
+    assert!(
+        pools.phys_total_gb > 0.5,
+        "Expected real physical RAM > 0.5 GB, got {}",
+        pools.phys_total_gb
+    );
     assert!(pools.phys_used_gb > 0.0);
     assert!((1.0..=100.0).contains(&pools.phys_percent));
     assert!(pools.page_total_gb >= pools.phys_total_gb * 0.5);
@@ -1110,7 +1280,6 @@ fn test_fixed_canvas_render_and_slider_drag_alignment() {
 fn test_mascot_mood_priority_and_states_render() {
     let mut state = AppState::new_for_preview();
     state.media = MediaTrack::idle();
-    state.timer.is_running = false;
     state.notification = None;
     state.mem_reduct.is_purging = false;
     state.set_hovered(false);
@@ -1122,12 +1291,6 @@ fn test_mascot_mood_priority_and_states_render() {
     state.media.is_playing = true;
     assert_eq!(state.mascot_mood(), MascotMood::Music);
     assert_eq!(state.needs_animation_timer_ms(), Some(20));
-
-    state.timer.is_running = true;
-    assert_eq!(state.mascot_mood(), MascotMood::Focus);
-
-    state.set_water_reminder();
-    assert_eq!(state.mascot_mood(), MascotMood::Hydrate);
 
     state.set_notification(
         "Captured".to_string(),
@@ -1148,12 +1311,14 @@ fn test_mascot_mood_priority_and_states_render() {
     // Verify rendering across moods & minimized mode produces non-identical frames without panicking
     state.mem_reduct.is_purging = false;
     state.notification = None;
-    state.timer.is_running = false;
     state.media.is_playing = false;
     state.set_hovered(false);
     state.sync_preview_settled();
 
-    let mut r = Renderer::new(AppState::EXPANDED_WIDTH as u32, AppState::EXPANDED_HEIGHT as u32);
+    let mut r = Renderer::new(
+        AppState::EXPANDED_WIDTH as u32,
+        AppState::EXPANDED_HEIGHT as u32,
+    );
     state.anim_time = 0.25;
     r.render_centered(&state, None);
     let idle_bytes = r.pixmap.data().to_vec();
@@ -1162,12 +1327,15 @@ fn test_mascot_mood_priority_and_states_render() {
     state.anim_time = 0.55;
     r.render_centered(&state, None);
     let purge_bytes = r.pixmap.data().to_vec();
-    assert_ne!(idle_bytes, purge_bytes, "Purging mascot animation frame should visually differ from Idle");
+    assert_ne!(
+        idle_bytes, purge_bytes,
+        "Purging mascot animation frame should visually differ from Idle"
+    );
 
-    // Minimized capsule with Focus mood
+    // Minimized capsule with Music mood
     state.mem_reduct.is_purging = false;
     state.minimized_island = true;
-    state.timer.is_running = true;
+    state.media.is_playing = true;
     state.sync_preview_settled();
     r.render_centered(&state, None);
 }
@@ -1181,22 +1349,53 @@ fn test_classify_foreign_fullscreen_and_topmost_rules() {
     const WS_EX_TOOLWINDOW: u32 = 0x0000_0080;
 
     // 1. Different monitor never hides CyNotch on primary monitor
-    assert!(!classify_foreign_fullscreen(true, false, true, WS_POPUP, 0, false));
+    assert!(!classify_foreign_fullscreen(
+        true, false, true, WS_POPUP, 0, false
+    ));
 
     // 2. Normal & Maximized windows with WS_CAPTION or WS_THICKFRAME NEVER hide CyNotch (even if Auto-Hide Taskbar lets them touch screen edges)
-    assert!(!classify_foreign_fullscreen(false, true, true, WS_CAPTION | WS_THICKFRAME, 0, true));
-    assert!(!classify_foreign_fullscreen(false, true, true, WS_THICKFRAME, 0, true));
-    assert!(!classify_foreign_fullscreen(false, true, false, WS_CAPTION, 0, true));
+    assert!(!classify_foreign_fullscreen(
+        false,
+        true,
+        true,
+        WS_CAPTION | WS_THICKFRAME,
+        0,
+        true
+    ));
+    assert!(!classify_foreign_fullscreen(
+        false,
+        true,
+        true,
+        WS_THICKFRAME,
+        0,
+        true
+    ));
+    assert!(!classify_foreign_fullscreen(
+        false, true, false, WS_CAPTION, 0, true
+    ));
 
     // 3. Tool windows never count as fullscreen
-    assert!(!classify_foreign_fullscreen(false, true, true, WS_POPUP, WS_EX_TOOLWINDOW, false));
+    assert!(!classify_foreign_fullscreen(
+        false,
+        true,
+        true,
+        WS_POPUP,
+        WS_EX_TOOLWINDOW,
+        false
+    ));
 
     // 4. True F11 / Borderless Fullscreen (no caption, no thickframe, covers full monitor) DOES hide idle notch
-    assert!(classify_foreign_fullscreen(false, true, true, WS_POPUP, 0, false));
-    assert!(classify_foreign_fullscreen(false, true, true, WS_POPUP, 0, true));
+    assert!(classify_foreign_fullscreen(
+        false, true, true, WS_POPUP, 0, false
+    ));
+    assert!(classify_foreign_fullscreen(
+        false, true, true, WS_POPUP, 0, true
+    ));
 
     // 5. Exclusive D3D game or Presentation mode on same monitor DOES hide idle notch
-    assert!(classify_foreign_fullscreen(true, true, false, WS_CAPTION, 0, false));
+    assert!(classify_foreign_fullscreen(
+        true, true, false, WS_CAPTION, 0, false
+    ));
 }
 
 #[test]
@@ -1217,43 +1416,20 @@ fn test_v18_telemetry_cpu_and_network_formatting() {
 }
 
 #[test]
-fn test_v18_health_reminders_toggle_and_home_live_net_replacement() {
+fn test_v18_home_live_net_card_and_legacy_status_ring_alias() {
     let mut state = AppState::new_for_preview();
     state.set_hovered(true);
     state.mode = NotchMode::Home;
-    state.health_reminders_enabled = false;
     state.sync_preview_settled();
 
-    // Silences periodic Water & Move popups when disabled
-    state.notification = None;
-    state.set_water_reminder();
-    assert!(state.notification.is_none(), "set_water_reminder should no-op when disabled");
-    state.set_move_reminder();
-    assert!(state.notification.is_none(), "set_move_reminder should no-op when disabled");
-
-    // Home Hub shows Live Network & Quick Focus card instead of Daily Hydration
+    // Home Hub shows Live Network card with Telemetry navigation
     let mut r = Renderer::new(state.canvas_width(), state.canvas_height());
     r.render(&state);
     assert!(
-        !r.hits.iter().any(|h| matches!(h.action, Action::DrinkWater(_))),
-        "Home Hub should hide DrinkWater when health_reminders_enabled == false"
-    );
-    assert!(
-        r.hits.iter().any(|h| h.action == Action::ToggleFocusTimer),
-        "Home Hub replacement card must expose quick ToggleFocusTimer button"
-    );
-    assert!(
-        r.hits.iter().any(|h| h.action == Action::SetMode(NotchMode::Telemetry)),
-        "Home Hub replacement card must expose SetMode(Telemetry) click target"
-    );
-
-    // Toggling HealthReminders back ON restores Hydration card
-    state.apply_setting_action(Action::ToggleHealthReminders);
-    assert!(state.health_reminders_enabled);
-    r.render(&state);
-    assert!(
-        r.hits.iter().any(|h| matches!(h.action, Action::DrinkWater(_))),
-        "Re-enabling HealthReminders must restore Hydration card in Home Hub"
+        r.hits
+            .iter()
+            .any(|h| h.action == Action::SetMode(NotchMode::Telemetry)),
+        "Home Hub Live Network card must expose SetMode(Telemetry) click target"
     );
 
     // Legacy status_ring_enabled JSON alias maps cleanly to progress_arc_enabled
@@ -1276,7 +1452,6 @@ fn test_v18_idle_metrics_and_progress_arc_render() {
     let mut state = AppState::new_for_preview();
     state.media = MediaTrack::idle();
     state.notification = None;
-    state.timer.is_running = false;
     state.mem_reduct.is_purging = false;
     state.telemetry.net_down_kbps = 1840.0;
     state.telemetry.net_up_kbps = 320.0;
@@ -1298,15 +1473,24 @@ fn test_v18_idle_metrics_and_progress_arc_render() {
         r.render_centered(&state, None);
         frames.push(r.pixmap.data().to_vec());
     }
-    assert_ne!(frames[0], frames[1], "Ram and NetSpeed idle capsules should render differently");
-    assert_ne!(frames[1], frames[4], "NetSpeed and Minimal idle capsules should render differently");
+    assert_ne!(
+        frames[0], frames[1],
+        "Ram and NetSpeed idle capsules should render differently"
+    );
+    assert_ne!(
+        frames[1], frames[4],
+        "NetSpeed and Minimal idle capsules should render differently"
+    );
 
     state.apply_setting_action(Action::SetIdleMetric(IdleMetric::Ram));
     state.apply_setting_action(Action::ToggleProgressArc);
     assert!(!state.progress_arc_enabled);
     r.render_centered(&state, None);
     let no_arc = r.pixmap.data().to_vec();
-    assert_ne!(frames[0], no_arc, "ProgressArc toggle should alter rendered idle badge");
+    assert_ne!(
+        frames[0], no_arc,
+        "ProgressArc toggle should alter rendered idle badge"
+    );
 }
 
 #[test]
@@ -1360,7 +1544,6 @@ fn test_v18_expanded_size_presets_and_canvas_scaling() {
 fn test_v18_vertical_placement_idle_and_all_10_modes() {
     let mut state = AppState::new_for_preview();
     state.media.is_playing = true;
-    state.timer.is_running = true;
     state.notification = None;
 
     for placement in [NotchPlacement::Left, NotchPlacement::Right] {
@@ -1374,10 +1557,20 @@ fn test_v18_vertical_placement_idle_and_all_10_modes() {
         state.minimized_island = false;
         state.sync_preview_settled();
         let idle_s = state.type_scale.idle_ui_scale();
-        assert_eq!(state.idle_width(), (AppState::VERT_IDLE_WIDTH * idle_s).round());
-        assert_eq!(state.idle_height(), (AppState::VERT_IDLE_HEIGHT * idle_s).round());
+        assert_eq!(
+            state.idle_width(),
+            (AppState::VERT_IDLE_WIDTH * idle_s).round()
+        );
+        assert_eq!(
+            state.idle_height(),
+            (AppState::VERT_IDLE_HEIGHT * idle_s).round()
+        );
 
-        let (ox, _) = Renderer::compute_origin(&state, state.canvas_width() as f32, state.canvas_height() as f32);
+        let (ox, _) = Renderer::compute_origin(
+            &state,
+            state.canvas_width() as f32,
+            state.canvas_height() as f32,
+        );
         if placement == NotchPlacement::Left {
             assert_eq!(ox, 0.0);
         } else {
@@ -1391,28 +1584,31 @@ fn test_v18_vertical_placement_idle_and_all_10_modes() {
         state.set_hovered(true);
         state.sync_preview_settled();
         let es = state.expanded_scale();
-        assert_eq!(state.expanded_width(), (AppState::VERT_EXPANDED_WIDTH * es).round());
-        assert_eq!(state.expanded_height(), (AppState::VERT_EXPANDED_HEIGHT * es).round());
+        assert_eq!(
+            state.expanded_width(),
+            (AppState::VERT_EXPANDED_WIDTH * es).round()
+        );
+        assert_eq!(
+            state.expanded_height(),
+            (AppState::VERT_EXPANDED_HEIGHT * es).round()
+        );
 
         let cases = [
-            (NotchMode::Home, false, true),
-            (NotchMode::Home, false, false),
-            (NotchMode::Music, false, true),
-            (NotchMode::Music, true, true),
-            (NotchMode::Volume, false, true),
-            (NotchMode::MemReduct, false, true),
-            (NotchMode::FocusTimer, false, true),
-            (NotchMode::Tasks, false, true),
-            (NotchMode::Shelf, false, true),
-            (NotchMode::Capture, false, true),
-            (NotchMode::Telemetry, false, true),
-            (NotchMode::Settings, false, true),
+            (NotchMode::Home, false),
+            (NotchMode::Music, false),
+            (NotchMode::Music, true),
+            (NotchMode::Volume, false),
+            (NotchMode::MemReduct, false),
+            (NotchMode::Tasks, false),
+            (NotchMode::Shelf, false),
+            (NotchMode::Capture, false),
+            (NotchMode::Telemetry, false),
+            (NotchMode::Settings, false),
         ];
 
-        for (mode, show_lyrics, health_on) in cases {
+        for (mode, show_lyrics) in cases {
             state.mode = mode;
             state.show_lyrics = show_lyrics;
-            state.health_reminders_enabled = health_on;
             state.y_offset = 45;
             r.render_centered(&state, None);
 
@@ -1606,7 +1802,9 @@ fn test_v19_lyrics_styles_sizes_horizontal_and_vertical() {
                     size
                 );
                 assert!(
-                    r.hits.iter().any(|h| matches!(h.action, Action::ScrollLyrics(_))),
+                    r.hits
+                        .iter()
+                        .any(|h| matches!(h.action, Action::ScrollLyrics(_))),
                     "Missing ScrollLyrics hit in {:?} {:?}/{:?}",
                     placement,
                     style,
@@ -1624,9 +1822,18 @@ fn test_v19_lyrics_styles_sizes_horizontal_and_vertical() {
                 }
             }
         }
-        assert_ne!(rendered_styles[0], rendered_styles[1], "ClassicList vs KaraokeGlow must differ");
-        assert_ne!(rendered_styles[1], rendered_styles[2], "KaraokeGlow vs MinimalSingle must differ");
-        assert_ne!(rendered_styles[2], rendered_styles[3], "MinimalSingle vs CompactStream must differ");
+        assert_ne!(
+            rendered_styles[0], rendered_styles[1],
+            "ClassicList vs KaraokeGlow must differ"
+        );
+        assert_ne!(
+            rendered_styles[1], rendered_styles[2],
+            "KaraokeGlow vs MinimalSingle must differ"
+        );
+        assert_ne!(
+            rendered_styles[2], rendered_styles[3],
+            "MinimalSingle vs CompactStream must differ"
+        );
     }
 }
 
@@ -1645,7 +1852,10 @@ fn test_v19_system_toast_and_sanitization() {
         "Kai (#general)".to_string(),
         "Build green across all targets".to_string(),
     );
-    let notif = state.notification.as_ref().expect("System toast should enqueue banner");
+    let notif = state
+        .notification
+        .as_ref()
+        .expect("System toast should enqueue banner");
     assert_eq!(notif.kind, NotificationKind::SystemToast);
     assert_eq!(notif.app_name, "Discord");
 
@@ -1670,8 +1880,7 @@ fn test_v19_system_toast_and_sanitization() {
         assert!(
             non_zero_alpha,
             "SystemToast capsule should render opaque foreground content ({:?}, min={})",
-            placement,
-            minimized
+            placement, minimized
         );
     }
 }
@@ -1835,7 +2044,10 @@ fn test_v21_notification_banner_popout_dismiss_and_settings() {
         state.sync_preview_settled();
 
         let (idle_w, idle_h) = if placement.is_vertical() {
-            (AppState::MINIMIZED_VERT_WIDTH, AppState::MINIMIZED_VERT_HEIGHT)
+            (
+                AppState::MINIMIZED_VERT_WIDTH,
+                AppState::MINIMIZED_VERT_HEIGHT,
+            )
         } else {
             (AppState::MINIMIZED_WIDTH, AppState::MINIMIZED_HEIGHT)
         };
@@ -2003,7 +2215,8 @@ fn test_v22_desktop_type_scale_and_banner_readability() {
         let (sw, sh, _) = settings_dims_for_state(&state);
         let mut pm = Pixmap::new(sw, sh).unwrap();
         let mut mask = Mask::new(sw, sh).unwrap();
-        let (hits, _) = render_settings_pixmap_with_meta(&state, None, &mut pm, &mut mask, &mut fonts);
+        let (hits, _) =
+            render_settings_pixmap_with_meta(&state, None, &mut pm, &mut mask, &mut fonts);
         let ts_hit = hits
             .iter()
             .find(|h| h.action == Action::SetTypeScale(ts))
@@ -2050,12 +2263,18 @@ fn test_v22_desktop_type_scale_and_banner_readability() {
             assert!(
                 sw > psw && sh > psh,
                 "Settings window dims must grow monotonically for {:?}: {}x{} vs {}x{}",
-                ts, sw, sh, psw, psh
+                ts,
+                sw,
+                sh,
+                psw,
+                psh
             );
             assert!(
                 btn_h > pbh + 1.5,
                 "Settings button height must grow responsively for {:?}: {} vs {}",
-                ts, btn_h, pbh
+                ts,
+                btn_h,
+                pbh
             );
             assert!(
                 idle_w > pidle && exp_w > pexp && ban_w > pban,
@@ -2142,7 +2361,10 @@ fn test_v24_idle_size_presets_horizontal_and_vertical_both_modes() {
             assert!(
                 st.target_width > prev_w,
                 "Horizontal {:?} minimized={} width {} must exceed prev {}",
-                preset, minimized, st.target_width, prev_w
+                preset,
+                minimized,
+                st.target_width,
+                prev_w
             );
             assert_eq!(st.target_width, st.idle_width());
             assert_eq!(st.target_height, st.idle_height());
@@ -2165,7 +2387,13 @@ fn test_v24_idle_size_presets_horizontal_and_vertical_both_modes() {
                 assert!(
                     st.target_height > prev_h && st.target_width > prev_vw,
                     "Vertical {:?} {:?} minimized={} dims {}x{} must exceed prev {}x{}",
-                    pl, preset, minimized, st.target_width, st.target_height, prev_vw, prev_h
+                    pl,
+                    preset,
+                    minimized,
+                    st.target_width,
+                    st.target_height,
+                    prev_vw,
+                    prev_h
                 );
                 assert_eq!(st.target_width, st.idle_width());
                 assert_eq!(st.target_height, st.idle_height());
@@ -2183,7 +2411,11 @@ fn test_v24_idle_size_presets_horizontal_and_vertical_both_modes() {
 fn test_v24_dynamic_hitbox_and_window_region_accuracy() {
     use cynotch::window::compute_window_region_spec;
 
-    for &pl in &[NotchPlacement::Top, NotchPlacement::Left, NotchPlacement::Right] {
+    for &pl in &[
+        NotchPlacement::Top,
+        NotchPlacement::Left,
+        NotchPlacement::Right,
+    ] {
         for &style in &[NotchStyle::Floating, NotchStyle::EdgeFlush] {
             let mut st = AppState::new_for_preview();
             st.placement = pl;
@@ -2202,22 +2434,70 @@ fn test_v24_dynamic_hitbox_and_window_region_accuracy() {
             let h = st.current_height;
 
             // Center of visible idle pill must be clickable
-            assert!(Renderer::point_in_capsule(&st, cw, ch, ox + w * 0.5, oy + h * 0.5));
+            assert!(Renderer::point_in_capsule(
+                &st,
+                cw,
+                ch,
+                ox + w * 0.5,
+                oy + h * 0.5
+            ));
 
             // Transparent area outside visible pill inside canvas must pass clicks through
             match pl {
                 NotchPlacement::Top => {
-                    assert!(!Renderer::point_in_capsule(&st, cw, ch, (ox - 6.0).max(1.0), oy + h * 0.5));
-                    assert!(!Renderer::point_in_capsule(&st, cw, ch, ox + w + 6.0, oy + h * 0.5));
-                    assert!(!Renderer::point_in_capsule(&st, cw, ch, ox + w * 0.5, oy + h + 6.0));
+                    assert!(!Renderer::point_in_capsule(
+                        &st,
+                        cw,
+                        ch,
+                        (ox - 6.0).max(1.0),
+                        oy + h * 0.5
+                    ));
+                    assert!(!Renderer::point_in_capsule(
+                        &st,
+                        cw,
+                        ch,
+                        ox + w + 6.0,
+                        oy + h * 0.5
+                    ));
+                    assert!(!Renderer::point_in_capsule(
+                        &st,
+                        cw,
+                        ch,
+                        ox + w * 0.5,
+                        oy + h + 6.0
+                    ));
                 }
                 NotchPlacement::Left => {
-                    assert!(!Renderer::point_in_capsule(&st, cw, ch, ox + w + 6.0, oy + h * 0.5));
-                    assert!(!Renderer::point_in_capsule(&st, cw, ch, ox + w * 0.5, (oy - 6.0).max(1.0)));
+                    assert!(!Renderer::point_in_capsule(
+                        &st,
+                        cw,
+                        ch,
+                        ox + w + 6.0,
+                        oy + h * 0.5
+                    ));
+                    assert!(!Renderer::point_in_capsule(
+                        &st,
+                        cw,
+                        ch,
+                        ox + w * 0.5,
+                        (oy - 6.0).max(1.0)
+                    ));
                 }
                 NotchPlacement::Right => {
-                    assert!(!Renderer::point_in_capsule(&st, cw, ch, (ox - 6.0).max(1.0), oy + h * 0.5));
-                    assert!(!Renderer::point_in_capsule(&st, cw, ch, ox + w * 0.5, oy + h + 6.0));
+                    assert!(!Renderer::point_in_capsule(
+                        &st,
+                        cw,
+                        ch,
+                        (ox - 6.0).max(1.0),
+                        oy + h * 0.5
+                    ));
+                    assert!(!Renderer::point_in_capsule(
+                        &st,
+                        cw,
+                        ch,
+                        ox + w * 0.5,
+                        oy + h + 6.0
+                    ));
                 }
             }
 
@@ -2234,7 +2514,9 @@ fn test_v24_dynamic_hitbox_and_window_region_accuracy() {
             assert!(
                 exp_area > idle_area * 3,
                 "Expanded region area {} must vastly exceed idle region area {} for {:?}",
-                exp_area, idle_area, pl
+                exp_area,
+                idle_area,
+                pl
             );
             let ecw = st.canvas_width() as f32;
             let ech = st.canvas_height() as f32;
@@ -2254,7 +2536,12 @@ fn test_v24_dynamic_hitbox_and_window_region_accuracy() {
             st.sync_preview_settled();
             let min_rgn = compute_window_region_spec(&st);
             let min_area = (min_rgn.2 - min_rgn.0) * (min_rgn.3 - min_rgn.1);
-            assert!(min_area < idle_area, "Minimized region {} must be tighter than idle {}", min_area, idle_area);
+            assert!(
+                min_area < idle_area,
+                "Minimized region {} must be tighter than idle {}",
+                min_area,
+                idle_area
+            );
         }
     }
 }
@@ -2266,7 +2553,7 @@ fn test_v24_dynamic_hitbox_and_window_region_accuracy() {
 
 #[test]
 fn notif_poll_runs_on_first_tick_and_when_db_signature_changes() {
-    use cynotch::notifications::{should_poll_toasts, NotifDbSignature};
+    use cynotch::notifications::{NotifDbSignature, should_poll_toasts};
 
     let absent: NotifDbSignature = [None; 3];
     let sig_a: NotifDbSignature = [Some((100, 4096)), Some((200, 512)), Some((300, 32))];
@@ -2296,16 +2583,21 @@ fn appdata_dir_resolves_from_localappdata() {
     // It must be derived from the environment, never from another app's folder.
     assert!(dir.starts_with(std::path::PathBuf::from(&base)));
     let shown = dir.to_string_lossy().to_lowercase();
-    assert!(!shown.contains("gemini"), "state dir leaked into another app: {shown}");
+    assert!(
+        !shown.contains("gemini"),
+        "state dir leaked into another app: {shown}"
+    );
 }
 
 #[test]
 fn crash_log_path_lives_in_appdata_dir() {
     let path = cynotch::models::crash_log_path("panic.txt");
-    assert_eq!(path.parent(), Some(cynotch::models::appdata_dir().as_path()));
+    assert_eq!(
+        path.parent(),
+        Some(cynotch::models::appdata_dir().as_path())
+    );
     assert_eq!(path.file_name().unwrap(), "panic.txt");
 }
-
 
 #[test]
 fn test_v26_frosted_opacity_blur_exclusivity() {
@@ -2335,13 +2627,12 @@ fn test_v26_frosted_opacity_blur_exclusivity() {
 
 #[test]
 fn test_corner_dock_radii_and_minimized_origin_alignment() {
-    use cynotch::models::{Action, AppState, MotionPreset, NotchPlacement, NotchStyle};
+    use cynotch::models::{Action, AppState, NotchPlacement, NotchStyle};
     use cynotch::renderer::Renderer;
 
     let mut st = AppState::new_for_preview();
     st.placement = NotchPlacement::Top;
     st.notch_style = NotchStyle::Floating;
-    st.motion_preset = MotionPreset::Gentle;
     st.set_hovered(false);
     st.minimized_island = true;
     st.sync_collapsed_targets();
@@ -2379,7 +2670,10 @@ fn test_corner_dock_radii_and_minimized_origin_alignment() {
     // Liquid transition: ResetPosition updates targets immediately without teleporting anim_anchor_x.
     st.apply_setting_action(Action::ResetPosition);
     assert!((st.target_anchor_x - 0.5).abs() < 0.01);
-    assert!(st.anim_anchor_x > 0.85, "Gentle motion must animate anchor smoothly rather than teleporting");
+    assert!(
+        st.anim_anchor_x > 0.85,
+        "Gentle motion must animate anchor smoothly rather than teleporting"
+    );
     st.update_animation(0.016);
     assert!(st.anim_anchor_x < 1.0 && st.anim_anchor_x > 0.5);
     for _ in 0..80 {
@@ -2390,15 +2684,13 @@ fn test_corner_dock_radii_and_minimized_origin_alignment() {
 
 #[test]
 fn high_refresh_120hz_unlocks_equalizer_and_mascot_timers() {
-    use cynotch::models::{AppState, MotionPreset};
+    use cynotch::models::AppState;
 
     let mut st = AppState::new_for_preview();
-    st.motion_preset = MotionPreset::Gentle;
     st.fps_cap = 0;
     st.set_hovered(false);
     st.minimized_island = false;
     st.notification = None;
-    st.timer.is_running = false;
     st.mem_reduct.is_purging = false;
 
     // 1. Idle mascot at 120 Hz vs 60 Hz
@@ -2429,11 +2721,15 @@ fn high_refresh_120hz_unlocks_equalizer_and_mascot_timers() {
 
 #[test]
 fn test_v27_grip_right_placement_nonblank_drag_and_frosted_glass() {
-    use cynotch::models::{Action, AppState, MotionPreset, NotchMode, NotchPlacement};
+    use cynotch::models::{Action, AppState, NotchMode, NotchPlacement};
     use cynotch::renderer::Renderer;
 
     // 1. Grip handle is always to the right of Settings in Top, Left, and Right placements
-    for placement in [NotchPlacement::Top, NotchPlacement::Left, NotchPlacement::Right] {
+    for placement in [
+        NotchPlacement::Top,
+        NotchPlacement::Left,
+        NotchPlacement::Right,
+    ] {
         let mut st = AppState::new_for_preview();
         st.mode = NotchMode::Home;
         st.apply_setting_action(Action::SetPlacement(placement));
@@ -2463,7 +2759,6 @@ fn test_v27_grip_right_placement_nonblank_drag_and_frosted_glass() {
 
     // 2. Settled expanded cross-axis size never blanks out content into an empty shell
     let mut st = AppState::new_for_preview();
-    st.motion_preset = MotionPreset::Gentle;
     st.apply_setting_action(Action::SetPlacement(NotchPlacement::Left));
     st.set_hovered(true);
     st.sync_preview_settled();
@@ -2500,7 +2795,11 @@ fn test_v27_grip_right_placement_nonblank_drag_and_frosted_glass() {
     let idx = (sy * r_fr.pixmap.width() as usize + sx) * 4;
     let opaque_a = r_op.pixmap.data()[idx + 3];
     let frosted_a = r_fr.pixmap.data()[idx + 3];
-    assert!(opaque_a >= 235, "Expected opaque card alpha >= 235, got {}", opaque_a);
+    assert!(
+        opaque_a >= 235,
+        "Expected opaque card alpha >= 235, got {}",
+        opaque_a
+    );
     assert_eq!(frosted_a, opaque_a);
 }
 
@@ -2535,11 +2834,204 @@ fn test_v28_remove_windows_borders_toggle_and_settings_hit() {
     let mut pm = Pixmap::new(w, h).unwrap();
     let mut mask = Mask::new(w, h).unwrap();
     let mut fonts = FontRenderer::new();
-    let (_hits, max_scroll) = render_settings_pixmap_with_meta(&st, None, &mut pm, &mut mask, &mut fonts);
+    let (_hits, max_scroll) =
+        render_settings_pixmap_with_meta(&st, None, &mut pm, &mut mask, &mut fonts);
     st.set_settings_scroll(SettingsCategory::General, max_scroll);
-    let (scrolled_hits, _) = render_settings_pixmap_with_meta(&st, None, &mut pm, &mut mask, &mut fonts);
+    let (scrolled_hits, _) =
+        render_settings_pixmap_with_meta(&st, None, &mut pm, &mut mask, &mut fonts);
     assert!(
-        scrolled_hits.iter().any(|hit| hit.action == Action::ToggleRemoveWindowsBorders),
+        scrolled_hits
+            .iter()
+            .any(|hit| hit.action == Action::ToggleRemoveWindowsBorders),
         "Expected ToggleRemoveWindowsBorders hit target in General settings pane"
     );
+}
+
+#[test]
+fn test_notification_banner_slides_from_placement_edge() {
+    for placement in [
+        NotchPlacement::Top,
+        NotchPlacement::Left,
+        NotchPlacement::Right,
+    ] {
+        let mut st = AppState::new_for_preview();
+        st.placement = placement;
+        st.minimized_island = true;
+        st.set_hovered(false);
+        st.sync_preview_settled();
+
+        st.set_notification(
+            "Slide Test".to_string(),
+            "Banner slides from notch edge".to_string(),
+            NotificationKind::General,
+            true,
+        );
+        assert_eq!(st.anim_notif_t, 0.0);
+
+        let cw = st.canvas_width() as f32;
+        let ch = st.canvas_height() as f32;
+
+        // First animation step snaps to full banner size and starts sliding in
+        assert!(st.update_animation(1.0 / 60.0));
+        assert_eq!(st.current_width, st.target_width);
+        assert_eq!(st.current_height, st.target_height);
+        assert!(st.anim_notif_t > 0.0 && st.anim_notif_t < 1.0);
+
+        let (ox_mid, oy_mid) = Renderer::compute_origin(&st, cw, ch);
+        match placement {
+            NotchPlacement::Top => assert!(
+                oy_mid < 0.0,
+                "Top banner must slide down from y < 0 (got {oy_mid})"
+            ),
+            NotchPlacement::Left => assert!(
+                ox_mid < 0.0,
+                "Left banner must slide right from x < 0 (got {ox_mid})"
+            ),
+            NotchPlacement::Right => assert!(
+                ox_mid > cw - st.current_width,
+                "Right banner must slide left from off-right (got {ox_mid} vs {})",
+                cw - st.current_width
+            ),
+        }
+
+        let mut r = Renderer::new(cw as u32, ch as u32);
+        r.render_centered(&st, None);
+
+        for _ in 0..120 {
+            st.update_animation(1.0 / 60.0);
+        }
+        assert!((st.anim_notif_t - 1.0).abs() < 0.01);
+        let (ox_end, oy_end) = Renderer::compute_origin(&st, cw, ch);
+        match placement {
+            NotchPlacement::Top => assert!((oy_end - 0.0).abs() < 0.5),
+            NotchPlacement::Left => assert!((ox_end - 0.0).abs() < 0.5),
+            NotchPlacement::Right => {
+                assert!((ox_end - (cw - st.current_width).max(0.0)).abs() < 0.5)
+            }
+        }
+        r.render_centered(&st, None);
+    }
+}
+
+#[test]
+fn test_multi_notification_coalescing_queue_and_history() {
+    let mut st = AppState::new_for_preview();
+    st.set_hovered(false);
+    st.sync_preview_settled();
+
+    // 1. First Discord notification opens the banner from idle
+    st.push_system_toast(
+        "Discord".to_string(),
+        "Kai (#general)".to_string(),
+        "msg 1".to_string(),
+        Some("com.squirrel.Discord.Discord".to_string()),
+    );
+    assert!(st.notification.is_some());
+    assert_eq!(st.notif_queue.len(), 0);
+    assert_eq!(st.notif_history.len(), 1);
+    assert_eq!(st.notification.as_ref().unwrap().grouped_count, 1);
+
+    // Let banner settle
+    for _ in 0..90 {
+        st.update_animation(1.0 / 60.0);
+    }
+    assert!((st.anim_notif_t - 1.0).abs() < 0.02);
+
+    // 2. Second Discord notification coalesces into active banner with subtle pulse (>= 0.86)
+    st.push_system_toast(
+        "Discord".to_string(),
+        "Kai (#general)".to_string(),
+        "msg 2".to_string(),
+        Some("com.squirrel.Discord.Discord".to_string()),
+    );
+    assert_eq!(st.notif_queue.len(), 0);
+    assert_eq!(st.notif_history.len(), 2);
+    assert_eq!(st.notification.as_ref().unwrap().grouped_count, 2);
+    assert_eq!(st.notification.as_ref().unwrap().subtitle, "msg 2");
+    assert!(
+        st.anim_notif_t >= 0.85,
+        "Coalescing must keep banner seamlessly open"
+    );
+
+    // 3. Different app goes into notif_queue; second message from that app coalesces in queue
+    st.push_system_toast(
+        "WhatsApp".to_string(),
+        "Budi".to_string(),
+        "halo 1".to_string(),
+        Some("WhatsApp.App".to_string()),
+    );
+    st.push_system_toast(
+        "WhatsApp".to_string(),
+        "Budi".to_string(),
+        "halo 2".to_string(),
+        Some("WhatsApp.App".to_string()),
+    );
+    assert_eq!(st.notif_queue.len(), 1);
+    assert_eq!(st.notif_queue[0].grouped_count, 2);
+    assert_eq!(st.notif_queue[0].subtitle, "halo 2");
+    assert_eq!(st.notif_history.len(), 4);
+
+    // Render collapsed banner and verify +1 queue badge + ActivateNotification + DismissNotification
+    st.sync_preview_settled();
+    let mut r = Renderer::new(st.canvas_width() as u32, st.canvas_height() as u32);
+    r.render_centered(&st, None);
+    assert!(
+        r.hits
+            .iter()
+            .any(|h| h.action == Action::DismissNotification)
+    );
+    assert!(
+        r.hits
+            .iter()
+            .any(|h| h.action == Action::ClearNotificationQueue)
+    );
+    assert!(
+        r.hits
+            .iter()
+            .any(|h| h.action == Action::ActivateNotification)
+    );
+
+    // 4. Dismissing active banner seamlessly advances to WhatsApp without collapsing anim_notif_t to 0
+    st.apply_setting_action(Action::DismissNotification);
+    assert_eq!(st.notification.as_ref().unwrap().app_name, "WhatsApp");
+    assert_eq!(st.notif_queue.len(), 0);
+    assert!(
+        st.anim_notif_t >= 0.75,
+        "Advancing queue should stay seamlessly open"
+    );
+
+    // 5. ClearNotificationQueue clears everything
+    st.apply_setting_action(Action::ClearNotificationQueue);
+    assert!(st.notification.is_none());
+    assert!(st.notif_queue.is_empty());
+
+    // 6. Expanded notification history renders in both Top and Left placements
+    for placement in [NotchPlacement::Top, NotchPlacement::Left] {
+        st.placement = placement;
+        st.set_hovered(true);
+        st.show_notif_history = true;
+        st.sync_preview_settled();
+        let mut rh = Renderer::new(st.canvas_width() as u32, st.canvas_height() as u32);
+        rh.render_centered(&st, None);
+        assert!(
+            rh.hits
+                .iter()
+                .any(|h| h.action == Action::ToggleNotifHistory)
+        );
+        assert!(
+            rh.hits
+                .iter()
+                .any(|h| h.action == Action::ClearNotifHistory)
+        );
+        assert!(
+            rh.hits
+                .iter()
+                .any(|h| h.action == Action::ActivateHistoryItem(0))
+        );
+        assert!(
+            rh.hits
+                .iter()
+                .any(|h| h.action == Action::DismissHistoryItem(0))
+        );
+    }
 }

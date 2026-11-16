@@ -1,7 +1,9 @@
 #![allow(clippy::too_many_arguments)]
 
 use fontdue::{Font, FontSettings, Metrics};
+use std::borrow::Cow;
 use std::collections::HashMap;
+use std::sync::OnceLock;
 use tiny_skia::{Color, Pixmap};
 
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
@@ -14,9 +16,11 @@ pub enum Weight {
 /// Glyph rasterizer + cache on top of fontdue, compositing straight into a
 /// premultiplied tiny-skia pixmap. Coordinates here are *physical* pixels.
 pub struct FontRenderer {
-    fonts: [Font; 3],
+    fonts: &'static [Font; 3],
     cache: HashMap<(char, Weight, u32), (Metrics, Vec<u8>)>,
 }
+
+static SHARED_FONTS: OnceLock<[Font; 3]> = OnceLock::new();
 
 fn load(path: &str) -> Option<Font> {
     std::fs::read(path)
@@ -26,13 +30,16 @@ fn load(path: &str) -> Option<Font> {
 
 impl FontRenderer {
     pub fn new() -> Self {
-        let regular = load(r"C:\Windows\Fonts\segoeui.ttf").expect("Segoe UI not found");
-        let semibold = load(r"C:\Windows\Fonts\seguisb.ttf")
-            .unwrap_or_else(|| load(r"C:\Windows\Fonts\segoeui.ttf").unwrap());
-        let bold = load(r"C:\Windows\Fonts\segoeuib.ttf")
-            .unwrap_or_else(|| load(r"C:\Windows\Fonts\segoeui.ttf").unwrap());
+        let fonts = SHARED_FONTS.get_or_init(|| {
+            let regular = load(r"C:\Windows\Fonts\segoeui.ttf").expect("Segoe UI not found");
+            let semibold = load(r"C:\Windows\Fonts\seguisb.ttf")
+                .unwrap_or_else(|| load(r"C:\Windows\Fonts\segoeui.ttf").unwrap());
+            let bold = load(r"C:\Windows\Fonts\segoeuib.ttf")
+                .unwrap_or_else(|| load(r"C:\Windows\Fonts\segoeui.ttf").unwrap());
+            [regular, semibold, bold]
+        });
         Self {
-            fonts: [regular, semibold, bold],
+            fonts,
             cache: HashMap::new(),
         }
     }
@@ -55,24 +62,34 @@ impl FontRenderer {
         width
     }
 
-    pub fn ellipsize(&self, text: &str, px: f32, w: Weight, max_w: f32) -> String {
+    pub fn ellipsize_cow<'a>(&self, text: &'a str, px: f32, w: Weight, max_w: f32) -> Cow<'a, str> {
         if self.measure(text, px, w) <= max_w {
-            return text.to_string();
+            return Cow::Borrowed(text);
         }
         let ell = "…";
         let budget = max_w - self.measure(ell, px, w);
         let f = self.font(w);
-        let mut out = String::new();
+        let mut out = String::with_capacity(text.len().min(64));
         let mut acc = 0.0;
+        let mut prev: Option<char> = None;
         for c in text.chars() {
-            let a = f.metrics(c, px).advance_width;
+            let kern = prev.and_then(|p| f.horizontal_kern(p, c, px)).unwrap_or(0.0);
+            let a = kern + f.metrics(c, px).advance_width;
             if acc + a > budget {
                 break;
             }
             acc += a;
             out.push(c);
+            prev = Some(c);
         }
-        format!("{}{}", out.trim_end(), ell)
+        let trimmed_len = out.trim_end().len();
+        out.truncate(trimmed_len);
+        out.push('…');
+        Cow::Owned(out)
+    }
+
+    pub fn ellipsize(&self, text: &str, px: f32, w: Weight, max_w: f32) -> String {
+        self.ellipsize_cow(text, px, w, max_w).into_owned()
     }
 
     /// Word-wrap `text` into lines of width `<= max_w` (physical px) without ellipsis truncation.
@@ -106,12 +123,12 @@ impl FontRenderer {
                     // Break an abnormally long single token across lines without ellipsis
                     let mut chunk = String::new();
                     for ch in word.chars() {
-                        let next_chunk = format!("{chunk}{ch}");
-                        if !chunk.is_empty() && self.measure(&next_chunk, px, w) > budget {
-                            lines.push(chunk);
-                            chunk = ch.to_string();
-                        } else {
-                            chunk = next_chunk;
+                        let prev_len = chunk.len();
+                        chunk.push(ch);
+                        if prev_len > 0 && self.measure(&chunk, px, w) > budget {
+                            chunk.truncate(prev_len);
+                            lines.push(std::mem::take(&mut chunk));
+                            chunk.push(ch);
                         }
                     }
                     current = chunk;
@@ -119,12 +136,12 @@ impl FontRenderer {
             } else {
                 let mut chunk = String::new();
                 for ch in word.chars() {
-                    let next_chunk = format!("{chunk}{ch}");
-                    if !chunk.is_empty() && self.measure(&next_chunk, px, w) > budget {
-                        lines.push(chunk);
-                        chunk = ch.to_string();
-                    } else {
-                        chunk = next_chunk;
+                    let prev_len = chunk.len();
+                    chunk.push(ch);
+                    if prev_len > 0 && self.measure(&chunk, px, w) > budget {
+                        chunk.truncate(prev_len);
+                        lines.push(std::mem::take(&mut chunk));
+                        chunk.push(ch);
                     }
                 }
                 current = chunk;
@@ -140,8 +157,17 @@ impl FontRenderer {
         lines
     }
 
-    /// Draw `text` with its baseline at `baseline` (physical px).
-    pub fn draw(&mut self, pm: &mut Pixmap, text: &str, x: f32, baseline: f32, px: f32, w: Weight, color: Color) {
+    /// Draw `text` with its baseline at `baseline` (physical px) and return the advance width in physical px.
+    pub fn draw(
+        &mut self,
+        pm: &mut Pixmap,
+        text: &str,
+        x: f32,
+        baseline: f32,
+        px: f32,
+        w: Weight,
+        color: Color,
+    ) -> f32 {
         let size_key = (px * 4.0).round() as u32;
         let raster_px = size_key as f32 / 4.0;
         let baseline = baseline.round();
@@ -149,11 +175,14 @@ impl FontRenderer {
         let mut prev: Option<char> = None;
         for ch in text.chars() {
             if let Some(p) = prev {
-                pen += self.fonts[w as usize].horizontal_kern(p, ch, raster_px).unwrap_or(0.0);
+                pen += self.fonts[w as usize]
+                    .horizontal_kern(p, ch, raster_px)
+                    .unwrap_or(0.0);
             }
             let key = (ch, w, size_key);
             if !self.cache.contains_key(&key) {
-                if self.cache.len() > 4096 {
+                const MAX_GLYPH_CACHE_ENTRIES: usize = 512;
+                if self.cache.len() >= MAX_GLYPH_CACHE_ENTRIES {
                     self.cache.clear();
                 }
                 let g = self.fonts[w as usize].rasterize(ch, raster_px);
@@ -166,6 +195,7 @@ impl FontRenderer {
             pen += m.advance_width;
             prev = Some(ch);
         }
+        pen - x
     }
 }
 

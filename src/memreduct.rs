@@ -86,7 +86,11 @@ const CMD_PURGE_LOW_PRIORITY_STANDBY_LIST: u32 = 5;
 unsafe extern "system" {
     fn GlobalMemoryStatusEx(lp_buffer: *mut MemoryStatusEx) -> i32;
     fn K32EnumProcesses(lpid_process: *mut u32, cb: u32, lpcb_needed: *mut u32) -> i32;
-    fn OpenProcess(dw_desired_access: u32, b_inherit_handle: i32, dw_process_id: u32) -> *mut c_void;
+    fn OpenProcess(
+        dw_desired_access: u32,
+        b_inherit_handle: i32,
+        dw_process_id: u32,
+    ) -> *mut c_void;
     fn K32EmptyWorkingSet(h_process: *mut c_void) -> i32;
     fn CloseHandle(h_object: *mut c_void) -> i32;
     fn SetProcessWorkingSetSize(
@@ -246,19 +250,66 @@ pub fn enable_memory_privileges() {
         let privs: [&[u16]; 2] = [
             // SeProfileSingleProcessPrivilege
             &[
-                b'S' as u16, b'e' as u16, b'P' as u16, b'r' as u16, b'o' as u16, b'f' as u16,
-                b'i' as u16, b'l' as u16, b'e' as u16, b'S' as u16, b'i' as u16, b'n' as u16,
-                b'g' as u16, b'l' as u16, b'e' as u16, b'P' as u16, b'r' as u16, b'o' as u16,
-                b'c' as u16, b'e' as u16, b's' as u16, b's' as u16, b'P' as u16, b'r' as u16,
-                b'i' as u16, b'v' as u16, b'i' as u16, b'l' as u16, b'e' as u16, b'g' as u16,
-                b'e' as u16, 0,
+                b'S' as u16,
+                b'e' as u16,
+                b'P' as u16,
+                b'r' as u16,
+                b'o' as u16,
+                b'f' as u16,
+                b'i' as u16,
+                b'l' as u16,
+                b'e' as u16,
+                b'S' as u16,
+                b'i' as u16,
+                b'n' as u16,
+                b'g' as u16,
+                b'l' as u16,
+                b'e' as u16,
+                b'P' as u16,
+                b'r' as u16,
+                b'o' as u16,
+                b'c' as u16,
+                b'e' as u16,
+                b's' as u16,
+                b's' as u16,
+                b'P' as u16,
+                b'r' as u16,
+                b'i' as u16,
+                b'v' as u16,
+                b'i' as u16,
+                b'l' as u16,
+                b'e' as u16,
+                b'g' as u16,
+                b'e' as u16,
+                0,
             ],
             // SeIncreaseQuotaPrivilege
             &[
-                b'S' as u16, b'e' as u16, b'I' as u16, b'n' as u16, b'c' as u16, b'r' as u16,
-                b'e' as u16, b'a' as u16, b's' as u16, b'e' as u16, b'Q' as u16, b'u' as u16,
-                b'o' as u16, b't' as u16, b'a' as u16, b'P' as u16, b'r' as u16, b'i' as u16,
-                b'v' as u16, b'i' as u16, b'l' as u16, b'e' as u16, b'g' as u16, b'e' as u16, 0,
+                b'S' as u16,
+                b'e' as u16,
+                b'I' as u16,
+                b'n' as u16,
+                b'c' as u16,
+                b'r' as u16,
+                b'e' as u16,
+                b'a' as u16,
+                b's' as u16,
+                b'e' as u16,
+                b'Q' as u16,
+                b'u' as u16,
+                b'o' as u16,
+                b't' as u16,
+                b'a' as u16,
+                b'P' as u16,
+                b'r' as u16,
+                b'i' as u16,
+                b'v' as u16,
+                b'i' as u16,
+                b'l' as u16,
+                b'e' as u16,
+                b'g' as u16,
+                b'e' as u16,
+                0,
             ],
         ];
 

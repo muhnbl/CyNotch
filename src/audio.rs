@@ -53,7 +53,7 @@ impl AudioMonitor {
     }
 
     pub fn read_master_volume(&mut self) -> Option<f32> {
-        const ENDPOINT_REFRESH: std::time::Duration = std::time::Duration::from_millis(3000);
+        const ENDPOINT_REFRESH: std::time::Duration = std::time::Duration::from_millis(10_000);
         let stale = match (self.endpoint_vol.is_some(), self.last_resolve) {
             (true, Some(t)) => t.elapsed() >= ENDPOINT_REFRESH,
             _ => true,
@@ -63,7 +63,11 @@ impl AudioMonitor {
         }
         unsafe {
             let endpoint_vol = self.endpoint_vol.as_ref()?;
-            let muted = endpoint_vol.GetMute().ok().map(|b| b.as_bool()).unwrap_or(false);
+            let muted = endpoint_vol
+                .GetMute()
+                .ok()
+                .map(|b| b.as_bool())
+                .unwrap_or(false);
             if muted {
                 return Some(0.0);
             }
@@ -147,7 +151,10 @@ fn apply_master_volume_com(enumerator: &mut Option<IMMDeviceEnumerator>, level: 
         let clamped = level.clamp(0.0, 1.0);
         let _ = endpoint_vol.SetMute(clamped <= 0.001, std::ptr::null());
         if clamped > 0.001 {
-            if endpoint_vol.SetMasterVolumeLevelScalar(clamped, std::ptr::null()).is_err() {
+            if endpoint_vol
+                .SetMasterVolumeLevelScalar(clamped, std::ptr::null())
+                .is_err()
+            {
                 *enumerator = None;
                 return None;
             }

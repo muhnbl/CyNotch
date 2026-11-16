@@ -6,13 +6,13 @@ use std::sync::Mutex;
 use tiny_skia::{ColorU8, Pixmap};
 use windows::Win32::Foundation::{HWND, RECT};
 use windows::Win32::Graphics::Gdi::{
-    BitBlt, CreateCompatibleBitmap, CreateCompatibleDC, DeleteDC, DeleteObject, GetDC, GetDIBits,
-    ReleaseDC, SelectObject, BITMAPINFO, BITMAPINFOHEADER, BI_RGB, DIB_RGB_COLORS, SRCCOPY,
+    BI_RGB, BITMAPINFO, BITMAPINFOHEADER, BitBlt, CreateCompatibleBitmap, CreateCompatibleDC,
+    DIB_RGB_COLORS, DeleteDC, DeleteObject, GetDC, GetDIBits, ReleaseDC, SRCCOPY, SelectObject,
 };
 use windows::Win32::UI::WindowsAndMessaging::{
-    GetForegroundWindow, GetSystemMetrics, GetTopWindow, GetWindow, GetWindowLongW,
-    GetWindowRect, IsIconic, IsWindowVisible, GWL_EXSTYLE, GW_HWNDNEXT, SM_CXSCREEN,
-    SM_CXVIRTUALSCREEN, SM_CYSCREEN, SM_CYVIRTUALSCREEN, SM_XVIRTUALSCREEN, SM_YVIRTUALSCREEN,
+    GW_HWNDNEXT, GWL_EXSTYLE, GetForegroundWindow, GetSystemMetrics, GetTopWindow, GetWindow,
+    GetWindowLongW, GetWindowRect, IsIconic, IsWindowVisible, SM_CXSCREEN, SM_CXVIRTUALSCREEN,
+    SM_CYSCREEN, SM_CYVIRTUALSCREEN, SM_XVIRTUALSCREEN, SM_YVIRTUALSCREEN,
 };
 
 /// Serialize all Win32 clipboard operations within this process so concurrent
@@ -86,7 +86,12 @@ pub fn grab_full_desktop_frame() -> Option<GrabbedFrame> {
         let (x, y, w, h) = if vw > 0 && vh > 0 {
             (vx, vy, vw, vh)
         } else {
-            (0, 0, GetSystemMetrics(SM_CXSCREEN), GetSystemMetrics(SM_CYSCREEN))
+            (
+                0,
+                0,
+                GetSystemMetrics(SM_CXSCREEN),
+                GetSystemMetrics(SM_CYSCREEN),
+            )
         };
         grab_rect_frame(x, y, w, h, "desktop")
     }
@@ -396,7 +401,10 @@ pub fn shell_open_path(path: &str) {
     let path_owned = path.to_string();
     std::thread::spawn(move || {
         let wide_op: Vec<u16> = "open\0".encode_utf16().collect();
-        let wide_path: Vec<u16> = path_owned.encode_utf16().chain(std::iter::once(0)).collect();
+        let wide_path: Vec<u16> = path_owned
+            .encode_utf16()
+            .chain(std::iter::once(0))
+            .collect();
         unsafe {
             let _ = windows::Win32::System::Com::CoInitializeEx(
                 None,

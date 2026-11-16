@@ -1,15 +1,14 @@
-﻿#![allow(unsafe_op_in_unsafe_fn, clippy::too_many_arguments)]
+#![allow(unsafe_op_in_unsafe_fn, clippy::too_many_arguments)]
 
-use crate::composition::FrostedHost;
+use crate::composition::DCompHost;
 use crate::font::{FontRenderer, Weight};
 use crate::icons::{self, Icon};
 use crate::models::{
-    Action, AppState, ExpandedSizePreset, IdleMetric, LyricSize, LyricStyle, MotionPreset,
-    NotchMode, NotchPlacement, NotchSizePreset, NotchStyle, SettingsCategory, ToggleId,
-    TypeScale,
+    Action, AppState, ExpandedSizePreset, IdleMetric, LyricSize, LyricStyle, NotchMode,
+    NotchPlacement, NotchSizePreset, NotchStyle, SettingsCategory, ToggleId, TypeScale,
 };
 use crate::notifications;
-use crate::painter::{fade, lerp_color, rgba, tok, Hit, Painter};
+use crate::painter::{Hit, Painter, fade, lerp_color, rgba, tok};
 use crate::renderer::Renderer;
 use std::cell::RefCell;
 use std::collections::hash_map::DefaultHasher;
@@ -17,13 +16,13 @@ use std::hash::{Hash, Hasher};
 use std::sync::atomic::{AtomicBool, AtomicIsize, Ordering};
 use std::sync::{Arc, Mutex};
 use tiny_skia::{BlendMode, Color, Mask, Pixmap};
-use windows::core::*;
 use windows::Win32::Foundation::*;
-use windows::Win32::Graphics::Dwm::{DwmSetWindowAttribute, DWMWA_TRANSITIONS_FORCEDISABLED};
+use windows::Win32::Graphics::Dwm::{DWMWA_TRANSITIONS_FORCEDISABLED, DwmSetWindowAttribute};
 use windows::Win32::Graphics::Gdi::*;
 use windows::Win32::System::LibraryLoader::GetModuleHandleW;
 use windows::Win32::UI::Input::KeyboardAndMouse::*;
 use windows::Win32::UI::WindowsAndMessaging::*;
+use windows::core::*;
 
 const SETTINGS_CLASS_NAME: PCWSTR = w!("CyNotchSettingsClass");
 const SETTINGS_WINDOW_NAME: PCWSTR = w!("CyNotch Preferences");
@@ -31,7 +30,6 @@ const TIMER_SETTINGS_ANIM_ID: usize = 31;
 const WM_MOUSELEAVE_CODE: u32 = 0x02A3;
 pub const WM_APP_SETTINGS_REDRAW: u32 = 0x8000 + 21;
 pub const WM_APP_SETTINGS_CLOSE: u32 = 0x8000 + 22;
-pub const WM_APP_SETTINGS_SYNC_FROSTED: u32 = 0x8000 + 23;
 pub const WM_APP_SETTINGS_HIGHRES_TICK: u32 = 0x8000 + 24;
 
 const PANE_X: f32 = 240.0;
@@ -42,7 +40,6 @@ const PANE_BLEED: f32 = 12.0;
 
 pub static SETTINGS_HWND: AtomicIsize = AtomicIsize::new(0);
 static CLASS_REGISTERED: AtomicBool = AtomicBool::new(false);
-static RECREATING_SETTINGS: AtomicBool = AtomicBool::new(false);
 static SETTINGS_STATE: Mutex<Option<Arc<Mutex<AppState>>>> = Mutex::new(None);
 
 #[derive(Default)]
@@ -55,10 +52,7 @@ struct SettingsUi {
     hits: Vec<Hit>,
     slot_map: Vec<usize>,
     last_max_scroll: f32,
-    dib: SettingsDib,
-    frosted: Option<FrostedHost>,
-    is_frosted_hwnd: bool,
-    frosted_failed: bool,
+    dcomp: Option<DCompHost>,
     pointer: Option<(f32, f32)>,
     tracking_mouse: bool,
     hover_idx: Option<usize>,
@@ -81,100 +75,6 @@ fn get_settings_state() -> Option<Arc<Mutex<AppState>>> {
     SETTINGS_STATE.lock().ok().and_then(|slot| slot.clone())
 }
 
-struct SettingsDib {
-    hdc_screen: HDC,
-    hdc_mem: HDC,
-    h_bitmap: HBITMAP,
-    old_bmp: HGDIOBJ,
-    bits: *mut u8,
-    w: i32,
-    h: i32,
-}
-
-impl Default for SettingsDib {
-    fn default() -> Self {
-        Self {
-            hdc_screen: HDC::default(),
-            hdc_mem: HDC::default(),
-            h_bitmap: HBITMAP::default(),
-            old_bmp: HGDIOBJ::default(),
-            bits: std::ptr::null_mut(),
-            w: 0,
-            h: 0,
-        }
-    }
-}
-
-impl SettingsDib {
-    unsafe fn ensure(&mut self, w: i32, h: i32) -> bool {
-        if self.w == w && self.h == h && !self.bits.is_null() {
-            return true;
-        }
-        self.destroy();
-        let hdc_screen = GetDC(None);
-        if hdc_screen.is_invalid() {
-            return false;
-        }
-        let hdc_mem = CreateCompatibleDC(hdc_screen);
-        if hdc_mem.is_invalid() {
-            let _ = ReleaseDC(None, hdc_screen);
-            return false;
-        }
-        let bmi = BITMAPINFO {
-            bmiHeader: BITMAPINFOHEADER {
-                biSize: std::mem::size_of::<BITMAPINFOHEADER>() as u32,
-                biWidth: w,
-                biHeight: -h,
-                biPlanes: 1,
-                biBitCount: 32,
-                biCompression: BI_RGB.0,
-                ..Default::default()
-            },
-            ..Default::default()
-        };
-        let mut bits: *mut core::ffi::c_void = std::ptr::null_mut();
-        match CreateDIBSection(hdc_screen, &bmi, DIB_RGB_COLORS, &mut bits, None, 0) {
-            Ok(h_bitmap) if !bits.is_null() => {
-                let old_bmp = SelectObject(hdc_mem, h_bitmap);
-                self.hdc_screen = hdc_screen;
-                self.hdc_mem = hdc_mem;
-                self.h_bitmap = h_bitmap;
-                self.old_bmp = old_bmp;
-                self.bits = bits as *mut u8;
-                self.w = w;
-                self.h = h;
-                true
-            }
-            _ => {
-                let _ = DeleteDC(hdc_mem);
-                let _ = ReleaseDC(None, hdc_screen);
-                false
-            }
-        }
-    }
-
-    unsafe fn destroy(&mut self) {
-        if !self.h_bitmap.is_invalid() {
-            if !self.hdc_mem.is_invalid() {
-                SelectObject(self.hdc_mem, self.old_bmp);
-            }
-            let _ = DeleteObject(self.h_bitmap);
-            self.h_bitmap = HBITMAP::default();
-        }
-        if !self.hdc_mem.is_invalid() {
-            let _ = DeleteDC(self.hdc_mem);
-            self.hdc_mem = HDC::default();
-        }
-        if !self.hdc_screen.is_invalid() {
-            let _ = ReleaseDC(None, self.hdc_screen);
-            self.hdc_screen = HDC::default();
-        }
-        self.bits = std::ptr::null_mut();
-        self.w = 0;
-        self.h = 0;
-    }
-}
-
 pub fn is_open() -> bool {
     SETTINGS_HWND.load(Ordering::Acquire) != 0
 }
@@ -186,20 +86,6 @@ pub fn post_redraw() {
             let _ = PostMessageW(
                 HWND(raw as *mut std::ffi::c_void),
                 WM_APP_SETTINGS_REDRAW,
-                WPARAM(0),
-                LPARAM(0),
-            );
-        }
-    }
-}
-
-pub fn post_sync_frosted() {
-    let raw = SETTINGS_HWND.load(Ordering::Acquire);
-    if raw != 0 {
-        unsafe {
-            let _ = PostMessageW(
-                HWND(raw as *mut std::ffi::c_void),
-                WM_APP_SETTINGS_SYNC_FROSTED,
                 WPARAM(0),
                 LPARAM(0),
             );
@@ -281,18 +167,17 @@ unsafe fn ensure_settings_buffers(ui: &mut SettingsUi, w: u32, h: u32, pane_w: u
 }
 
 unsafe fn create_settings_hwnd(
-    _want_frosted: bool,
     win_x: i32,
     win_y: i32,
     w: i32,
     h: i32,
     h_instance: HMODULE,
-) -> std::result::Result<(HWND, Option<FrostedHost>, bool), ()> {
+) -> std::result::Result<(HWND, DCompHost), ()> {
     if let Ok(hwnd) = CreateWindowExW(
-        WS_EX_TOPMOST | WS_EX_LAYERED | WS_EX_TOOLWINDOW,
+        WS_EX_TOPMOST | WS_EX_NOREDIRECTIONBITMAP | WS_EX_TOOLWINDOW,
         SETTINGS_CLASS_NAME,
         SETTINGS_WINDOW_NAME,
-        WS_POPUP | WS_VISIBLE,
+        WS_POPUP,
         win_x,
         win_y,
         w,
@@ -302,14 +187,13 @@ unsafe fn create_settings_hwnd(
         h_instance,
         None,
     ) {
-        return Ok((hwnd, None, false));
+        if let Ok(host) = DCompHost::new(hwnd, w.max(1) as u32, h.max(1) as u32) {
+            return Ok((hwnd, host));
+        }
+        let _ = DestroyWindow(hwnd);
     }
 
     Err(())
-}
-
-unsafe fn sync_settings_frosted_mode(hwnd: HWND) -> HWND {
-    hwnd
 }
 
 pub fn open_or_focus(state: Arc<Mutex<AppState>>) {
@@ -323,11 +207,12 @@ pub fn open_or_focus(state: Arc<Mutex<AppState>>) {
                     st.settings_open = true;
                     st.windows_transparency_enabled =
                         notifications::is_windows_transparency_enabled();
+                    st.anim_settings_cat_y = AppState::settings_cat_pill_y(st.settings_category);
+                    st.sync_switches_immediate();
                 }
-                let active_hwnd = sync_settings_frosted_mode(hwnd);
-                let _ = ShowWindow(active_hwnd, SW_SHOW);
+                redraw_settings_with_cache(hwnd, true);
                 let _ = SetWindowPos(
-                    active_hwnd,
+                    hwnd,
                     HWND_TOPMOST,
                     0,
                     0,
@@ -335,30 +220,30 @@ pub fn open_or_focus(state: Arc<Mutex<AppState>>) {
                     0,
                     SWP_NOMOVE | SWP_NOSIZE | SWP_SHOWWINDOW,
                 );
-                let _ = SetForegroundWindow(active_hwnd);
-                redraw_settings(active_hwnd);
+                let _ = SetForegroundWindow(hwnd);
                 return;
             }
             SETTINGS_HWND.store(0, Ordering::Release);
         }
 
         set_settings_state(state.clone());
-        let (want_frosted, desired_scale) = if let Ok(mut st) = state.lock() {
+        let (desired_scale, cat) = if let Ok(mut st) = state.lock() {
             st.windows_transparency_enabled = notifications::is_windows_transparency_enabled();
             st.settings_open = true;
             st.settings_hover_idx = None;
             st.settings_hover_slots = [0.0; 48];
             st.anim_settings_cat_y = AppState::settings_cat_pill_y(st.settings_category);
             st.sync_switches_immediate();
-            (st.is_frosted_active(), st.type_scale.ui_scale())
+            (st.type_scale.ui_scale(), st.settings_category)
         } else {
-            (false, 1.0)
+            (1.0, SettingsCategory::General)
         };
         let s = effective_settings_scale(HWND::default(), desired_scale);
         let w = (AppState::SETTINGS_WIDTH * s).round().max(1.0) as u32;
         let h = (AppState::SETTINGS_HEIGHT * s).round().max(1.0) as u32;
         let pane_w = ((PANE_W * s).round() + (PANE_BLEED * s).round() * 2.0).max(1.0) as u32;
-        let pane_h = (PANE_H * s).round().max(1.0) as u32;
+        let full_pane_h = (pane_content_height(cat) + 10.0).max(PANE_H);
+        let pane_h = (full_pane_h * s).round().max(1.0) as u32;
         SETTINGS_UI.with_borrow_mut(|ui| {
             ensure_settings_buffers(ui, w, h, pane_w, pane_h);
         });
@@ -388,14 +273,11 @@ pub fn open_or_focus(state: Arc<Mutex<AppState>>) {
         let screen_h = GetSystemMetrics(SM_CYSCREEN);
         let win_x = ((screen_w - w as i32) / 2).max(16);
         let win_y = ((screen_h - h as i32) / 2).max(16);
-        let use_frosted = want_frosted && SETTINGS_UI.with_borrow(|ui| !ui.frosted_failed);
 
-        if let Ok((hwnd, host, is_fr)) =
-            create_settings_hwnd(use_frosted, win_x, win_y, w as i32, h as i32, h_instance)
+        if let Ok((hwnd, host)) = create_settings_hwnd(win_x, win_y, w as i32, h as i32, h_instance)
         {
             SETTINGS_UI.with_borrow_mut(|ui| {
-                ui.frosted = host;
-                ui.is_frosted_hwnd = is_fr;
+                ui.dcomp = Some(host);
             });
             SETTINGS_HWND.store(hwnd.0 as isize, Ordering::Release);
             let force_disable: i32 = 1;
@@ -406,24 +288,7 @@ pub fn open_or_focus(state: Arc<Mutex<AppState>>) {
                 std::mem::size_of::<i32>() as u32,
             );
             crate::borders::set_window_borderless(hwnd);
-            crate::borders::set_window_rounded_corners(hwnd);
-            let diam = (44.0 * s).round().max(4.0) as i32;
-            let hrgn = windows::Win32::Graphics::Gdi::CreateRoundRectRgn(
-                0,
-                0,
-                w as i32 + 1,
-                h as i32 + 1,
-                diam,
-                diam,
-            );
-            if !hrgn.is_invalid()
-                && windows::Win32::Graphics::Gdi::SetWindowRgn(hwnd, hrgn, false) == 0
-            {
-                let _ = windows::Win32::Graphics::Gdi::DeleteObject(
-                    windows::Win32::Graphics::Gdi::HGDIOBJ(hrgn.0),
-                );
-            }
-            let _ = ShowWindow(hwnd, SW_SHOW);
+            redraw_settings(hwnd);
             let _ = SetWindowPos(
                 hwnd,
                 HWND_TOPMOST,
@@ -434,7 +299,6 @@ pub fn open_or_focus(state: Arc<Mutex<AppState>>) {
                 SWP_SHOWWINDOW,
             );
             let _ = SetForegroundWindow(hwnd);
-            redraw_settings(hwnd);
         }
     }
 }
@@ -456,7 +320,7 @@ unsafe fn tick_settings_animation(hwnd: HWND) {
     if let Some(state_mutex) = get_settings_state()
         && let Ok(mut st) = state_mutex.lock()
     {
-        changed = st.update_settings_animation(dt);
+        changed |= st.update_settings_animation(dt);
         desired_ms = st.needs_settings_timer_ms();
     }
     sync_settings_timer(hwnd, desired_ms);
@@ -486,7 +350,7 @@ unsafe fn sync_settings_timer(hwnd: HWND, desired_ms: Option<u32>) {
         if ms == 0 {
             let _ = KillTimer(hwnd, TIMER_SETTINGS_ANIM_ID);
             crate::window::set_settings_pacer(hwnd, 0);
-        } else if ms < 16 {
+        } else if ms <= 30 {
             let _ = KillTimer(hwnd, TIMER_SETTINGS_ANIM_ID);
             crate::window::set_settings_pacer(hwnd, ms);
         } else {
@@ -518,7 +382,8 @@ unsafe fn redraw_settings_with_cache(hwnd: HWND, allow_pane_cache: bool) {
     let int_w = (AppState::SETTINGS_WIDTH * s).round().max(1.0) as i32;
     let int_h = (AppState::SETTINGS_HEIGHT * s).round().max(1.0) as i32;
     let pane_w_px = ((PANE_W * s).round() + (PANE_BLEED * s).round() * 2.0).max(1.0) as u32;
-    let pane_h_px = (PANE_H * s).round().max(1.0) as u32;
+    let full_pane_h = (pane_content_height(snapshot.settings_category) + 10.0).max(PANE_H);
+    let pane_h_px = (full_pane_h * s).round().max(1.0) as u32;
 
     let mut cur_rc = RECT::default();
     if GetWindowRect(hwnd, &mut cur_rc).is_ok() {
@@ -535,7 +400,10 @@ unsafe fn redraw_settings_with_cache(hwnd: HWND, allow_pane_cache: bool) {
             };
             let mon = MonitorFromWindow(hwnd, MONITOR_DEFAULTTONEAREST);
             if GetMonitorInfoW(mon, &mut mi).as_bool() {
-                nx = nx.clamp(mi.rcWork.left, (mi.rcWork.right - int_w).max(mi.rcWork.left));
+                nx = nx.clamp(
+                    mi.rcWork.left,
+                    (mi.rcWork.right - int_w).max(mi.rcWork.left),
+                );
                 ny = ny.clamp(mi.rcWork.top, (mi.rcWork.bottom - int_h).max(mi.rcWork.top));
             }
             let _ = SetWindowPos(
@@ -550,13 +418,7 @@ unsafe fn redraw_settings_with_cache(hwnd: HWND, allow_pane_cache: bool) {
         }
     }
 
-    enum PresentKind {
-        None,
-        FrostedOk,
-        Layered(HDC, HDC),
-    }
-
-    let present_kind = SETTINGS_UI.with_borrow_mut(|ui| {
+    SETTINGS_UI.with_borrow_mut(|ui| {
         ensure_settings_buffers(ui, int_w as u32, int_h as u32, pane_w_px, pane_h_px);
         let SettingsUi {
             ref mut pixmap,
@@ -567,9 +429,7 @@ unsafe fn redraw_settings_with_cache(hwnd: HWND, allow_pane_cache: bool) {
             ref mut hits,
             ref mut slot_map,
             ref mut last_max_scroll,
-            ref mut dib,
-            ref mut frosted,
-            is_frosted_hwnd,
+            ref mut dcomp,
             pointer,
             ..
         } = *ui;
@@ -580,7 +440,7 @@ unsafe fn redraw_settings_with_cache(hwnd: HWND, allow_pane_cache: bool) {
             pane_mask.as_mut(),
             fonts.as_mut(),
         ) else {
-            return PresentKind::None;
+            return;
         };
         let (new_hits, new_slots, max_scroll) =
             render_settings_pixmap_into(&snapshot, pointer, pm, mask, ppm, pmask, fonts);
@@ -589,76 +449,10 @@ unsafe fn redraw_settings_with_cache(hwnd: HWND, allow_pane_cache: bool) {
         *slot_map = new_slots;
         *last_max_scroll = max_scroll;
 
-        if is_frosted_hwnd
-            && let Some(host) = frosted.as_mut()
-        {
-            let _ = host.set_blur_amount(snapshot.frosted_blur_px as f32);
-            let r = 22.0 * s;
-            let _ = host.set_clip(
-                0.0,
-                0.0,
-                int_w as f32,
-                int_h as f32,
-                (r, r, r, r),
-                NotchStyle::Floating,
-                NotchPlacement::Top,
-            );
-            if host
-                .present_rgba_premultiplied(pm.data(), int_w as u32, int_h as u32)
-                .is_ok()
-            {
-                return PresentKind::FrostedOk;
-            }
-        }
-
-        if dib.ensure(int_w, int_h) {
-            let src = pm.data();
-            let dst = std::slice::from_raw_parts_mut(dib.bits, src.len());
-            for (d, s) in dst
-                .as_chunks_mut::<4>()
-                .0
-                .iter_mut()
-                .zip(src.as_chunks::<4>().0.iter())
-            {
-                let px = u32::from_le_bytes(*s);
-                *d = ((px & 0xFF00_FF00) | ((px >> 16) & 0xFF) | ((px & 0xFF) << 16)).to_le_bytes();
-            }
-            PresentKind::Layered(dib.hdc_screen, dib.hdc_mem)
-        } else {
-            PresentKind::None
+        if let Some(host) = dcomp.as_mut() {
+            let _ = host.present_rgba_premultiplied(pm.data(), int_w as u32, int_h as u32);
         }
     });
-
-    if let PresentKind::Layered(hdc_screen, hdc_mem) = present_kind {
-        let mut rc = RECT::default();
-        let _ = GetWindowRect(hwnd, &mut rc);
-        let pt_src = POINT { x: 0, y: 0 };
-        let pt_dst = POINT {
-            x: rc.left,
-            y: rc.top,
-        };
-        let size = SIZE {
-            cx: int_w,
-            cy: int_h,
-        };
-        let blend = BLENDFUNCTION {
-            BlendOp: AC_SRC_OVER as u8,
-            BlendFlags: 0,
-            SourceConstantAlpha: 255,
-            AlphaFormat: AC_SRC_ALPHA as u8,
-        };
-        let _ = UpdateLayeredWindow(
-            hwnd,
-            hdc_screen,
-            Some(&pt_dst),
-            Some(&size),
-            hdc_mem,
-            Some(&pt_src),
-            COLORREF(0),
-            Some(&blend),
-            ULW_ALPHA,
-        );
-    }
 }
 
 unsafe fn refresh_hover_after_redraw(hwnd: HWND) {
@@ -682,7 +476,6 @@ unsafe fn refresh_hover_after_redraw(hwnd: HWND) {
         st.settings_hover_idx = refreshed_slot;
         if let Some(i) = refreshed_slot
             && st.micro_interactions
-            && st.motion_preset != MotionPreset::Reduced
             && i < st.settings_hover_slots.len()
         {
             st.settings_hover_slots[i] = st.settings_hover_slots[i].max(0.02);
@@ -706,29 +499,30 @@ unsafe extern "system" fn settings_wnd_proc(
     }
 }
 
-unsafe fn settings_wnd_proc_inner(
-    hwnd: HWND,
-    msg: u32,
-    wparam: WPARAM,
-    lparam: LPARAM,
-) -> LRESULT {
+unsafe fn hide_settings_window(hwnd: HWND) {
+    let _ = ShowWindow(hwnd, SW_HIDE);
+    crate::window::clear_settings_pacer_in_flight();
+    SETTINGS_UI.with_borrow_mut(|ui| {
+        if ui.drag_origin.take().is_some() {
+            let _ = ReleaseCapture();
+        }
+    });
+    let _ = DestroyWindow(hwnd);
+}
+
+unsafe fn settings_wnd_proc_inner(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPARAM) -> LRESULT {
     match msg {
         WM_APP_SETTINGS_REDRAW => {
-            redraw_settings(hwnd);
+            redraw_settings_with_cache(hwnd, true);
             LRESULT(0)
         }
-        WM_APP_SETTINGS_CLOSE => {
-            let _ = DestroyWindow(hwnd);
-            LRESULT(0)
-        }
-        WM_APP_SETTINGS_SYNC_FROSTED => {
-            let active = sync_settings_frosted_mode(hwnd);
-            redraw_settings(active);
+        WM_APP_SETTINGS_CLOSE | WM_CLOSE => {
+            hide_settings_window(hwnd);
             LRESULT(0)
         }
         WM_APP_SETTINGS_HIGHRES_TICK => {
-            crate::window::clear_settings_pacer_in_flight();
             tick_settings_animation(hwnd);
+            crate::window::clear_settings_pacer_in_flight();
             LRESULT(0)
         }
         WM_SETTINGCHANGE => {
@@ -738,50 +532,53 @@ unsafe fn settings_wnd_proc_inner(
             {
                 st.windows_transparency_enabled = win_trans;
             }
-            let active = sync_settings_frosted_mode(hwnd);
-            crate::window::post_sync_frosted();
-            redraw_settings(active);
+            redraw_settings(hwnd);
             LRESULT(0)
         }
         WM_NCHITTEST => {
-            let (is_fr, w, h) = SETTINGS_UI.with_borrow(|ui| {
-                let (pw, ph) = ui
-                    .pixmap
+            let (w, h) = SETTINGS_UI.with_borrow(|ui| {
+                ui.pixmap
                     .as_ref()
                     .map(|p| (p.width() as i32, p.height() as i32))
-                    .unwrap_or((AppState::SETTINGS_WIDTH as i32, AppState::SETTINGS_HEIGHT as i32));
-                (ui.is_frosted_hwnd, pw, ph)
+                    .unwrap_or((
+                        AppState::SETTINGS_WIDTH as i32,
+                        AppState::SETTINGS_HEIGHT as i32,
+                    ))
             });
-            if is_fr {
-                let sx = (lparam.0 & 0xffff) as i16 as i32;
-                let sy = ((lparam.0 >> 16) & 0xffff) as i16 as i32;
-                let mut pt = POINT { x: sx, y: sy };
-                let _ = ScreenToClient(hwnd, &mut pt);
-                if pt.x >= 0 && pt.x < w && pt.y >= 0 && pt.y < h {
-                    return LRESULT(1); // HTCLIENT
-                }
+            let sx = (lparam.0 & 0xffff) as i16 as i32;
+            let sy = ((lparam.0 >> 16) & 0xffff) as i16 as i32;
+            let mut pt = POINT { x: sx, y: sy };
+            let _ = ScreenToClient(hwnd, &mut pt);
+            if pt.x >= 0 && pt.x < w && pt.y >= 0 && pt.y < h {
+                return LRESULT(1); // HTCLIENT
             }
             DefWindowProcW(hwnd, msg, wparam, lparam)
         }
         WM_MOUSEWHEEL => {
             let delta = ((wparam.0 >> 16) as u16 as i16) as f32;
-            let scroll_delta = (-delta / 120.0) * 36.0;
+            let scroll_delta = (-delta / 120.0) * 96.0;
             let max_scroll = SETTINGS_UI.with_borrow(|ui| ui.last_max_scroll);
+            let mut moved = false;
             if let Some(state_mutex) = get_settings_state()
                 && let Ok(mut st) = state_mutex.lock()
             {
                 let cat = st.settings_category;
                 let cur = st.settings_scroll(cat);
                 let clamped = (cur + scroll_delta).clamp(0.0, max_scroll.max(0.0));
-                st.set_settings_scroll(cat, clamped);
+                if (clamped - cur).abs() > 0.1 {
+                    st.set_settings_scroll(cat, clamped);
+                    moved = true;
+                }
             }
-            redraw_settings(hwnd);
-            refresh_hover_after_redraw(hwnd);
+            if moved {
+                redraw_settings_with_cache(hwnd, true);
+                refresh_hover_after_redraw(hwnd);
+            }
             LRESULT(0)
         }
         WM_KEYDOWN => {
             if wparam.0 as u16 == VK_ESCAPE.0 {
-                let _ = DestroyWindow(hwnd);
+                hide_settings_window(hwnd);
                 return LRESULT(0);
             }
             DefWindowProcW(hwnd, msg, wparam, lparam)
@@ -852,7 +649,6 @@ unsafe fn settings_wnd_proc_inner(
                     st.settings_hover_idx = new_slot;
                     if let Some(i) = new_slot
                         && st.micro_interactions
-                        && st.motion_preset != MotionPreset::Reduced
                         && i < st.settings_hover_slots.len()
                     {
                         st.settings_hover_slots[i] = st.settings_hover_slots[i].max(0.02);
@@ -906,7 +702,7 @@ unsafe fn settings_wnd_proc_inner(
                 {
                     effects = st.apply_setting_action(act);
                 }
-                let mut active_hwnd = hwnd;
+                let active_hwnd = hwnd;
                 if let Some(eff) = effects {
                     if let Some(enabled) = eff.update_autostart {
                         crate::autostart::set_autostart(enabled);
@@ -922,7 +718,10 @@ unsafe fn settings_wnd_proc_inner(
                         let needs_privacy = get_settings_state()
                             .and_then(|arc| {
                                 arc.lock().ok().map(|st| {
-                                    !matches!(st.notif_listener_status.as_str(), "Connected" | "Listening" | "Off")
+                                    !matches!(
+                                        st.notif_listener_status.as_str(),
+                                        "Connected" | "Listening" | "Off"
+                                    )
                                 })
                             })
                             .unwrap_or(false);
@@ -950,10 +749,6 @@ unsafe fn settings_wnd_proc_inner(
                             post_redraw();
                         });
                     }
-                    if eff.sync_frosted_window {
-                        active_hwnd = sync_settings_frosted_mode(hwnd);
-                        crate::window::post_sync_frosted();
-                    }
                     if let Some(rm_borders) = eff.sync_windows_borders {
                         crate::borders::set_enabled(rm_borders);
                     }
@@ -966,7 +761,7 @@ unsafe fn settings_wnd_proc_inner(
                         return LRESULT(0);
                     }
                     if eff.close_settings {
-                        let _ = DestroyWindow(active_hwnd);
+                        hide_settings_window(active_hwnd);
                         return LRESULT(0);
                     }
                 }
@@ -1005,35 +800,13 @@ unsafe fn settings_wnd_proc_inner(
             LRESULT(0)
         }
         WM_DESTROY => {
-            if RECREATING_SETTINGS.load(Ordering::Acquire) {
-                SETTINGS_UI.with_borrow_mut(|ui| {
-                    ui.frosted = None;
-                    ui.dib.destroy();
-                });
-                return LRESULT(0);
-            }
             SETTINGS_HWND.store(0, Ordering::Release);
             let _ = KillTimer(hwnd, TIMER_SETTINGS_ANIM_ID);
             crate::window::set_settings_pacer(hwnd, 0);
+            crate::window::clear_settings_pacer_in_flight();
             crate::window::set_high_res_slot(2, false);
             SETTINGS_UI.with_borrow_mut(|ui| {
-                ui.timer_ms = 0;
-                ui.last_anim = None;
-                ui.drag_origin = None;
-                ui.tracking_mouse = false;
-                ui.pointer = None;
-                ui.hover_idx = None;
-                ui.frosted = None;
-                ui.is_frosted_hwnd = false;
-                ui.dib.destroy();
-                ui.hits.clear();
-                ui.slot_map.clear();
-                ui.last_max_scroll = 0.0;
-                ui.pixmap = None;
-                ui.mask = None;
-                ui.pane_pm = None;
-                ui.pane_mask = None;
-                ui.fonts = None;
+                *ui = SettingsUi::default();
             });
             PANE_SCRATCH.with_borrow_mut(|slot| *slot = None);
             SETTINGS_CHROME.with_borrow_mut(|slot| *slot = None);
@@ -1064,7 +837,6 @@ fn pane_content_height(cat: SettingsCategory) -> f32 {
         SettingsCategory::Motion => 212.0 + CARD_GAP + 172.0,
         SettingsCategory::Modules => 270.0 + CARD_GAP + 158.0 + CARD_GAP + 214.0,
         SettingsCategory::Notifications => 228.0 + CARD_GAP + 250.0,
-        SettingsCategory::Health => 282.0 + CARD_GAP + 210.0,
         SettingsCategory::System => 502.0 + CARD_GAP + 194.0,
     }
 }
@@ -1077,7 +849,8 @@ pub fn render_settings_pixmap(
     clip_mask: &mut Mask,
     fonts: &mut FontRenderer,
 ) -> Vec<Hit> {
-    let (hits, _max_scroll) = render_settings_pixmap_with_meta(state, pointer, pixmap, clip_mask, fonts);
+    let (hits, _max_scroll) =
+        render_settings_pixmap_with_meta(state, pointer, pixmap, clip_mask, fonts);
     hits
 }
 
@@ -1092,34 +865,33 @@ pub fn render_settings_pixmap_with_meta(
         .min(pixmap.height() as f32 / AppState::SETTINGS_HEIGHT)
         .max(0.5);
     let pane_w = ((PANE_W * s).round() + (PANE_BLEED * s).round() * 2.0).max(1.0) as u32;
-    let pane_h = (PANE_H * s).round().max(1.0) as u32;
+    let full_pane_h = ((pane_content_height(state.settings_category) + 10.0).max(PANE_H) * s)
+        .round()
+        .max(1.0) as u32;
     // Reuse the scroll-pane scratch surface across frames: a fresh Pixmap+Mask
     // pair here costs a multi-megabyte alloc/zero on every rendered frame.
-    pane_scratch(pane_w, pane_h, |pane_pm, pane_mask| {
-        let (hits, _slot_map, max_scroll) =
-            render_settings_pixmap_into(state, pointer, pixmap, clip_mask, pane_pm, pane_mask, fonts);
+    pane_scratch(pane_w, full_pane_h, |pane_pm, pane_mask| {
+        let (hits, _slot_map, max_scroll) = render_settings_pixmap_into(
+            state, pointer, pixmap, clip_mask, pane_pm, pane_mask, fonts,
+        );
         (hits, max_scroll)
     })
 }
 
-/// Identity of the cached settings chrome surface: pixel size, frost mode and
-/// the encoded type scale.
-type ChromeKey = (u32, u32, bool, u32, u8);
+/// Identity of the cached settings chrome surface: pixel size, type scale,
+/// active category, frost mode/opacity and sidebar hover state.
+type ChromeKey = (u32, u32, u8, u8, bool, u32, [u32; 5]);
 
 #[derive(PartialEq)]
 struct PaneCacheKey {
     cat: SettingsCategory,
-    scroll_bits: u32,
     w: u32,
     h: u32,
-    frosted: bool,
-    frosted_opacity_pct: u32,
-    frosted_blur_px: u32,
     type_scale: u8,
     state_sig: u64,
     pointer_px: Option<(i32, i32)>,
-    switch_bits: Vec<u32>,
-    hover_bits: Vec<u32>,
+    switch_bits: [u32; 48],
+    hover_bits: [u32; 48],
 }
 
 struct CachedPane {
@@ -1144,14 +916,11 @@ fn compute_pane_state_sig(state: &AppState) -> u64 {
         state.idle_metric as u8,
         state.type_scale as u8,
         state.windows_transparency_enabled,
-        state.frosted_glass_enabled,
         state.frosted_opacity_pct,
-        state.frosted_blur_px,
         state.remove_windows_borders,
     )
         .hash(&mut h);
     (
-        state.motion_preset as u8,
         state.fps_cap,
         state.detected_hz,
         state.micro_interactions,
@@ -1166,40 +935,30 @@ fn compute_pane_state_sig(state: &AppState) -> u64 {
         state.notif_suppressed_apps,
     )
         .hash(&mut h);
-    (
-        state.lyric_size as u8,
-        state.lyric_style as u8,
-        state.health_reminders_enabled,
-        state.water.taken_ml,
-        state.water.goal_ml,
-        state.water.glass_ml,
-        state.water_interval_mins,
-        state.move_reminder_mins,
-        state.default_focus_mins,
-        state.default_break_mins,
-    )
-        .hash(&mut h);
-    (
-        state.telemetry.has_admin_privileges,
-        state.telemetry.memory_used_gb.to_bits(),
-        state.telemetry.memory_total_gb.to_bits(),
-        state.telemetry.memory_percent.to_bits(),
-        state.telemetry.pagefile_used_gb.to_bits(),
-        state.telemetry.pagefile_total_gb.to_bits(),
-        state.telemetry.pagefile_percent.to_bits(),
-        state.telemetry.sys_cache_mb.to_bits(),
-        state.telemetry.sys_cache_percent.to_bits(),
-    )
-        .hash(&mut h);
-    (
-        state.mem_reduct.show_clean_results,
-        state.mem_reduct.auto_clean_enabled,
-        state.mem_reduct.when_above_pct,
-        state.mem_reduct.every_mins,
-        &state.mem_reduct.last_cleaned_status,
-        state.mem_reduct.is_purging,
-    )
-        .hash(&mut h);
+    (state.lyric_size as u8, state.lyric_style as u8).hash(&mut h);
+    if state.settings_category == SettingsCategory::System {
+        (
+            state.telemetry.has_admin_privileges,
+            state.telemetry.memory_used_gb.to_bits(),
+            state.telemetry.memory_total_gb.to_bits(),
+            state.telemetry.memory_percent.to_bits(),
+            state.telemetry.pagefile_used_gb.to_bits(),
+            state.telemetry.pagefile_total_gb.to_bits(),
+            state.telemetry.pagefile_percent.to_bits(),
+            state.telemetry.sys_cache_mb.to_bits(),
+            state.telemetry.sys_cache_percent.to_bits(),
+        )
+            .hash(&mut h);
+        (
+            state.mem_reduct.show_clean_results,
+            state.mem_reduct.auto_clean_enabled,
+            state.mem_reduct.when_above_pct,
+            state.mem_reduct.every_mins,
+            &state.mem_reduct.last_cleaned_status,
+            state.mem_reduct.is_purging,
+        )
+            .hash(&mut h);
+    }
     for id in ToggleId::ALL {
         state.toggle_target(id).hash(&mut h);
     }
@@ -1212,23 +971,37 @@ fn blit_div255(v: u32) -> u8 {
     ((t + (t >> 8)) >> 8) as u8
 }
 
-fn blit_pane_pixmap(dst: &mut Pixmap, src: &Pixmap, dst_x: i32, dst_y: i32) {
+fn blit_pane_slice(
+    dst: &mut Pixmap,
+    src: &Pixmap,
+    dst_x: i32,
+    dst_y: i32,
+    src_y: i32,
+    slice_h: i32,
+) {
     let dw = dst.width() as i32;
     let dh = dst.height() as i32;
     let sw = src.width() as i32;
     let sh = src.height() as i32;
 
+    let sy0 = src_y.clamp(0, sh);
+    let sy1 = (src_y + slice_h).clamp(sy0, sh);
+    let vis_h = sy1 - sy0;
+    if vis_h <= 0 {
+        return;
+    }
+
     let x0 = dst_x.max(0);
     let y0 = dst_y.max(0);
     let x1 = (dst_x + sw).min(dw);
-    let y1 = (dst_y + sh).min(dh);
+    let y1 = (dst_y + vis_h).min(dh);
     if x0 >= x1 || y0 >= y1 {
         return;
     }
 
     let copy_cols = (x1 - x0) as usize;
     let sx_start = (x0 - dst_x) as usize;
-    let sy_start = (y0 - dst_y) as usize;
+    let sy_start = (sy0 + (y0 - dst_y)) as usize;
     let dst_stride = dst.width() as usize * 4;
     let src_stride = src.width() as usize * 4;
     let dst_data = dst.data_mut();
@@ -1269,14 +1042,17 @@ thread_local! {
     static PANE_CACHE_ALLOWED: std::cell::Cell<bool> = const { std::cell::Cell::new(true) };
 }
 
-fn pane_scratch<R>(
-    w: u32,
-    h: u32,
-    f: impl FnOnce(&mut Pixmap, &mut Mask) -> R,
-) -> R {
+fn pane_scratch<R>(w: u32, h: u32, f: impl FnOnce(&mut Pixmap, &mut Mask) -> R) -> R {
     PANE_SCRATCH.with_borrow_mut(|slot| {
         let needs_new = match slot {
-            Some((pm, mask, sw, sh)) => *sw != w || *sh != h || pm.width() != w || pm.height() != h || mask.width() != w || mask.height() != h,
+            Some((pm, mask, sw, sh)) => {
+                *sw != w
+                    || *sh != h
+                    || pm.width() != w
+                    || pm.height() != h
+                    || mask.width() != w
+                    || mask.height() != h
+            }
             None => true,
         };
         if needs_new {
@@ -1310,7 +1086,9 @@ fn render_settings_pixmap_into(
     let pane_bot_pad = 6.0;
     let content_h = pane_content_height(state.settings_category);
     let max_scroll = (content_h + pane_top_pad + pane_bot_pad - PANE_H).max(0.0);
-    let scroll_y = state.settings_scroll(state.settings_category).clamp(0.0, max_scroll);
+    let scroll_y = state
+        .settings_scroll(state.settings_category)
+        .clamp(0.0, max_scroll);
 
     let mut hits = Vec::new();
     let mut slot_map = Vec::new();
@@ -1319,12 +1097,21 @@ fn render_settings_pixmap_into(
     // keeps its size/scale, yet they are the most expensive primitives in the
     // frame (three full-surface gradient glows). Keep a pixel-exact copy and
     // memcpy it back instead of re-rasterizing it on every redraw.
+    let mut sidebar_hover_bits = [0u32; 5];
+    for (idx, dst) in sidebar_hover_bits.iter_mut().enumerate() {
+        let slot_idx = 1 + idx;
+        if slot_idx < state.settings_hover_slots.len() {
+            *dst = state.settings_hover_slots[slot_idx].to_bits();
+        }
+    }
     let chrome_key: ChromeKey = (
         pixmap.width(),
         pixmap.height(),
+        state.type_scale as u8,
+        state.settings_category as u8,
         frosted,
         state.frosted_opacity_pct,
-        state.type_scale as u8,
+        sidebar_hover_bits,
     );
     let chrome_hit = SETTINGS_CHROME.with_borrow(|slot| {
         matches!(slot, Some((pm, key)) if *key == chrome_key && pm.data().len() == pixmap.data().len())
@@ -1420,9 +1207,16 @@ fn render_settings_pixmap_into(
                     true,
                 );
             }
-            p.text("CyNotch Preferences", 62.0, 28.0, 15.2, Weight::Bold, tok::text1());
             p.text(
-                "Mahamatra Command Center · v1.9",
+                "CyNotch Preferences",
+                62.0,
+                28.0,
+                15.2,
+                Weight::Bold,
+                tok::text1(),
+            );
+            p.text(
+                concat!("Mahamatra Command Center · v", env!("CARGO_PKG_VERSION")),
                 62.0,
                 45.5,
                 10.2,
@@ -1440,7 +1234,14 @@ fn render_settings_pixmap_into(
                 16.0,
                 Some((48.0, 34.0, 74.0, tok::cyno_violet())),
             );
-            p.text("SECTIONS", sb_x + 18.0, sb_y + 28.0, 9.5, Weight::Bold, tok::text3());
+            p.text(
+                "SECTIONS",
+                sb_x + 18.0,
+                sb_y + 28.0,
+                9.5,
+                Weight::Bold,
+                tok::text3(),
+            );
 
             let foot_y = sb_y + sb_h - 122.0;
             let foot_h = 108.0;
@@ -1455,18 +1256,112 @@ fn render_settings_pixmap_into(
                 rgba(255, 255, 255, 26),
                 rgba(255, 255, 255, 10),
             );
-            p.text("Global Hotkeys", sb_x + 22.0, foot_y + 23.0, 10.5, Weight::Bold, tok::cyno_mist());
-            p.text("Ctrl+Shift+C · Toggle", sb_x + 22.0, foot_y + 46.0, 9.8, Weight::Regular, tok::text2());
-            p.text("Ctrl+Shift+M · Purge", sb_x + 22.0, foot_y + 66.0, 9.8, Weight::Regular, tok::text2());
-            p.text("Ctrl+Shift+S · Capture", sb_x + 22.0, foot_y + 86.0, 9.8, Weight::Regular, tok::text2());
+            p.text(
+                "Global Hotkeys",
+                sb_x + 22.0,
+                foot_y + 23.0,
+                10.5,
+                Weight::Bold,
+                tok::cyno_mist(),
+            );
+            p.text(
+                "Ctrl+Shift+C · Toggle",
+                sb_x + 22.0,
+                foot_y + 46.0,
+                9.8,
+                Weight::Regular,
+                tok::text2(),
+            );
+            p.text(
+                "Ctrl+Shift+M · Purge",
+                sb_x + 22.0,
+                foot_y + 66.0,
+                9.8,
+                Weight::Regular,
+                tok::text2(),
+            );
+            p.text(
+                "Ctrl+Shift+S · Capture",
+                sb_x + 22.0,
+                foot_y + 86.0,
+                9.8,
+                Weight::Regular,
+                tok::text2(),
+            );
+
+            // Static + Category-Keyed Sidebar Pills (cached across scroll frames)
+            let pill_x = sb_x + 12.0;
+            let pill_w = sb_w - 24.0;
+            let pill_h = 44.0;
+            let active_pill_y = AppState::settings_cat_pill_y(state.settings_category);
+            p.luminous_pill_button_t(
+                pill_x,
+                active_pill_y,
+                pill_w,
+                pill_h,
+                11.0,
+                tok::cyno_indigo(),
+                tok::cyno_violet(),
+                tok::cyno_orchid(),
+                0.0,
+            );
+            for (idx, cat) in SettingsCategory::ALL.into_iter().enumerate() {
+                let iy = AppState::settings_cat_pill_y(cat);
+                let slot_idx = 1 + idx;
+                let ht = if slot_idx < state.settings_hover_slots.len() {
+                    state.settings_hover_slots[slot_idx]
+                } else {
+                    0.0
+                };
+                let under_pill = (1.0 - ((active_pill_y - iy).abs() / 52.0)).clamp(0.0, 1.0);
+                if under_pill < 0.5 && ht > 0.02 {
+                    p.rrect(
+                        pill_x,
+                        iy - 0.35 * ht,
+                        pill_w,
+                        pill_h,
+                        11.0,
+                        fade(rgba(255, 255, 255, 20), ht),
+                    );
+                }
+                let ic = match cat {
+                    SettingsCategory::General => Icon::Display,
+                    SettingsCategory::Motion => Icon::Activity,
+                    SettingsCategory::Modules => Icon::List,
+                    SettingsCategory::Notifications => Icon::Bell,
+                    SettingsCategory::System => Icon::Settings,
+                };
+                let rest_col = lerp_color(tok::text2(), tok::text1(), ht);
+                let col = lerp_color(rest_col, tok::text1(), under_pill);
+                icons::draw(&mut p, ic, pill_x + 12.0, iy + 15.0, 14.0, col);
+                p.text(
+                    cat.label(),
+                    pill_x + 34.0,
+                    iy + 26.5,
+                    11.8,
+                    if under_pill > 0.5 {
+                        Weight::Bold
+                    } else {
+                        Weight::Semibold
+                    },
+                    col,
+                );
+            }
 
             SETTINGS_CHROME.with_borrow_mut(|slot| {
-                *slot = Some((p.pm.clone(), chrome_key));
+                if let Some((pm, key)) = slot.as_mut()
+                    && pm.data().len() == p.pm.data().len()
+                {
+                    pm.data_mut().copy_from_slice(p.pm.data());
+                    *key = chrome_key;
+                } else {
+                    *slot = Some((p.pm.clone(), chrome_key));
+                }
             });
         }
 
-        // 2. Draggable Top Header Dynamic Controls (Mascot, Hz Badge, Close Button)
-        let anim_t = if state.motion_preset == MotionPreset::Reduced { 0.0 } else { state.anim_time };
+        // 2. Draggable Top Header Dynamic Controls (Mascot, Close Button)
+        let anim_t = state.anim_time;
         Renderer::draw_cyno_mascot(&mut p, 36.0, 32.0, 1.04, state.mascot_mood(), anim_t, false);
 
         let close_x = w - 48.0;
@@ -1495,58 +1390,12 @@ fn render_settings_pixmap_into(
         );
         p.hit(close_x, close_y, close_sz, close_sz, Action::CloseSettings);
 
-        // 3. Dynamic Left Category Sidebar Pills
+        // 3. Register Sidebar Category Hit Targets (visuals cached in SETTINGS_CHROME)
         let pill_x = sb_x + 12.0;
         let pill_w = sb_w - 24.0;
         let pill_h = 44.0;
-        let active_pill_y = AppState::settings_cat_pill_y(state.settings_category);
-
-        // Sliding Luminous Active Category Indicator
-        p.luminous_pill_button_t(
-            pill_x,
-            active_pill_y,
-            pill_w,
-            pill_h,
-            11.0,
-            tok::cyno_indigo(),
-            tok::cyno_violet(),
-            tok::cyno_orchid(),
-            0.0,
-        );
-
         for cat in SettingsCategory::ALL {
             let iy = AppState::settings_cat_pill_y(cat);
-            let ht = p.hot_t(pill_x, iy, pill_w, pill_h);
-            let under_pill = (1.0 - ((active_pill_y - iy).abs() / 52.0)).clamp(0.0, 1.0);
-            if under_pill < 0.5 && ht > 0.02 {
-                p.rrect(
-                    pill_x,
-                    iy - 0.35 * ht,
-                    pill_w,
-                    pill_h,
-                    11.0,
-                    fade(rgba(255, 255, 255, 20), ht),
-                );
-            }
-            let ic = match cat {
-                SettingsCategory::General => Icon::Display,
-                SettingsCategory::Motion => Icon::Activity,
-                SettingsCategory::Modules => Icon::List,
-                SettingsCategory::Notifications => Icon::Bell,
-                SettingsCategory::Health => Icon::Droplet,
-                SettingsCategory::System => Icon::Settings,
-            };
-            let rest_col = lerp_color(tok::text2(), tok::text1(), ht);
-            let col = lerp_color(rest_col, tok::text1(), under_pill);
-            icons::draw(&mut p, ic, pill_x + 12.0, iy + 15.0, 14.0, col);
-            p.text(
-                cat.label(),
-                pill_x + 34.0,
-                iy + 26.5,
-                11.8,
-                if under_pill > 0.5 { Weight::Bold } else { Weight::Semibold },
-                col,
-            );
             p.hit(pill_x, iy, pill_w, pill_h, Action::SetSettingsCategory(cat));
         }
     }
@@ -1569,34 +1418,39 @@ fn render_settings_pixmap_into(
     let pane_h_px = (PANE_H * s).round();
     let bleed_px = (PANE_BLEED * s).round();
 
+    let scroll_px = (scroll_y * s).round();
     let pane_pointer = pointer.and_then(|(mx, my)| {
         if (pane_x_px..=pane_x_px + pane_w_px).contains(&mx)
             && (pane_y_px..=pane_y_px + pane_h_px).contains(&my)
         {
-            Some((mx - (pane_x_px - bleed_px), my - pane_y_px))
+            Some((mx - (pane_x_px - bleed_px), my - pane_y_px + scroll_px))
         } else {
             None
         }
     });
 
     let state_sig = compute_pane_state_sig(state);
+    let mut switch_bits = [0u32; 48];
+    for (dst, src) in switch_bits.iter_mut().zip(state.switch_t.iter()) {
+        *dst = src.to_bits();
+    }
+    let mut hover_bits = [0u32; 48];
+    for (dst, src) in hover_bits.iter_mut().zip(pane_hover_slots.iter()) {
+        *dst = src.to_bits();
+    }
     let pane_key = PaneCacheKey {
         cat: state.settings_category,
-        scroll_bits: scroll_y.to_bits(),
         w: pane_pm.width(),
         h: pane_pm.height(),
-        frosted,
-        frosted_opacity_pct: state.frosted_opacity_pct,
-        frosted_blur_px: state.frosted_blur_px,
         type_scale: state.type_scale as u8,
         state_sig,
-        pointer_px: if state.micro_interactions && state.motion_preset != MotionPreset::Reduced {
+        pointer_px: if state.micro_interactions {
             None
         } else {
             pane_pointer.map(|(x, y)| (x.round() as i32, y.round() as i32))
         },
-        switch_bits: state.switch_t.iter().map(|v| v.to_bits()).collect(),
-        hover_bits: pane_hover_slots.iter().map(|v| v.to_bits()).collect(),
+        switch_bits,
+        hover_bits,
     };
     let use_cached_pane = PANE_CACHE_ALLOWED.with(|c| c.get())
         && PANE_CACHE.with_borrow(|slot| matches!(slot, Some(cp) if cp.key == pane_key));
@@ -1605,8 +1459,22 @@ fn render_settings_pixmap_into(
     if use_cached_pane {
         PANE_CACHE.with_borrow(|slot| {
             if let Some(cp) = slot.as_ref() {
-                pane_pm.data_mut().copy_from_slice(cp.pm.data());
-                pane_hits = cp.hits.iter().map(|h| Hit { rect: h.rect, action: h.action.clone() }).collect();
+                blit_pane_slice(
+                    pixmap,
+                    &cp.pm,
+                    (pane_x_px - bleed_px) as i32,
+                    pane_y_px as i32,
+                    scroll_px as i32,
+                    pane_h_px as i32,
+                );
+                pane_hits = cp
+                    .hits
+                    .iter()
+                    .map(|h| Hit {
+                        rect: h.rect,
+                        action: h.action,
+                    })
+                    .collect();
             }
         });
     } else {
@@ -1617,7 +1485,7 @@ fn render_settings_pixmap_into(
             fonts,
             s,
             origin_x: bleed_px,
-            origin_y: (pane_top_pad - scroll_y) * s,
+            origin_y: pane_top_pad * s,
             pointer: pane_pointer,
             hits: &mut pane_hits,
             interactive: true,
@@ -1633,24 +1501,50 @@ fn render_settings_pixmap_into(
             SettingsCategory::General => draw_general_pane(&mut pp, state, 0.0, 0.0, PANE_W),
             SettingsCategory::Motion => draw_motion_pane(&mut pp, state, 0.0, 0.0, PANE_W),
             SettingsCategory::Modules => draw_modules_pane(&mut pp, state, 0.0, 0.0, PANE_W),
-            SettingsCategory::Notifications => draw_notifications_pane(&mut pp, state, 0.0, 0.0, PANE_W),
-            SettingsCategory::Health => draw_health_pane(&mut pp, state, 0.0, 0.0, PANE_W),
+            SettingsCategory::Notifications => {
+                draw_notifications_pane(&mut pp, state, 0.0, 0.0, PANE_W)
+            }
             SettingsCategory::System => draw_system_pane(&mut pp, state, 0.0, 0.0, PANE_W),
         }
         PANE_CACHE.with_borrow_mut(|slot| {
-            *slot = Some(CachedPane {
-                key: pane_key,
-                pm: pane_pm.clone(),
-                hits: pane_hits.iter().map(|h| Hit { rect: h.rect, action: h.action.clone() }).collect(),
-            });
+            if let Some(cp) = slot.as_mut()
+                && cp.pm.width() == pane_pm.width()
+                && cp.pm.height() == pane_pm.height()
+            {
+                cp.key = pane_key;
+                cp.pm.data_mut().copy_from_slice(pane_pm.data());
+                cp.hits.clear();
+                cp.hits.extend(pane_hits.iter().map(|h| Hit {
+                    rect: h.rect,
+                    action: h.action,
+                }));
+            } else {
+                *slot = Some(CachedPane {
+                    key: pane_key,
+                    pm: pane_pm.clone(),
+                    hits: pane_hits
+                        .iter()
+                        .map(|h| Hit {
+                            rect: h.rect,
+                            action: h.action,
+                        })
+                        .collect(),
+                });
+            }
         });
+        blit_pane_slice(
+            pixmap,
+            pane_pm,
+            (pane_x_px - bleed_px) as i32,
+            pane_y_px as i32,
+            scroll_px as i32,
+            pane_h_px as i32,
+        );
     }
-
-    blit_pane_pixmap(pixmap, pane_pm, (pane_x_px - bleed_px) as i32, pane_y_px as i32);
 
     for (raw_idx, h_item) in pane_hits.into_iter().enumerate() {
         let wx = h_item.rect.x() + (pane_x_px - bleed_px);
-        let wy = h_item.rect.y() + pane_y_px;
+        let wy = h_item.rect.y() + pane_y_px - scroll_px;
         let y0 = wy.max(pane_y_px);
         let y1 = (wy + h_item.rect.height()).min(pane_y_px + pane_h_px);
         if y1 - y0 >= 8.0 * s
@@ -1692,14 +1586,21 @@ fn render_settings_pixmap_into(
         let total_span = content_h + pane_top_pad + pane_bot_pad;
         let thumb_h = ((PANE_H / total_span) * track_h).clamp(44.0, track_h);
         let thumb_y = track_y + (scroll_y / max_scroll) * (track_h - thumb_h);
-        sp.rrect(track_x, thumb_y, 4.0, thumb_h, 2.0, rgba(192, 132, 252, 135));
+        sp.rrect(
+            track_x,
+            thumb_y,
+            4.0,
+            thumb_h,
+            2.0,
+            rgba(192, 132, 252, 135),
+        );
     }
 
     (hits, slot_map, max_scroll)
 }
 
 fn switch_val(state: &AppState, id: ToggleId) -> f32 {
-    if state.micro_interactions && state.motion_preset != MotionPreset::Reduced {
+    if state.micro_interactions {
         state.switch_t[id as usize]
     } else if state.toggle_target(id) {
         1.0
@@ -1718,9 +1619,17 @@ fn draw_segmented_row<T: Copy + PartialEq>(
     current: T,
     items: &[(&str, T, Action)],
 ) {
-    p.text(label, row_x, row_y + 18.5, 11.5, Weight::Semibold, tok::text1());
+    p.text(
+        label,
+        row_x,
+        row_y + 18.5,
+        11.5,
+        Weight::Semibold,
+        tok::text1(),
+    );
     let gap = 7.0;
-    let btn_w = (ctrl_w - gap * (items.len().saturating_sub(1) as f32)) / (items.len().max(1) as f32);
+    let btn_w =
+        (ctrl_w - gap * (items.len().saturating_sub(1) as f32)) / (items.len().max(1) as f32);
     let btn_h = 28.0;
     let font_sz = if items.len() >= 6 { 9.8 } else { 10.4 };
     for (i, &(txt, val, act)) in items.iter().enumerate() {
@@ -1795,11 +1704,6 @@ fn draw_general_pane(p: &mut Painter, state: &AppState, px: f32, py: f32, pw: f3
     let inner_w = pw - PAD * 2.0;
     let ctrl_x = px + CTRL_X_OFF;
     let ctrl_w = pw - CTRL_X_OFF - PAD;
-    let well_col = if state.is_frosted_active() {
-        tok::scale_frosted(tok::surface_well_frosted(), state.frosted_opacity_pct)
-    } else {
-        tok::surface_well()
-    };
 
     // Card 1: Notch Shell & Placement (h = 274)
     let c1_h = 274.0;
@@ -1811,7 +1715,14 @@ fn draw_general_pane(p: &mut Painter, state: &AppState, px: f32, py: f32, pw: f3
         16.0,
         Some((pw - 44.0, 28.0, 76.0, tok::cyno_violet())),
     );
-    p.text("Notch Shell & Placement", ix, py + 26.0, 13.5, Weight::Bold, tok::text1());
+    p.text(
+        "Notch Shell & Placement",
+        ix,
+        py + 26.0,
+        13.5,
+        Weight::Bold,
+        tok::text1(),
+    );
     p.text(
         "Shape, edge dock, size presets & window lock",
         ix,
@@ -1830,8 +1741,16 @@ fn draw_general_pane(p: &mut Painter, state: &AppState, px: f32, py: f32, pw: f3
         ctrl_w,
         state.notch_style,
         &[
-            ("Floating", NotchStyle::Floating, Action::SetNotchStyle(NotchStyle::Floating)),
-            ("Edge Flush", NotchStyle::EdgeFlush, Action::SetNotchStyle(NotchStyle::EdgeFlush)),
+            (
+                "Floating",
+                NotchStyle::Floating,
+                Action::SetNotchStyle(NotchStyle::Floating),
+            ),
+            (
+                "Edge Flush",
+                NotchStyle::EdgeFlush,
+                Action::SetNotchStyle(NotchStyle::EdgeFlush),
+            ),
         ],
     );
     draw_segmented_row(
@@ -1843,9 +1762,21 @@ fn draw_general_pane(p: &mut Painter, state: &AppState, px: f32, py: f32, pw: f3
         ctrl_w,
         state.placement,
         &[
-            ("Top", NotchPlacement::Top, Action::SetPlacement(NotchPlacement::Top)),
-            ("Left", NotchPlacement::Left, Action::SetPlacement(NotchPlacement::Left)),
-            ("Right", NotchPlacement::Right, Action::SetPlacement(NotchPlacement::Right)),
+            (
+                "Top",
+                NotchPlacement::Top,
+                Action::SetPlacement(NotchPlacement::Top),
+            ),
+            (
+                "Left",
+                NotchPlacement::Left,
+                Action::SetPlacement(NotchPlacement::Left),
+            ),
+            (
+                "Right",
+                NotchPlacement::Right,
+                Action::SetPlacement(NotchPlacement::Right),
+            ),
         ],
     );
     draw_segmented_row(
@@ -1857,9 +1788,21 @@ fn draw_general_pane(p: &mut Painter, state: &AppState, px: f32, py: f32, pw: f3
         ctrl_w,
         state.size_preset,
         &[
-            ("Compact", NotchSizePreset::Compact, Action::SetSizePreset(NotchSizePreset::Compact)),
-            ("Standard", NotchSizePreset::Standard, Action::SetSizePreset(NotchSizePreset::Standard)),
-            ("Wide", NotchSizePreset::Wide, Action::SetSizePreset(NotchSizePreset::Wide)),
+            (
+                "Compact",
+                NotchSizePreset::Compact,
+                Action::SetSizePreset(NotchSizePreset::Compact),
+            ),
+            (
+                "Standard",
+                NotchSizePreset::Standard,
+                Action::SetSizePreset(NotchSizePreset::Standard),
+            ),
+            (
+                "Wide",
+                NotchSizePreset::Wide,
+                Action::SetSizePreset(NotchSizePreset::Wide),
+            ),
         ],
     );
     draw_segmented_row(
@@ -1871,14 +1814,33 @@ fn draw_general_pane(p: &mut Painter, state: &AppState, px: f32, py: f32, pw: f3
         ctrl_w,
         state.expanded_size,
         &[
-            ("Compact", ExpandedSizePreset::Compact, Action::SetExpandedSize(ExpandedSizePreset::Compact)),
-            ("Standard", ExpandedSizePreset::Standard, Action::SetExpandedSize(ExpandedSizePreset::Standard)),
-            ("Large", ExpandedSizePreset::Large, Action::SetExpandedSize(ExpandedSizePreset::Large)),
+            (
+                "Compact",
+                ExpandedSizePreset::Compact,
+                Action::SetExpandedSize(ExpandedSizePreset::Compact),
+            ),
+            (
+                "Standard",
+                ExpandedSizePreset::Standard,
+                Action::SetExpandedSize(ExpandedSizePreset::Standard),
+            ),
+            (
+                "Large",
+                ExpandedSizePreset::Large,
+                Action::SetExpandedSize(ExpandedSizePreset::Large),
+            ),
         ],
     );
 
     let row5_y = py + 60.0 + SEG_PITCH * 4.0;
-    p.text("Position & Lock", ix, row5_y + 18.5, 11.5, Weight::Semibold, tok::text1());
+    p.text(
+        "Position & Lock",
+        ix,
+        row5_y + 18.5,
+        11.5,
+        Weight::Semibold,
+        tok::text1(),
+    );
     let btn_w = (ctrl_w - 8.0) / 2.0;
     let pin_ht = p.hot_t(ctrl_x, row5_y, btn_w, 28.0);
     p.tactile_surface_pill_t(
@@ -1888,10 +1850,25 @@ fn draw_general_pane(p: &mut Painter, state: &AppState, px: f32, py: f32, pw: f3
         28.0,
         8.5,
         pin_ht,
-        if state.is_pinned { Some(tok::cyno_violet()) } else { None },
+        if state.is_pinned {
+            Some(tok::cyno_violet())
+        } else {
+            None
+        },
     );
-    let pin_lbl = if state.is_pinned { "Pinned Open: ON" } else { "Pin Open: OFF" };
-    p.text_center(pin_lbl, ctrl_x + btn_w / 2.0, row5_y + 18.0 - 0.55 * pin_ht, 10.4, Weight::Bold, tok::text1());
+    let pin_lbl = if state.is_pinned {
+        "Pinned Open: ON"
+    } else {
+        "Pin Open: OFF"
+    };
+    p.text_center(
+        pin_lbl,
+        ctrl_x + btn_w / 2.0,
+        row5_y + 18.0 - 0.55 * pin_ht,
+        10.4,
+        Weight::Bold,
+        tok::text1(),
+    );
     p.hit(ctrl_x, row5_y, btn_w, 28.0, Action::TogglePin);
 
     let moved = state.x_offset != 0 || state.y_offset != 0;
@@ -1904,7 +1881,11 @@ fn draw_general_pane(p: &mut Painter, state: &AppState, px: f32, py: f32, pw: f3
         28.0,
         8.5,
         ctr_ht,
-        if moved { Some(tok::cyno_violet()) } else { None },
+        if moved {
+            Some(tok::cyno_violet())
+        } else {
+            None
+        },
     );
     let ctr_lbl = if !moved {
         "Centered (0px)".to_string()
@@ -1919,7 +1900,11 @@ fn draw_general_pane(p: &mut Painter, state: &AppState, px: f32, py: f32, pw: f3
         row5_y + 18.0 - 0.55 * ctr_ht,
         10.4,
         Weight::Semibold,
-        if moved { tok::text1() } else { tok::text_soft() },
+        if moved {
+            tok::text1()
+        } else {
+            tok::text_soft()
+        },
     );
     p.hit(ctr_x, row5_y, btn_w, 28.0, Action::ResetPosition);
 
@@ -1934,7 +1919,14 @@ fn draw_general_pane(p: &mut Painter, state: &AppState, px: f32, py: f32, pw: f3
         16.0,
         Some((pw - 44.0, 28.0, 76.0, tok::cyno_orchid())),
     );
-    p.text("Interaction & Idle Visuals", ix, c2_y + 26.0, 13.5, Weight::Bold, tok::text1());
+    p.text(
+        "Interaction & Idle Visuals",
+        ix,
+        c2_y + 26.0,
+        13.5,
+        Weight::Bold,
+        tok::text1(),
+    );
     p.text(
         "Desktop font scaling, idle readout, stealth pill & live progress arc",
         ix,
@@ -1953,11 +1945,31 @@ fn draw_general_pane(p: &mut Painter, state: &AppState, px: f32, py: f32, pw: f3
         ctrl_w,
         state.idle_metric,
         &[
-            ("RAM", IdleMetric::Ram, Action::SetIdleMetric(IdleMetric::Ram)),
-            ("Net", IdleMetric::NetSpeed, Action::SetIdleMetric(IdleMetric::NetSpeed)),
-            ("CPU", IdleMetric::Cpu, Action::SetIdleMetric(IdleMetric::Cpu)),
-            ("Clock", IdleMetric::Clock, Action::SetIdleMetric(IdleMetric::Clock)),
-            ("Minimal", IdleMetric::Minimal, Action::SetIdleMetric(IdleMetric::Minimal)),
+            (
+                "RAM",
+                IdleMetric::Ram,
+                Action::SetIdleMetric(IdleMetric::Ram),
+            ),
+            (
+                "Net",
+                IdleMetric::NetSpeed,
+                Action::SetIdleMetric(IdleMetric::NetSpeed),
+            ),
+            (
+                "CPU",
+                IdleMetric::Cpu,
+                Action::SetIdleMetric(IdleMetric::Cpu),
+            ),
+            (
+                "Clock",
+                IdleMetric::Clock,
+                Action::SetIdleMetric(IdleMetric::Clock),
+            ),
+            (
+                "Minimal",
+                IdleMetric::Minimal,
+                Action::SetIdleMetric(IdleMetric::Minimal),
+            ),
         ],
     );
     draw_segmented_row(
@@ -1969,10 +1981,26 @@ fn draw_general_pane(p: &mut Painter, state: &AppState, px: f32, py: f32, pw: f3
         ctrl_w,
         state.type_scale,
         &[
-            ("Compact", TypeScale::Compact, Action::SetTypeScale(TypeScale::Compact)),
-            ("Desktop", TypeScale::Standard, Action::SetTypeScale(TypeScale::Standard)),
-            ("Large", TypeScale::Large, Action::SetTypeScale(TypeScale::Large)),
-            ("X-Large", TypeScale::ExtraLarge, Action::SetTypeScale(TypeScale::ExtraLarge)),
+            (
+                "Compact",
+                TypeScale::Compact,
+                Action::SetTypeScale(TypeScale::Compact),
+            ),
+            (
+                "Desktop",
+                TypeScale::Standard,
+                Action::SetTypeScale(TypeScale::Standard),
+            ),
+            (
+                "Large",
+                TypeScale::Large,
+                Action::SetTypeScale(TypeScale::Large),
+            ),
+            (
+                "X-Large",
+                TypeScale::ExtraLarge,
+                Action::SetTypeScale(TypeScale::ExtraLarge),
+            ),
         ],
     );
 
@@ -2028,7 +2056,7 @@ fn draw_general_pane(p: &mut Painter, state: &AppState, px: f32, py: f32, pw: f3
         t_base + TOGGLE_PITCH * 4.0,
         inner_w,
         "Live Progress Arc",
-        "Wrap idle badge in live progress ring (RAM, focus timer, track)",
+        "Wrap idle badge in live progress ring (RAM, track)",
         ToggleId::ProgressArc,
         Action::ToggleProgressArc,
     );
@@ -2056,8 +2084,8 @@ fn draw_motion_pane(p: &mut Painter, state: &AppState, px: f32, py: f32, pw: f32
         tok::surface_well()
     };
 
-    // Card 1: Zero-Bounce Motion Engine (h = 212)
-    let c1_h = 212.0;
+    // Card 1: Zero-Bounce Motion Engine (h = 166)
+    let c1_h = 166.0;
     p.elevated_card(
         px,
         py,
@@ -2066,7 +2094,14 @@ fn draw_motion_pane(p: &mut Painter, state: &AppState, px: f32, py: f32, pw: f32
         16.0,
         Some((pw - 44.0, 28.0, 82.0, tok::cyno_violet())),
     );
-    p.text("Zero-Bounce Motion Engine", ix, py + 26.0, 13.5, Weight::Bold, tok::text1());
+    p.text(
+        "Zero-Bounce Motion Engine",
+        ix,
+        py + 26.0,
+        13.5,
+        Weight::Bold,
+        tok::text1(),
+    );
     let hz_sub = format!(
         "Monitor refresh: {} Hz · Adaptive pacing drops to 0% CPU when idle",
         state.detected_hz.max(60)
@@ -2075,23 +2110,9 @@ fn draw_motion_pane(p: &mut Painter, state: &AppState, px: f32, py: f32, pw: f32
 
     draw_segmented_row(
         p,
-        "Motion Feel",
-        ix,
-        py + 62.0,
-        ctrl_x,
-        ctrl_w,
-        state.motion_preset,
-        &[
-            ("Gentle", MotionPreset::Gentle, Action::SetMotionPreset(MotionPreset::Gentle)),
-            ("Balanced", MotionPreset::Balanced, Action::SetMotionPreset(MotionPreset::Balanced)),
-            ("Reduced", MotionPreset::Reduced, Action::SetMotionPreset(MotionPreset::Reduced)),
-        ],
-    );
-    draw_segmented_row(
-        p,
         "FPS Target",
         ix,
-        py + 62.0 + SEG_PITCH,
+        py + 62.0,
         ctrl_x,
         ctrl_w,
         state.fps_cap,
@@ -2103,9 +2124,18 @@ fn draw_motion_pane(p: &mut Painter, state: &AppState, px: f32, py: f32, pw: f32
         ],
     );
 
-    let info_y = py + 154.0;
+    let info_y = py + 108.0;
     p.rrect(ix, info_y, inner_w, 34.0, 9.0, well_col);
-    p.rrect_bevel_stroke(ix, info_y, inner_w, 34.0, 9.0, 1.0, rgba(255, 255, 255, 20), rgba(168, 85, 247, 18));
+    p.rrect_bevel_stroke(
+        ix,
+        info_y,
+        inner_w,
+        34.0,
+        9.0,
+        1.0,
+        rgba(255, 255, 255, 20),
+        rgba(168, 85, 247, 18),
+    );
     p.text(
         "Exponential ease_exp() decay · Zero overshoot · Single-surface canvas",
         ix + 14.0,
@@ -2126,7 +2156,14 @@ fn draw_motion_pane(p: &mut Painter, state: &AppState, px: f32, py: f32, pw: f32
         16.0,
         Some((pw - 44.0, 28.0, 76.0, tok::cyno_orchid())),
     );
-    p.text("Micro-Interactions & Audio Spectrum", ix, c2_y + 26.0, 13.5, Weight::Bold, tok::text1());
+    p.text(
+        "Micro-Interactions & Audio Spectrum",
+        ix,
+        c2_y + 26.0,
+        13.5,
+        Weight::Bold,
+        tok::text1(),
+    );
     p.text(
         "Hover glow glides, micro-lift physics & live media spectrum bars",
         ix,
@@ -2181,7 +2218,14 @@ fn draw_notifications_pane(p: &mut Painter, state: &AppState, px: f32, py: f32, 
         16.0,
         Some((pw - 44.0, 28.0, 78.0, tok::cyno_orchid())),
     );
-    p.text("Notch Banner & Fullscreen Rules", ix, py + 26.0, 13.5, Weight::Bold, tok::text1());
+    p.text(
+        "Notch Banner & Fullscreen Rules",
+        ix,
+        py + 26.0,
+        13.5,
+        Weight::Bold,
+        tok::text1(),
+    );
     p.text(
         "Popup alerts, display duration & fullscreen/borderless game overlay behavior",
         ix,
@@ -2240,13 +2284,24 @@ fn draw_notifications_pane(p: &mut Painter, state: &AppState, px: f32, py: f32, 
         16.0,
         Some((pw - 44.0, 28.0, 78.0, tok::cyno_violet())),
     );
-    p.text("Windows Notifications Bridge", ix, c2_y + 26.0, 13.5, Weight::Bold, tok::text1());
+    p.text(
+        "Windows Notifications Bridge",
+        ix,
+        c2_y + 26.0,
+        13.5,
+        Weight::Bold,
+        tok::text1(),
+    );
 
-    let st_w = (p.measure(&state.notif_listener_status, 9.2, Weight::Bold) + 26.0).clamp(104.0, 152.0);
+    let st_w =
+        (p.measure(&state.notif_listener_status, 9.2, Weight::Bold) + 26.0).clamp(104.0, 152.0);
     let st_x = ix + inner_w - st_w;
     let st_y = c2_y + 13.0;
     let is_listening = state.notif_listener_enabled
-        && matches!(state.notif_listener_status.as_str(), "Connected" | "Listening");
+        && matches!(
+            state.notif_listener_status.as_str(),
+            "Connected" | "Listening"
+        );
     p.rrect(st_x, st_y, st_w, 22.0, 11.0, well_col);
     p.rrect_bevel_stroke(
         st_x,
@@ -2255,7 +2310,11 @@ fn draw_notifications_pane(p: &mut Painter, state: &AppState, px: f32, py: f32, 
         22.0,
         11.0,
         1.0,
-        if is_listening { rgba(56, 189, 248, 110) } else { rgba(255, 255, 255, 28) },
+        if is_listening {
+            rgba(56, 189, 248, 110)
+        } else {
+            rgba(255, 255, 255, 28)
+        },
         rgba(255, 255, 255, 12),
     );
     let st_lbl = p.ellipsize(&state.notif_listener_status, 9.2, Weight::Bold, st_w - 14.0);
@@ -2265,7 +2324,11 @@ fn draw_notifications_pane(p: &mut Painter, state: &AppState, px: f32, py: f32, 
         st_y + 14.5,
         9.2,
         Weight::Bold,
-        if is_listening { tok::cyan_hi() } else { tok::text2() },
+        if is_listening {
+            tok::cyan_hi()
+        } else {
+            tok::text2()
+        },
     );
 
     draw_toggle_row(
@@ -2280,7 +2343,10 @@ fn draw_notifications_pane(p: &mut Painter, state: &AppState, px: f32, py: f32, 
         Action::ToggleNotifListener,
     );
     let excl_sub = if state.notif_exclusive_mode && state.notif_suppressed_apps > 0 {
-        format!("Windows popups silenced ({} apps backed up safely)", state.notif_suppressed_apps)
+        format!(
+            "Windows popups silenced ({} apps backed up safely)",
+            state.notif_suppressed_apps
+        )
     } else {
         "Suppress native Windows toast banners so alerts show in CyNotch only".to_string()
     };
@@ -2351,7 +2417,15 @@ fn draw_notifications_pane(p: &mut Painter, state: &AppState, px: f32, py: f32, 
     p.hit(tb_x, bot2_y, tb_w, 28.0, Action::SendTestNotification);
 
     let wn_ht = p.hot_t(wn_x, bot2_y, wn_w, 28.0);
-    p.tactile_surface_pill_t(wn_x, bot2_y, wn_w, 28.0, 8.5, wn_ht, Some(tok::cyno_violet()));
+    p.tactile_surface_pill_t(
+        wn_x,
+        bot2_y,
+        wn_w,
+        28.0,
+        8.5,
+        wn_ht,
+        Some(tok::cyno_violet()),
+    );
     p.text_center_fit(
         "Win Notif Settings",
         wn_x + wn_w * 0.5,
@@ -2380,7 +2454,14 @@ fn draw_modules_pane(p: &mut Painter, state: &AppState, px: f32, py: f32, pw: f3
         16.0,
         Some((pw - 44.0, 28.0, 78.0, tok::cyno_violet())),
     );
-    p.text("Dock Modules", ix, py + 26.0, 13.5, Weight::Bold, tok::text1());
+    p.text(
+        "Dock Modules",
+        ix,
+        py + 26.0,
+        13.5,
+        Weight::Bold,
+        tok::text1(),
+    );
     p.text(
         "Show or hide tabs in the notch dock (Command Hub stays pinned)",
         ix,
@@ -2391,14 +2472,48 @@ fn draw_modules_pane(p: &mut Painter, state: &AppState, px: f32, py: f32, pw: f3
     );
 
     let tiles = [
-        (Icon::Music, "Music Player", ToggleId::ModMusic, NotchMode::Music),
-        (Icon::Volume, "Volume Master", ToggleId::ModVolume, NotchMode::Volume),
-        (Icon::Wave, "Memory Reduct", ToggleId::ModMemReduct, NotchMode::MemReduct),
-        (Icon::Timer, "Focus Timer", ToggleId::ModFocus, NotchMode::FocusTimer),
-        (Icon::List, "Tasks Todo", ToggleId::ModTasks, NotchMode::Tasks),
-        (Icon::Clipboard, "File Shelf", ToggleId::ModShelf, NotchMode::Shelf),
-        (Icon::Video, "Quick Capture", ToggleId::ModCapture, NotchMode::Capture),
-        (Icon::Display, "Screen Time", ToggleId::ModTelemetry, NotchMode::Telemetry),
+        (
+            Icon::Music,
+            "Music Player",
+            ToggleId::ModMusic,
+            NotchMode::Music,
+        ),
+        (
+            Icon::Volume,
+            "Volume Master",
+            ToggleId::ModVolume,
+            NotchMode::Volume,
+        ),
+        (
+            Icon::Wave,
+            "Memory Reduct",
+            ToggleId::ModMemReduct,
+            NotchMode::MemReduct,
+        ),
+        (
+            Icon::List,
+            "Tasks Todo",
+            ToggleId::ModTasks,
+            NotchMode::Tasks,
+        ),
+        (
+            Icon::Clipboard,
+            "File Shelf",
+            ToggleId::ModShelf,
+            NotchMode::Shelf,
+        ),
+        (
+            Icon::Video,
+            "Quick Capture",
+            ToggleId::ModCapture,
+            NotchMode::Capture,
+        ),
+        (
+            Icon::Display,
+            "Screen Time",
+            ToggleId::ModTelemetry,
+            NotchMode::Telemetry,
+        ),
     ];
 
     let col_gap = 12.0;
@@ -2433,7 +2548,11 @@ fn draw_modules_pane(p: &mut Painter, state: &AppState, px: f32, py: f32, pw: f3
             tx + 12.0,
             ty + 12.0 + dy,
             14.0,
-            if active { tok::cyno_violet_hi() } else { tok::text2() },
+            if active {
+                tok::cyno_violet_hi()
+            } else {
+                tok::text2()
+            },
         );
         p.text(
             name,
@@ -2441,7 +2560,11 @@ fn draw_modules_pane(p: &mut Painter, state: &AppState, px: f32, py: f32, pw: f3
             ty + 23.0 + dy,
             11.4,
             Weight::Semibold,
-            if active { tok::text1() } else { tok::text_soft() },
+            if active {
+                tok::text1()
+            } else {
+                tok::text_soft()
+            },
         );
         let st = switch_val(state, *tid);
         p.draw_toggle_switch(tx + tile_w - 48.0, ty + 10.0 + dy, 38.0, 18.0, st, ht);
@@ -2459,7 +2582,14 @@ fn draw_modules_pane(p: &mut Painter, state: &AppState, px: f32, py: f32, pw: f3
         16.0,
         Some((pw - 44.0, 28.0, 76.0, tok::cyno_violet())),
     );
-    p.text("Music Lyrics Display", ix, c2_y + 26.0, 13.5, Weight::Bold, tok::text1());
+    p.text(
+        "Music Lyrics Display",
+        ix,
+        c2_y + 26.0,
+        13.5,
+        Weight::Bold,
+        tok::text1(),
+    );
     p.text(
         "Customize synced lyrics font scale and presentation layout in Music mode",
         ix,
@@ -2478,9 +2608,21 @@ fn draw_modules_pane(p: &mut Painter, state: &AppState, px: f32, py: f32, pw: f3
         ctrl_w,
         state.lyric_size,
         &[
-            ("Compact", LyricSize::Compact, Action::SetLyricSize(LyricSize::Compact)),
-            ("Standard", LyricSize::Standard, Action::SetLyricSize(LyricSize::Standard)),
-            ("Large", LyricSize::Large, Action::SetLyricSize(LyricSize::Large)),
+            (
+                "Compact",
+                LyricSize::Compact,
+                Action::SetLyricSize(LyricSize::Compact),
+            ),
+            (
+                "Standard",
+                LyricSize::Standard,
+                Action::SetLyricSize(LyricSize::Standard),
+            ),
+            (
+                "Large",
+                LyricSize::Large,
+                Action::SetLyricSize(LyricSize::Large),
+            ),
         ],
     );
     draw_segmented_row(
@@ -2492,10 +2634,26 @@ fn draw_modules_pane(p: &mut Painter, state: &AppState, px: f32, py: f32, pw: f3
         ctrl_w,
         state.lyric_style,
         &[
-            ("Classic", LyricStyle::ClassicList, Action::SetLyricStyle(LyricStyle::ClassicList)),
-            ("Karaoke", LyricStyle::KaraokeGlow, Action::SetLyricStyle(LyricStyle::KaraokeGlow)),
-            ("Minimal", LyricStyle::MinimalSingle, Action::SetLyricStyle(LyricStyle::MinimalSingle)),
-            ("Stream", LyricStyle::CompactStream, Action::SetLyricStyle(LyricStyle::CompactStream)),
+            (
+                "Classic",
+                LyricStyle::ClassicList,
+                Action::SetLyricStyle(LyricStyle::ClassicList),
+            ),
+            (
+                "Karaoke",
+                LyricStyle::KaraokeGlow,
+                Action::SetLyricStyle(LyricStyle::KaraokeGlow),
+            ),
+            (
+                "Minimal",
+                LyricStyle::MinimalSingle,
+                Action::SetLyricStyle(LyricStyle::MinimalSingle),
+            ),
+            (
+                "Stream",
+                LyricStyle::CompactStream,
+                Action::SetLyricStyle(LyricStyle::CompactStream),
+            ),
         ],
     );
 
@@ -2510,7 +2668,14 @@ fn draw_modules_pane(p: &mut Painter, state: &AppState, px: f32, py: f32, pw: f3
         16.0,
         Some((pw - 44.0, 28.0, 76.0, tok::cyno_orchid())),
     );
-    p.text("Background Listeners", ix, c3_y + 26.0, 13.5, Weight::Bold, tok::text1());
+    p.text(
+        "Background Listeners",
+        ix,
+        c3_y + 26.0,
+        13.5,
+        Weight::Bold,
+        tok::text1(),
+    );
     p.text(
         "Clipboard history, lyrics lookup & snapshot output rules",
         ix,
@@ -2555,204 +2720,6 @@ fn draw_modules_pane(p: &mut Painter, state: &AppState, px: f32, py: f32, pw: f3
     );
 }
 
-fn draw_health_pane(p: &mut Painter, state: &AppState, px: f32, py: f32, pw: f32) {
-    let ix = px + PAD;
-    let inner_w = pw - PAD * 2.0;
-    let ctrl_x = px + CTRL_X_OFF;
-    let ctrl_w = pw - CTRL_X_OFF - PAD;
-    let well_col = if state.is_frosted_active() {
-        tok::scale_frosted(tok::surface_well_frosted(), state.frosted_opacity_pct)
-    } else {
-        tok::surface_well()
-    };
-
-    // Card 1: Hydration & Posture Alerts (h = 282)
-    let c1_h = 282.0;
-    p.elevated_card(
-        px,
-        py,
-        pw,
-        c1_h,
-        16.0,
-        Some((pw - 44.0, 28.0, 78.0, tok::cyan_hi())),
-    );
-    let hdr_max_w = inner_w - 144.0;
-    let hdr_title = p.ellipsize("Hydration & Posture Alerts", 13.5, Weight::Bold, hdr_max_w);
-    p.text(&hdr_title, ix, py + 26.0, 13.5, Weight::Bold, tok::text1());
-    let w_sub_raw = if state.health_reminders_enabled {
-        format!(
-            "Logged today: {} / {} ml ({} ml per glass)",
-            state.water.taken_ml, state.water.goal_ml, state.water.glass_ml
-        )
-    } else {
-        "Reminders paused · Home Hub shows Live Network & Quick Focus".to_string()
-    };
-    let w_sub = p.ellipsize(&w_sub_raw, 10.0, Weight::Regular, hdr_max_w);
-    p.text(&w_sub, ix, py + 43.0, 10.0, Weight::Regular, tok::text2());
-
-    let sw_w = 46.0;
-    let sw_h = 22.0;
-    let sw_x = ix + inner_w - sw_w;
-    let sw_y = py + 15.0;
-    let sw_lbl = if state.health_reminders_enabled { "Reminders ON" } else { "Reminders OFF" };
-    p.text_right(
-        sw_lbl,
-        sw_x - 8.0,
-        sw_y + 15.0,
-        9.6,
-        Weight::Bold,
-        if state.health_reminders_enabled { tok::cyan_hi() } else { tok::text2() },
-    );
-    let sw_ht = p.hot_t(sw_x, sw_y, sw_w, sw_h);
-    let sw_st = switch_val(state, ToggleId::HealthReminders);
-    p.draw_toggle_switch(sw_x, sw_y, sw_w, sw_h, sw_st, sw_ht);
-    p.hit(sw_x, sw_y, sw_w, sw_h, Action::ToggleHealthReminders);
-
-    draw_segmented_row(
-        p,
-        "Daily Goal",
-        ix,
-        py + 62.0,
-        ctrl_x,
-        ctrl_w,
-        state.water.goal_ml,
-        &[
-            ("1500", 1500, Action::SetWaterGoal(1500)),
-            ("2000", 2000, Action::SetWaterGoal(2000)),
-            ("2500", 2500, Action::SetWaterGoal(2500)),
-            ("3000", 3000, Action::SetWaterGoal(3000)),
-        ],
-    );
-    draw_segmented_row(
-        p,
-        "Glass Size",
-        ix,
-        py + 62.0 + SEG_PITCH,
-        ctrl_x,
-        ctrl_w,
-        state.water.glass_ml,
-        &[
-            ("200ml", 200, Action::SetWaterGlass(200)),
-            ("250ml", 250, Action::SetWaterGlass(250)),
-            ("350ml", 350, Action::SetWaterGlass(350)),
-            ("500ml", 500, Action::SetWaterGlass(500)),
-        ],
-    );
-    draw_segmented_row(
-        p,
-        "Water Alert",
-        ix,
-        py + 62.0 + SEG_PITCH * 2.0,
-        ctrl_x,
-        ctrl_w,
-        state.water_interval_mins,
-        &[
-            ("Off", 0, Action::SetWaterInterval(0)),
-            ("30m", 30, Action::SetWaterInterval(30)),
-            ("45m", 45, Action::SetWaterInterval(45)),
-            ("60m", 60, Action::SetWaterInterval(60)),
-            ("90m", 90, Action::SetWaterInterval(90)),
-        ],
-    );
-    draw_segmented_row(
-        p,
-        "Move Alert",
-        ix,
-        py + 62.0 + SEG_PITCH * 3.0,
-        ctrl_x,
-        ctrl_w,
-        state.move_reminder_mins,
-        &[
-            ("Off", 0, Action::SetMoveInterval(0)),
-            ("45m", 45, Action::SetMoveInterval(45)),
-            ("60m", 60, Action::SetMoveInterval(60)),
-            ("90m", 90, Action::SetMoveInterval(90)),
-        ],
-    );
-
-    let water_pct = (state.water.taken_ml as f32 / state.water.goal_ml.max(1) as f32).clamp(0.0, 1.0);
-    p.glowing_striped_bar(
-        ix,
-        py + 242.0,
-        inner_w,
-        8.0,
-        water_pct,
-        rgba(3, 105, 161, 255),
-        rgba(56, 189, 248, 255),
-    );
-
-    // Card 2: Focus Timer Defaults (h = 210)
-    let c2_y = py + c1_h + CARD_GAP;
-    let c2_h = 210.0;
-    p.elevated_card(
-        px,
-        c2_y,
-        pw,
-        c2_h,
-        16.0,
-        Some((pw - 44.0, 28.0, 76.0, tok::cyno_orchid())),
-    );
-    p.text("Focus Timer Defaults", ix, c2_y + 26.0, 13.5, Weight::Bold, tok::text1());
-    p.text(
-        "Default lengths used when toggling Work / Break phases",
-        ix,
-        c2_y + 43.0,
-        10.0,
-        Weight::Regular,
-        tok::text2(),
-    );
-
-    draw_segmented_row(
-        p,
-        "Focus Length",
-        ix,
-        c2_y + 62.0,
-        ctrl_x,
-        ctrl_w,
-        state.default_focus_mins,
-        &[
-            ("15m", 15, Action::SetDefaultFocus(15)),
-            ("25m", 25, Action::SetDefaultFocus(25)),
-            ("35m", 35, Action::SetDefaultFocus(35)),
-            ("45m", 45, Action::SetDefaultFocus(45)),
-        ],
-    );
-    draw_segmented_row(
-        p,
-        "Break Length",
-        ix,
-        c2_y + 62.0 + SEG_PITCH,
-        ctrl_x,
-        ctrl_w,
-        state.default_break_mins,
-        &[
-            ("5m", 5, Action::SetDefaultBreak(5)),
-            ("10m", 10, Action::SetDefaultBreak(10)),
-            ("15m", 15, Action::SetDefaultBreak(15)),
-        ],
-    );
-
-    p.rrect(ix, c2_y + 154.0, inner_w, 34.0, 9.0, well_col);
-    p.rrect_bevel_stroke(
-        ix,
-        c2_y + 154.0,
-        inner_w,
-        34.0,
-        9.0,
-        1.0,
-        rgba(235, 230, 255, 24),
-        rgba(168, 85, 247, 32),
-    );
-    p.text(
-        "Tip: Click 'Work Mode' in Focus Timer to switch directly between work & break",
-        ix + 14.0,
-        c2_y + 175.0,
-        9.8,
-        Weight::Semibold,
-        tok::cyno_mist(),
-    );
-}
-
 fn draw_system_pane(p: &mut Painter, state: &AppState, px: f32, py: f32, pw: f32) {
     let ix = px + PAD;
     let inner_w = pw - PAD * 2.0;
@@ -2772,7 +2739,14 @@ fn draw_system_pane(p: &mut Painter, state: &AppState, px: f32, py: f32, pw: f32
         16.0,
         Some((pw - 44.0, 28.0, 82.0, tok::cyno_violet())),
     );
-    p.text("Mem Reduct Engine", ix, py + 26.0, 13.5, Weight::Bold, tok::text1());
+    p.text(
+        "Mem Reduct Engine",
+        ix,
+        py + 26.0,
+        13.5,
+        Weight::Bold,
+        tok::text1(),
+    );
 
     let is_admin = state.telemetry.has_admin_privileges;
     let priv_w = 118.0;
@@ -2785,7 +2759,11 @@ fn draw_system_pane(p: &mut Painter, state: &AppState, px: f32, py: f32, pw: f32
         priv_w,
         priv_h,
         11.0,
-        if is_admin { rgba(124, 58, 237, 55) } else { well_col },
+        if is_admin {
+            rgba(124, 58, 237, 55)
+        } else {
+            well_col
+        },
     );
     p.rrect_bevel_stroke(
         priv_x,
@@ -2794,45 +2772,112 @@ fn draw_system_pane(p: &mut Painter, state: &AppState, px: f32, py: f32, pw: f32
         priv_h,
         11.0,
         1.0,
-        if is_admin { rgba(196, 148, 255, 135) } else { rgba(235, 230, 255, 28) },
+        if is_admin {
+            rgba(196, 148, 255, 135)
+        } else {
+            rgba(235, 230, 255, 28)
+        },
         rgba(235, 230, 255, 14),
     );
     p.text_center(
-        if is_admin { "Elevated (Admin)" } else { "Standard (User)" },
+        if is_admin {
+            "Elevated (Admin)"
+        } else {
+            "Standard (User)"
+        },
         priv_x + priv_w / 2.0,
         priv_y + 14.5,
         9.4,
         Weight::Bold,
-        if is_admin { tok::cyno_mist() } else { tok::text2() },
+        if is_admin {
+            tok::cyno_mist()
+        } else {
+            tok::text2()
+        },
     );
 
     // 3-Pool Telemetry Summary Well
     let well_y = py + 46.0;
     let well_h = 34.0;
     p.rrect(ix, well_y, inner_w, well_h, 9.0, well_col);
-    p.rrect_bevel_stroke(ix, well_y, inner_w, well_h, 9.0, 1.0, rgba(255, 255, 255, 22), rgba(168, 85, 247, 16));
+    p.rrect_bevel_stroke(
+        ix,
+        well_y,
+        inner_w,
+        well_h,
+        9.0,
+        1.0,
+        rgba(255, 255, 255, 22),
+        rgba(168, 85, 247, 16),
+    );
     let pool_cw = inner_w / 3.0;
     let phys_txt = format!(
         "Phys {:.1}/{:.1}G ({:.0}%)",
-        state.telemetry.memory_used_gb, state.telemetry.memory_total_gb, state.telemetry.memory_percent
+        state.telemetry.memory_used_gb,
+        state.telemetry.memory_total_gb,
+        state.telemetry.memory_percent
     );
     let page_txt = format!(
         "Page {:.1}/{:.1}G ({:.0}%)",
-        state.telemetry.pagefile_used_gb, state.telemetry.pagefile_total_gb, state.telemetry.pagefile_percent
+        state.telemetry.pagefile_used_gb,
+        state.telemetry.pagefile_total_gb,
+        state.telemetry.pagefile_percent
     );
     let sys_txt = format!(
         "SysCache {:.0} MB ({:.0}%)",
         state.telemetry.sys_cache_mb, state.telemetry.sys_cache_percent
     );
-    p.text_center(&phys_txt, ix + pool_cw * 0.5, well_y + 21.0, 9.8, Weight::Semibold, tok::text1());
-    p.rrect(ix + pool_cw, well_y + 8.0, 1.0, well_h - 16.0, 0.0, rgba(255, 255, 255, 24));
-    p.text_center(&page_txt, ix + pool_cw * 1.5, well_y + 21.0, 9.8, Weight::Semibold, tok::cyno_violet_hi());
-    p.rrect(ix + pool_cw * 2.0, well_y + 8.0, 1.0, well_h - 16.0, 0.0, rgba(255, 255, 255, 24));
-    p.text_center(&sys_txt, ix + pool_cw * 2.5, well_y + 21.0, 9.8, Weight::Semibold, tok::cyno_mist());
+    p.text_center(
+        &phys_txt,
+        ix + pool_cw * 0.5,
+        well_y + 21.0,
+        9.8,
+        Weight::Semibold,
+        tok::text1(),
+    );
+    p.rrect(
+        ix + pool_cw,
+        well_y + 8.0,
+        1.0,
+        well_h - 16.0,
+        0.0,
+        rgba(255, 255, 255, 24),
+    );
+    p.text_center(
+        &page_txt,
+        ix + pool_cw * 1.5,
+        well_y + 21.0,
+        9.8,
+        Weight::Semibold,
+        tok::cyno_violet_hi(),
+    );
+    p.rrect(
+        ix + pool_cw * 2.0,
+        well_y + 8.0,
+        1.0,
+        well_h - 16.0,
+        0.0,
+        rgba(255, 255, 255, 24),
+    );
+    p.text_center(
+        &sys_txt,
+        ix + pool_cw * 2.5,
+        well_y + 21.0,
+        9.8,
+        Weight::Semibold,
+        tok::cyno_mist(),
+    );
 
     // Section Header + Compact Toggle Switch Pills (Auto Clean & Show Results)
     let hdr_y = py + 94.0;
-    p.text("CLEANING AREAS", ix, hdr_y + 18.0, 9.8, Weight::Bold, tok::text3());
+    p.text(
+        "CLEANING AREAS",
+        ix,
+        hdr_y + 18.0,
+        9.8,
+        Weight::Bold,
+        tok::text3(),
+    );
 
     let sr_w = 136.0;
     let sr_h = 28.0;
@@ -2856,10 +2901,21 @@ fn draw_system_pane(p: &mut Painter, state: &AppState, px: f32, py: f32, pw: f32
         hdr_y + 17.5 + sr_dy,
         9.8,
         Weight::Semibold,
-        if state.mem_reduct.show_clean_results { tok::text1() } else { tok::text_soft() },
+        if state.mem_reduct.show_clean_results {
+            tok::text1()
+        } else {
+            tok::text_soft()
+        },
     );
     let sr_st = switch_val(state, ToggleId::ShowCleanResults);
-    p.draw_toggle_switch(sr_x + sr_w - 40.0, hdr_y + 6.0 + sr_dy, 32.0, 16.0, sr_st, sr_ht);
+    p.draw_toggle_switch(
+        sr_x + sr_w - 40.0,
+        hdr_y + 6.0 + sr_dy,
+        32.0,
+        16.0,
+        sr_st,
+        sr_ht,
+    );
     p.hit(sr_x, hdr_y, sr_w, sr_h, Action::ToggleShowCleanResults);
 
     let ac_w = 124.0;
@@ -2883,22 +2939,73 @@ fn draw_system_pane(p: &mut Painter, state: &AppState, px: f32, py: f32, pw: f32
         hdr_y + 17.5 + ac_dy,
         9.8,
         Weight::Semibold,
-        if state.mem_reduct.auto_clean_enabled { tok::text1() } else { tok::text_soft() },
+        if state.mem_reduct.auto_clean_enabled {
+            tok::text1()
+        } else {
+            tok::text_soft()
+        },
     );
     let ac_st = switch_val(state, ToggleId::AutoClean);
-    p.draw_toggle_switch(ac_x + ac_w - 40.0, hdr_y + 6.0 + ac_dy, 32.0, 16.0, ac_st, ac_ht);
+    p.draw_toggle_switch(
+        ac_x + ac_w - 40.0,
+        hdr_y + 6.0 + ac_dy,
+        32.0,
+        16.0,
+        ac_st,
+        ac_ht,
+    );
     p.hit(ac_x, hdr_y, ac_w, sr_h, Action::ToggleAutoClean);
 
     // 8 Mem Reduct Areas — 2 × 4 Dock-Modules Toggle Cards
     let areas = [
-        (Icon::Zap, "Working Sets", ToggleId::AreaWs, Action::ToggleArea(0)),
-        (Icon::Wave, "Sys File Cache", ToggleId::AreaSys, Action::ToggleArea(1)),
-        (Icon::Activity, "Standby List", ToggleId::AreaStandby, Action::ToggleArea(2)),
-        (Icon::List, "Mod Page List", ToggleId::AreaModPage, Action::ToggleArea(3)),
-        (Icon::Droplet, "Standby Low", ToggleId::AreaStandbyLow, Action::ToggleArea(4)),
-        (Icon::Folder, "Mod File Cache", ToggleId::AreaModFile, Action::ToggleArea(5)),
-        (Icon::Settings, "Registry Cache", ToggleId::AreaRegistry, Action::ToggleArea(6)),
-        (Icon::Display, "Combine Lists", ToggleId::AreaCombine, Action::ToggleArea(7)),
+        (
+            Icon::Zap,
+            "Working Sets",
+            ToggleId::AreaWs,
+            Action::ToggleArea(0),
+        ),
+        (
+            Icon::Wave,
+            "Sys File Cache",
+            ToggleId::AreaSys,
+            Action::ToggleArea(1),
+        ),
+        (
+            Icon::Activity,
+            "Standby List",
+            ToggleId::AreaStandby,
+            Action::ToggleArea(2),
+        ),
+        (
+            Icon::List,
+            "Mod Page List",
+            ToggleId::AreaModPage,
+            Action::ToggleArea(3),
+        ),
+        (
+            Icon::Droplet,
+            "Standby Low",
+            ToggleId::AreaStandbyLow,
+            Action::ToggleArea(4),
+        ),
+        (
+            Icon::Folder,
+            "Mod File Cache",
+            ToggleId::AreaModFile,
+            Action::ToggleArea(5),
+        ),
+        (
+            Icon::Settings,
+            "Registry Cache",
+            ToggleId::AreaRegistry,
+            Action::ToggleArea(6),
+        ),
+        (
+            Icon::Display,
+            "Combine Lists",
+            ToggleId::AreaCombine,
+            Action::ToggleArea(7),
+        ),
     ];
     let col_gap = 12.0;
     let row_gap = 10.0;
@@ -2932,7 +3039,11 @@ fn draw_system_pane(p: &mut Painter, state: &AppState, px: f32, py: f32, pw: f32
             tx + 12.0,
             ty + 12.0 + dy,
             14.0,
-            if active { tok::cyno_violet_hi() } else { tok::text2() },
+            if active {
+                tok::cyno_violet_hi()
+            } else {
+                tok::text2()
+            },
         );
         p.text(
             name,
@@ -2940,7 +3051,11 @@ fn draw_system_pane(p: &mut Painter, state: &AppState, px: f32, py: f32, pw: f32
             ty + 23.0 + dy,
             11.4,
             Weight::Semibold,
-            if active { tok::text1() } else { tok::text_soft() },
+            if active {
+                tok::text1()
+            } else {
+                tok::text_soft()
+            },
         );
         let st = switch_val(state, tid);
         p.draw_toggle_switch(tx + tile_w - 48.0, ty + 10.0 + dy, 38.0, 18.0, st, ht);
@@ -2992,8 +3107,20 @@ fn draw_system_pane(p: &mut Painter, state: &AppState, px: f32, py: f32, pw: f32
     let cta_w = 136.0;
     let cta_h = 30.0;
     let cta_x = ix + inner_w - cta_w;
-    let status_ell = p.ellipsize(&state.mem_reduct.last_cleaned_status, 10.2, Weight::Regular, inner_w - cta_w - 16.0);
-    p.text(&status_ell, ix, act_row_y + 19.0, 10.2, Weight::Regular, tok::text2());
+    let status_ell = p.ellipsize(
+        &state.mem_reduct.last_cleaned_status,
+        10.2,
+        Weight::Regular,
+        inner_w - cta_w - 16.0,
+    );
+    p.text(
+        &status_ell,
+        ix,
+        act_row_y + 19.0,
+        10.2,
+        Weight::Regular,
+        tok::text2(),
+    );
 
     let cta_ht = p.hot_t(cta_x, act_row_y, cta_w, cta_h);
     p.luminous_pill_button_t(
@@ -3007,12 +3134,31 @@ fn draw_system_pane(p: &mut Painter, state: &AppState, px: f32, py: f32, pw: f32
         tok::cyno_orchid(),
         cta_ht,
     );
-    let cta_lbl = if state.mem_reduct.is_purging { "Cleaning..." } else { "Clean Memory" };
-    p.text_center_shadow(cta_lbl, cta_x + cta_w / 2.0, act_row_y + 19.0 - 0.7 * cta_ht, 10.8, Weight::Bold, tok::text1());
+    let cta_lbl = if state.mem_reduct.is_purging {
+        "Cleaning..."
+    } else {
+        "Clean Memory"
+    };
+    p.text_center_shadow(
+        cta_lbl,
+        cta_x + cta_w / 2.0,
+        act_row_y + 19.0 - 0.7 * cta_ht,
+        10.8,
+        Weight::Bold,
+        tok::text1(),
+    );
     p.hit(cta_x, act_row_y, cta_w, cta_h, Action::PurgeRam);
 
     let bar_pct = (state.telemetry.memory_percent / 100.0).clamp(0.0, 1.0);
-    p.glowing_striped_bar(ix, py + 480.0, inner_w, 6.0, bar_pct, tok::cyno_deep(), tok::cyno_violet_hi());
+    p.glowing_striped_bar(
+        ix,
+        py + 480.0,
+        inner_w,
+        6.0,
+        bar_pct,
+        tok::cyno_deep(),
+        tok::cyno_violet_hi(),
+    );
 
     // Card 2: OS Integration & Maintenance (h = 194)
     let c2_y = py + c1_h + CARD_GAP;
@@ -3025,16 +3171,38 @@ fn draw_system_pane(p: &mut Painter, state: &AppState, px: f32, py: f32, pw: f32
         16.0,
         Some((pw - 44.0, 28.0, 74.0, tok::cyno_orchid())),
     );
-    p.text("OS Integration & Maintenance", ix, c2_y + 26.0, 13.5, Weight::Bold, tok::text1());
+    p.text(
+        "OS Integration & Maintenance",
+        ix,
+        c2_y + 26.0,
+        13.5,
+        Weight::Bold,
+        tok::text1(),
+    );
 
     let tile_y = c2_y + 48.0;
     let tile_h = 60.0;
     let t_gap = 12.0;
     let tile_w = (inner_w - t_gap * 2.0) / 3.0;
     let os_tiles = [
-        ("Autostart", "Launch at login", ToggleId::Autostart, Action::ToggleAutostart),
-        ("Chime SFX", "Feedback chimes", ToggleId::Chime, Action::ToggleChime),
-        ("Screen Time", "App tracking", ToggleId::ScreenTime, Action::ToggleScreenTime),
+        (
+            "Autostart",
+            "Launch at login",
+            ToggleId::Autostart,
+            Action::ToggleAutostart,
+        ),
+        (
+            "Chime SFX",
+            "Feedback chimes",
+            ToggleId::Chime,
+            Action::ToggleChime,
+        ),
+        (
+            "Screen Time",
+            "App tracking",
+            ToggleId::ScreenTime,
+            Action::ToggleScreenTime,
+        ),
     ];
 
     for (i, &(title, sub, tid, act)) in os_tiles.iter().enumerate() {
@@ -3043,13 +3211,34 @@ fn draw_system_pane(p: &mut Painter, state: &AppState, px: f32, py: f32, pw: f32
         let active = state.toggle_target(tid);
         p.tactile_surface_pill_t(tx, tile_y, tile_w, tile_h, 10.0, ht, None);
         if active {
-            p.rrect(tx, tile_y - 0.5 * ht, tile_w, tile_h, 10.0, fade(rgba(124, 58, 237, 24), 0.7 + 0.3 * ht));
+            p.rrect(
+                tx,
+                tile_y - 0.5 * ht,
+                tile_w,
+                tile_h,
+                10.0,
+                fade(rgba(124, 58, 237, 24), 0.7 + 0.3 * ht),
+            );
         }
         let dy = -0.5 * ht;
-        p.text(title, tx + 14.0, tile_y + 23.0 + dy, 11.2, Weight::Bold, tok::text1());
+        p.text(
+            title,
+            tx + 14.0,
+            tile_y + 23.0 + dy,
+            11.2,
+            Weight::Bold,
+            tok::text1(),
+        );
         let st = switch_val(state, tid);
         p.draw_toggle_switch(tx + tile_w - 50.0, tile_y + 10.0 + dy, 38.0, 18.0, st, ht);
-        p.text(sub, tx + 14.0, tile_y + 44.0 + dy, 9.6, Weight::Regular, tok::text2());
+        p.text(
+            sub,
+            tx + 14.0,
+            tile_y + 44.0 + dy,
+            9.6,
+            Weight::Regular,
+            tok::text2(),
+        );
         p.hit(tx, tile_y, tile_w, tile_h, act);
     }
 
@@ -3084,7 +3273,15 @@ fn draw_system_pane(p: &mut Painter, state: &AppState, px: f32, py: f32, pw: f32
 
     let q_x = rd_x + tile_w + t_gap;
     let q_ht = p.hot_t(q_x, act_y, tile_w, b_h);
-    p.tactile_surface_pill_t(q_x, act_y, tile_w, b_h, 9.5, q_ht, Some(rgba(220, 38, 38, 255)));
+    p.tactile_surface_pill_t(
+        q_x,
+        act_y,
+        tile_w,
+        b_h,
+        9.5,
+        q_ht,
+        Some(rgba(220, 38, 38, 255)),
+    );
     p.text_center_shadow(
         "Exit CyNotch",
         q_x + tile_w / 2.0,

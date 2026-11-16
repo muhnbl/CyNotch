@@ -1,5 +1,5 @@
 use crate::models::ScreenTimeStats;
-use chrono::{Local, Timelike};
+use chrono::{Datelike, Local, Timelike};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::ffi::c_void;
@@ -41,7 +41,11 @@ unsafe extern "system" {
 
 #[link(name = "kernel32")]
 unsafe extern "system" {
-    fn OpenProcess(dw_desired_access: u32, b_inherit_handle: i32, dw_process_id: u32) -> *mut c_void;
+    fn OpenProcess(
+        dw_desired_access: u32,
+        b_inherit_handle: i32,
+        dw_process_id: u32,
+    ) -> *mut c_void;
     fn QueryFullProcessImageNameW(
         h_process: *mut c_void,
         dw_flags: u32,
@@ -95,13 +99,17 @@ pub fn compute_peak_hour(hourly: &[u64; 24], fallback_hour: usize) -> (usize, St
     }
 }
 
-pub fn compute_seven_day_avg(daily_totals: &HashMap<String, u64>, today_date: &str, today_secs: u64) -> (u64, usize) {
-    let mut vals: Vec<(String, u64)> = daily_totals
+pub fn compute_seven_day_avg(
+    daily_totals: &HashMap<String, u64>,
+    today_date: &str,
+    today_secs: u64,
+) -> (u64, usize) {
+    let mut vals: Vec<(&str, u64)> = daily_totals
         .iter()
         .filter(|(d, _)| d.as_str() != today_date)
-        .map(|(d, &v)| (d.clone(), v))
+        .map(|(d, &v)| (d.as_str(), v))
         .collect();
-    vals.sort_by(|a, b| b.0.cmp(&a.0));
+    vals.sort_by(|a, b| b.0.cmp(a.0));
     vals.truncate(6);
     let mut sum = today_secs;
     let mut count = 1usize;
@@ -112,9 +120,19 @@ pub fn compute_seven_day_avg(daily_totals: &HashMap<String, u64>, today_date: &s
     (sum / count as u64, count)
 }
 
+#[derive(Serialize)]
+struct SaveScreenTimeRef<'a> {
+    current_date: &'a str,
+    app_seconds: &'a HashMap<String, u64>,
+    total_seconds: u64,
+    hourly_seconds: &'a [u64],
+    daily_totals: &'a HashMap<String, u64>,
+}
+
 pub struct ScreenTimeTracker {
     storage_path: PathBuf,
     current_date: String,
+    last_ymd: (i32, u32, u32),
     app_seconds: HashMap<String, u64>,
     total_seconds: u64,
     hourly_seconds: [u64; 24],
@@ -131,35 +149,39 @@ impl ScreenTimeTracker {
 
     pub fn new() -> Self {
         let now = Local::now();
+        let ymd = (now.year(), now.month(), now.day());
         let today = now.format("%Y-%m-%d").to_string();
         let path = Self::appdata_storage_path();
 
         if let Ok(content) = std::fs::read_to_string(&path)
-            && let Ok(saved) = serde_json::from_str::<SavedScreenTimeV2>(&content) {
-                let mut hours = [0u64; 24];
-                for (i, v) in saved.hourly_seconds.iter().take(24).enumerate() {
-                    hours[i] = *v;
-                }
-                let mut tracker = Self {
-                    storage_path: path,
-                    current_date: if saved.current_date.is_empty() {
-                        today.clone()
-                    } else {
-                        saved.current_date
-                    },
-                    app_seconds: saved.app_seconds,
-                    total_seconds: saved.total_seconds,
-                    hourly_seconds: hours,
-                    daily_totals: saved.daily_totals,
-                };
-                tracker.rollover_if_needed(&today);
-                return tracker;
+            && let Ok(saved) = serde_json::from_str::<SavedScreenTimeV2>(&content)
+        {
+            let mut hours = [0u64; 24];
+            for (i, v) in saved.hourly_seconds.iter().take(24).enumerate() {
+                hours[i] = *v;
             }
+            let mut tracker = Self {
+                storage_path: path,
+                current_date: if saved.current_date.is_empty() {
+                    today.clone()
+                } else {
+                    saved.current_date
+                },
+                last_ymd: ymd,
+                app_seconds: saved.app_seconds,
+                total_seconds: saved.total_seconds,
+                hourly_seconds: hours,
+                daily_totals: saved.daily_totals,
+            };
+            tracker.rollover_if_needed(&today);
+            return tracker;
+        }
 
         // Start clean at 0 — accumulate purely from live active window tracking
         Self {
             storage_path: path,
             current_date: today,
+            last_ymd: ymd,
             app_seconds: HashMap::new(),
             total_seconds: 0,
             hourly_seconds: [0u64; 24],
@@ -170,7 +192,8 @@ impl ScreenTimeTracker {
     fn rollover_if_needed(&mut self, today: &str) {
         if self.current_date != today {
             if !self.current_date.is_empty() && self.total_seconds > 0 {
-                self.daily_totals.insert(self.current_date.clone(), self.total_seconds);
+                self.daily_totals
+                    .insert(self.current_date.clone(), self.total_seconds);
             }
             self.current_date = today.to_string();
             self.app_seconds.clear();
@@ -187,14 +210,12 @@ impl ScreenTimeTracker {
         if let Some(parent) = self.storage_path.parent() {
             let _ = std::fs::create_dir_all(parent);
         }
-        let mut daily = self.daily_totals.clone();
-        daily.insert(self.current_date.clone(), self.total_seconds);
-        let saved = SavedScreenTimeV2 {
-            current_date: self.current_date.clone(),
-            app_seconds: self.app_seconds.clone(),
+        let saved = SaveScreenTimeRef {
+            current_date: &self.current_date,
+            app_seconds: &self.app_seconds,
             total_seconds: self.total_seconds,
-            hourly_seconds: self.hourly_seconds.to_vec(),
-            daily_totals: daily,
+            hourly_seconds: &self.hourly_seconds,
+            daily_totals: &self.daily_totals,
         };
         if let Ok(json) = serde_json::to_string_pretty(&saved) {
             let _ = std::fs::write(&self.storage_path, json);
@@ -202,7 +223,9 @@ impl ScreenTimeTracker {
     }
 
     pub fn reset_today(&mut self) {
-        self.current_date = Local::now().format("%Y-%m-%d").to_string();
+        let now = Local::now();
+        self.last_ymd = (now.year(), now.month(), now.day());
+        self.current_date = now.format("%Y-%m-%d").to_string();
         self.app_seconds.clear();
         self.total_seconds = 0;
         self.hourly_seconds = [0u64; 24];
@@ -211,10 +234,14 @@ impl ScreenTimeTracker {
 
     pub fn tick(&mut self) -> ScreenTimeStats {
         let now = Local::now();
-        let today = now.format("%Y-%m-%d").to_string();
+        let ymd = (now.year(), now.month(), now.day());
+        if ymd != self.last_ymd {
+            self.last_ymd = ymd;
+            let today = now.format("%Y-%m-%d").to_string();
+            self.rollover_if_needed(&today);
+        }
         let hour = (now.hour() as usize).min(23);
 
-        self.rollover_if_needed(&today);
         if is_user_active_recently()
             && let Some(app) = get_active_app_name()
         {
@@ -231,18 +258,22 @@ impl ScreenTimeTracker {
     }
 
     pub fn stats(&self, current_hour: usize) -> ScreenTimeStats {
-        let mut sorted: Vec<(String, u64)> = self
+        let mut sorted: Vec<(&str, u64)> = self
             .app_seconds
             .iter()
-            .map(|(k, &v)| (k.clone(), v))
+            .map(|(k, &v)| (k.as_str(), v))
             .collect();
         sorted.sort_by_key(|a| std::cmp::Reverse(a.1));
 
         let (top_app_name, top_app_secs) = sorted
             .first()
-            .cloned()
+            .map(|(k, v)| ((*k).to_string(), *v))
             .unwrap_or_else(|| ("--".to_string(), 0));
-        let top_apps = sorted.into_iter().take(3).collect();
+        let top_apps = sorted
+            .into_iter()
+            .take(3)
+            .map(|(k, v)| (k.to_string(), v))
+            .collect();
 
         let (peak_hour, peak_hour_str) = compute_peak_hour(&self.hourly_seconds, current_hour);
         let (seven_day_avg_secs, tracked_days) =
@@ -301,14 +332,17 @@ pub fn get_active_app_name() -> Option<String> {
         CloseHandle(handle);
 
         if res != 0 && size > 0 {
-            let path_str = String::from_utf16_lossy(&buf[..size as usize]);
-            let file_name = Path::new(&path_str)
-                .file_name()
-                .and_then(|s| s.to_str())
-                .unwrap_or("");
+            let slice = &buf[..size as usize];
+            let fname_start = slice
+                .iter()
+                .rposition(|&c| c == b'\\' as u16 || c == b'/' as u16)
+                .map(|idx| idx + 1)
+                .unwrap_or(0);
+            let file_name = String::from_utf16_lossy(&slice[fname_start..]);
 
             let lower = file_name.to_lowercase();
-            if matches!(lower.as_str(), "lockapp.exe" | "logonui.exe" | "idle") || lower.is_empty() {
+            if matches!(lower.as_str(), "lockapp.exe" | "logonui.exe" | "idle") || lower.is_empty()
+            {
                 return None;
             }
             let clean_name = match lower.as_str() {
@@ -325,10 +359,10 @@ pub fn get_active_app_name() -> Option<String> {
                 "explorer.exe" => "Explorer",
                 "cynotch.exe" => "CyNotch",
                 _ => {
-                    let stem = Path::new(file_name)
+                    let stem = Path::new(&file_name)
                         .file_stem()
                         .and_then(|s| s.to_str())
-                        .unwrap_or(file_name);
+                        .unwrap_or(&file_name);
                     return Some(title_case_stem(stem));
                 }
             };

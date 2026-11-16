@@ -1,7 +1,7 @@
 //! Stroke icons drawn as vector paths on a 24×24 grid (Lucide-style geometry).
 //! Segoe UI has no emoji/symbol glyphs, so text icons rendered as tofu boxes.
 
-use crate::painter::{rrect_path, Painter};
+use crate::painter::{Painter, rrect_path};
 use tiny_skia::{Color, PathBuilder};
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -65,10 +65,7 @@ pub fn for_app(app_name: &str, fallback: Icon) -> Icon {
         || lower.contains("messenger")
     {
         Icon::AppChat
-    } else if lower.contains("mail")
-        || lower.contains("outlook")
-        || lower.contains("thunderbird")
-    {
+    } else if lower.contains("mail") || lower.contains("outlook") || lower.contains("thunderbird") {
         Icon::AppMail
     } else if lower.contains("chrome")
         || lower.contains("edge")
@@ -89,7 +86,8 @@ pub fn for_app(app_name: &str, fallback: Icon) -> Icon {
         || lower.contains("git")
     {
         Icon::AppCode
-    } else if lower.contains("windows") || lower.contains("explorer") || lower.contains("security") {
+    } else if lower.contains("windows") || lower.contains("explorer") || lower.contains("security")
+    {
         Icon::AppWindows
     } else if lower.contains("cynotch") {
         Icon::Zap
@@ -114,7 +112,11 @@ fn poly(g: &G, pts: &[(f32, f32)], close: bool) -> Option<tiny_skia::Path> {
     let mut pb = PathBuilder::new();
     for (i, &(u, v)) in pts.iter().enumerate() {
         let (x, y) = g.p(u, v);
-        if i == 0 { pb.move_to(x, y) } else { pb.line_to(x, y) }
+        if i == 0 {
+            pb.move_to(x, y)
+        } else {
+            pb.line_to(x, y)
+        }
     }
     if close {
         pb.close();
@@ -124,22 +126,38 @@ fn poly(g: &G, pts: &[(f32, f32)], close: bool) -> Option<tiny_skia::Path> {
 
 /// Draw `icon` with its 24-grid box at (x, y) scaled to `size`.
 pub fn draw(p: &mut Painter, icon: Icon, x: f32, y: f32, size: f32, c: Color) {
-    let g = G { x, y, k: size / 24.0 };
+    let g = G {
+        x,
+        y,
+        k: size / 24.0,
+    };
     let sw = 1.9 * g.k; // stroke width in logical units
     match icon {
         Icon::Home => {
             if let Some(roof) = poly(&g, &[(3.0, 10.0), (12.0, 3.0), (21.0, 10.0)], false) {
                 p.stroke_path(&roof, sw, c);
             }
-            if let Some(body) = poly(&g, &[(5.0, 9.5), (5.0, 20.0), (19.0, 20.0), (19.0, 9.5)], false) {
+            if let Some(body) = poly(
+                &g,
+                &[(5.0, 9.5), (5.0, 20.0), (19.0, 20.0), (19.0, 9.5)],
+                false,
+            ) {
                 p.stroke_path(&body, sw, c);
             }
-            if let Some(door) = poly(&g, &[(9.5, 20.0), (9.5, 13.5), (14.5, 13.5), (14.5, 20.0)], false) {
+            if let Some(door) = poly(
+                &g,
+                &[(9.5, 20.0), (9.5, 13.5), (14.5, 13.5), (14.5, 20.0)],
+                false,
+            ) {
                 p.stroke_path(&door, sw, c);
             }
         }
         Icon::Music => {
-            if let Some(path) = poly(&g, &[(9.0, 18.0), (9.0, 5.0), (20.0, 3.0), (20.0, 16.0)], false) {
+            if let Some(path) = poly(
+                &g,
+                &[(9.0, 18.0), (9.0, 5.0), (20.0, 3.0), (20.0, 16.0)],
+                false,
+            ) {
                 p.stroke_path(&path, sw, c);
             }
             for (cu, cv) in [(6.5, 18.0), (17.5, 16.0)] {
@@ -150,7 +168,18 @@ pub fn draw(p: &mut Painter, icon: Icon, x: f32, y: f32, size: f32, c: Color) {
             }
         }
         Icon::Volume => {
-            if let Some(body) = poly(&g, &[(11.0, 5.0), (6.0, 9.0), (3.0, 9.0), (3.0, 15.0), (6.0, 15.0), (11.0, 19.0)], true) {
+            if let Some(body) = poly(
+                &g,
+                &[
+                    (11.0, 5.0),
+                    (6.0, 9.0),
+                    (3.0, 9.0),
+                    (3.0, 15.0),
+                    (6.0, 15.0),
+                    (11.0, 19.0),
+                ],
+                true,
+            ) {
                 p.stroke_path(&body, sw, c);
             }
             let (cx, cy) = g.p(11.0, 12.0);
@@ -211,7 +240,11 @@ pub fn draw(p: &mut Painter, icon: Icon, x: f32, y: f32, size: f32, c: Color) {
             if let Some(body) = rrect_path(bx, by, 19.0 * g.k, 14.0 * g.k, 2.8 * g.k) {
                 p.stroke_path(&body, sw, c);
             }
-            if let Some(bump) = poly(&g, &[(8.0, 5.5), (9.5, 3.0), (14.5, 3.0), (16.0, 5.5)], false) {
+            if let Some(bump) = poly(
+                &g,
+                &[(8.0, 5.5), (9.5, 3.0), (14.5, 3.0), (16.0, 5.5)],
+                false,
+            ) {
                 p.stroke_path(&bump, sw, c);
             }
             let (cx, cy) = g.p(12.0, 12.5);
@@ -248,12 +281,24 @@ pub fn draw(p: &mut Painter, icon: Icon, x: f32, y: f32, size: f32, c: Color) {
                 let base_r = 6.2 * g.k;
                 let tip_r = 9.2 * g.k;
                 let half_w = 1.6 * g.k;
-                
+
                 let mut pb = PathBuilder::new();
-                pb.move_to(cx + base_r * cos_a - half_w * nx, cy + base_r * sin_a - half_w * ny);
-                pb.line_to(cx + tip_r * cos_a - half_w * 0.7 * nx, cy + tip_r * sin_a - half_w * 0.7 * ny);
-                pb.line_to(cx + tip_r * cos_a + half_w * 0.7 * nx, cy + tip_r * sin_a + half_w * 0.7 * ny);
-                pb.line_to(cx + base_r * cos_a + half_w * nx, cy + base_r * sin_a + half_w * ny);
+                pb.move_to(
+                    cx + base_r * cos_a - half_w * nx,
+                    cy + base_r * sin_a - half_w * ny,
+                );
+                pb.line_to(
+                    cx + tip_r * cos_a - half_w * 0.7 * nx,
+                    cy + tip_r * sin_a - half_w * 0.7 * ny,
+                );
+                pb.line_to(
+                    cx + tip_r * cos_a + half_w * 0.7 * nx,
+                    cy + tip_r * sin_a + half_w * 0.7 * ny,
+                );
+                pb.line_to(
+                    cx + base_r * cos_a + half_w * nx,
+                    cy + base_r * sin_a + half_w * ny,
+                );
                 pb.close();
                 if let Some(tooth) = pb.finish() {
                     p.fill_path(&tooth, c);
@@ -291,7 +336,18 @@ pub fn draw(p: &mut Painter, icon: Icon, x: f32, y: f32, size: f32, c: Color) {
             }
         }
         Icon::Zap => {
-            if let Some(path) = poly(&g, &[(13.0, 2.0), (4.0, 14.0), (12.0, 14.0), (11.0, 22.0), (20.0, 10.0), (12.0, 10.0)], true) {
+            if let Some(path) = poly(
+                &g,
+                &[
+                    (13.0, 2.0),
+                    (4.0, 14.0),
+                    (12.0, 14.0),
+                    (11.0, 22.0),
+                    (20.0, 10.0),
+                    (12.0, 10.0),
+                ],
+                true,
+            ) {
                 p.stroke_path(&path, sw, c);
             }
         }
@@ -336,7 +392,15 @@ pub fn draw(p: &mut Painter, icon: Icon, x: f32, y: f32, size: f32, c: Color) {
                 p.stroke_path(&body, sw, c);
             }
             let (cx, cy) = g.p(12.0, 10.5);
-            p.arc(cx, cy - 1.5 * g.k, 4.0 * g.k, std::f32::consts::PI, std::f32::consts::PI, sw, c);
+            p.arc(
+                cx,
+                cy - 1.5 * g.k,
+                4.0 * g.k,
+                std::f32::consts::PI,
+                std::f32::consts::PI,
+                sw,
+                c,
+            );
             for u in [8.0, 16.0] {
                 if let Some(leg) = poly(&g, &[(u, 9.0), (u, 11.0)], false) {
                     p.stroke_path(&leg, sw, c);
@@ -344,7 +408,18 @@ pub fn draw(p: &mut Painter, icon: Icon, x: f32, y: f32, size: f32, c: Color) {
             }
         }
         Icon::Activity => {
-            if let Some(path) = poly(&g, &[(22.0, 12.0), (18.0, 12.0), (15.0, 21.0), (9.0, 3.0), (6.0, 12.0), (2.0, 12.0)], false) {
+            if let Some(path) = poly(
+                &g,
+                &[
+                    (22.0, 12.0),
+                    (18.0, 12.0),
+                    (15.0, 21.0),
+                    (9.0, 3.0),
+                    (6.0, 12.0),
+                    (2.0, 12.0),
+                ],
+                false,
+            ) {
                 p.stroke_path(&path, sw, c);
             }
         }
@@ -356,7 +431,17 @@ pub fn draw(p: &mut Painter, icon: Icon, x: f32, y: f32, size: f32, c: Color) {
             }
         }
         Icon::File => {
-            if let Some(page) = poly(&g, &[(6.0, 3.0), (14.5, 3.0), (18.5, 7.0), (18.5, 21.0), (6.0, 21.0)], true) {
+            if let Some(page) = poly(
+                &g,
+                &[
+                    (6.0, 3.0),
+                    (14.5, 3.0),
+                    (18.5, 7.0),
+                    (18.5, 21.0),
+                    (6.0, 21.0),
+                ],
+                true,
+            ) {
                 p.stroke_path(&page, sw, c);
             }
             if let Some(fold) = poly(&g, &[(14.5, 3.0), (14.5, 7.0), (18.5, 7.0)], false) {
@@ -366,7 +451,14 @@ pub fn draw(p: &mut Painter, icon: Icon, x: f32, y: f32, size: f32, c: Color) {
         Icon::Folder => {
             if let Some(body) = poly(
                 &g,
-                &[(3.0, 6.0), (9.5, 6.0), (11.5, 8.5), (21.0, 8.5), (21.0, 19.5), (3.0, 19.5)],
+                &[
+                    (3.0, 6.0),
+                    (9.5, 6.0),
+                    (11.5, 8.5),
+                    (21.0, 8.5),
+                    (21.0, 19.5),
+                    (3.0, 19.5),
+                ],
                 true,
             ) {
                 p.stroke_path(&body, sw, c);
@@ -446,7 +538,13 @@ pub fn draw(p: &mut Painter, icon: Icon, x: f32, y: f32, size: f32, c: Color) {
             }
         }
         Icon::AppChat => {
-            if let Some(bubble) = rrect_path(g.x + 3.0 * g.k, g.y + 4.0 * g.k, 18.0 * g.k, 13.5 * g.k, 4.5 * g.k) {
+            if let Some(bubble) = rrect_path(
+                g.x + 3.0 * g.k,
+                g.y + 4.0 * g.k,
+                18.0 * g.k,
+                13.5 * g.k,
+                4.5 * g.k,
+            ) {
                 p.stroke_path(&bubble, sw, c);
             }
             if let Some(tail) = poly(&g, &[(7.5, 17.5), (5.5, 20.5), (11.0, 17.5)], false) {
@@ -454,7 +552,13 @@ pub fn draw(p: &mut Painter, icon: Icon, x: f32, y: f32, size: f32, c: Color) {
             }
         }
         Icon::AppMail => {
-            if let Some(env) = rrect_path(g.x + 3.0 * g.k, g.y + 5.0 * g.k, 18.0 * g.k, 14.0 * g.k, 2.5 * g.k) {
+            if let Some(env) = rrect_path(
+                g.x + 3.0 * g.k,
+                g.y + 5.0 * g.k,
+                18.0 * g.k,
+                14.0 * g.k,
+                2.5 * g.k,
+            ) {
                 p.stroke_path(&env, sw, c);
             }
             if let Some(flap) = poly(&g, &[(3.5, 6.2), (12.0, 13.0), (20.5, 6.2)], false) {

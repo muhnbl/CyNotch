@@ -2,10 +2,68 @@
 
 use crate::font::{FontRenderer, Weight};
 use crate::models::{Action, TypeScale};
+use std::borrow::Cow;
 use tiny_skia::*;
 
+/// Fixed-capacity stack string buffer for zero-allocation formatting in hot render paths.
+pub struct StackStr<const N: usize> {
+    buf: [u8; N],
+    len: usize,
+}
 
+impl<const N: usize> StackStr<N> {
+    #[inline]
+    pub fn new() -> Self {
+        Self {
+            buf: [0u8; N],
+            len: 0,
+        }
+    }
 
+    #[inline]
+    pub fn as_str(&self) -> &str {
+        std::str::from_utf8(&self.buf[..self.len]).unwrap_or("")
+    }
+}
+
+impl<const N: usize> Default for StackStr<N> {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl<const N: usize> std::ops::Deref for StackStr<N> {
+    type Target = str;
+    #[inline]
+    fn deref(&self) -> &str {
+        self.as_str()
+    }
+}
+
+impl<const N: usize> std::fmt::Write for StackStr<N> {
+    fn write_str(&mut self, s: &str) -> std::fmt::Result {
+        let avail = N.saturating_sub(self.len);
+        let bytes = s.as_bytes();
+        if bytes.len() <= avail {
+            self.buf[self.len..self.len + bytes.len()].copy_from_slice(bytes);
+            self.len += bytes.len();
+            Ok(())
+        } else {
+            // Copy as many complete UTF-8 chars as fit
+            let mut copy_len = 0;
+            for ch in s.chars() {
+                let clen = ch.len_utf8();
+                if copy_len + clen > avail {
+                    break;
+                }
+                copy_len += clen;
+            }
+            self.buf[self.len..self.len + copy_len].copy_from_slice(&bytes[..copy_len]);
+            self.len += copy_len;
+            Ok(())
+        }
+    }
+}
 
 pub fn rgba(r: u8, g: u8, b: u8, a: u8) -> Color {
     Color::from_rgba8(r, g, b, a)
@@ -17,7 +75,13 @@ pub fn with_alpha(c: Color, a: u8) -> Color {
 
 /// Multiply a color's alpha (used for disabled / fading content).
 pub fn fade(c: Color, k: f32) -> Color {
-    Color::from_rgba(c.red(), c.green(), c.blue(), (c.alpha() * k).clamp(0.0, 1.0)).unwrap_or(c)
+    Color::from_rgba(
+        c.red(),
+        c.green(),
+        c.blue(),
+        (c.alpha() * k).clamp(0.0, 1.0),
+    )
+    .unwrap_or(c)
 }
 
 pub fn lerp(a: f32, b: f32, t: f32) -> f32 {
@@ -41,18 +105,38 @@ pub mod tok {
     use tiny_skia::Color;
 
     // Cool Indigo-Obsidian Glass Surfaces (Never pure #000000)
-    pub fn obsidian_shell() -> Color { rgba(14, 16, 26, 250) }
-    pub fn obsidian_deep() -> Color { rgba(9, 10, 18, 254) }
-    pub fn surface_top() -> Color { rgba(28, 30, 46, 255) }
-    pub fn surface_base() -> Color { rgba(16, 17, 28, 255) }
-    pub fn surface_well() -> Color { rgba(10, 11, 19, 240) }
+    pub fn obsidian_shell() -> Color {
+        rgba(14, 16, 26, 250)
+    }
+    pub fn obsidian_deep() -> Color {
+        rgba(9, 10, 18, 254)
+    }
+    pub fn surface_top() -> Color {
+        rgba(28, 30, 46, 255)
+    }
+    pub fn surface_base() -> Color {
+        rgba(16, 17, 28, 255)
+    }
+    pub fn surface_well() -> Color {
+        rgba(10, 11, 19, 240)
+    }
 
     // Frosted Indigo-Obsidian Palette (Used under GPU WinRT Composition HostBackdrop + GaussianBlur)
-    pub fn obsidian_shell_frosted() -> Color { rgba(14, 16, 27, 108) }
-    pub fn obsidian_deep_frosted() -> Color { rgba(9, 10, 19, 122) }
-    pub fn surface_top_frosted() -> Color { rgba(28, 30, 47, 62) }
-    pub fn surface_base_frosted() -> Color { rgba(16, 17, 29, 48) }
-    pub fn surface_well_frosted() -> Color { rgba(10, 11, 20, 64) }
+    pub fn obsidian_shell_frosted() -> Color {
+        rgba(14, 16, 27, 108)
+    }
+    pub fn obsidian_deep_frosted() -> Color {
+        rgba(9, 10, 19, 122)
+    }
+    pub fn surface_top_frosted() -> Color {
+        rgba(28, 30, 47, 62)
+    }
+    pub fn surface_base_frosted() -> Color {
+        rgba(16, 17, 29, 48)
+    }
+    pub fn surface_well_frosted() -> Color {
+        rgba(10, 11, 20, 64)
+    }
 
     pub fn scale_frosted(c: Color, opacity_pct: u32) -> Color {
         let pct = opacity_pct.clamp(25, 95);
@@ -68,29 +152,71 @@ pub mod tok {
         )
     }
 
-    pub fn text1() -> Color { rgba(246, 244, 255, 255) }          // #F6F4FF crisp lavender-tinted white
-    pub fn text2() -> Color { rgba(165, 161, 194, 255) }          // #A5A1C2 cool slate-lavender
-    pub fn text3() -> Color { rgba(112, 108, 142, 255) }          // #706C8E muted slate-lavender
-    pub fn surface() -> Color { rgba(235, 230, 255, 15) }
-    pub fn surface_hi() -> Color { rgba(235, 230, 255, 30) }
-    pub fn hairline() -> Color { rgba(235, 230, 255, 26) }
+    pub fn text1() -> Color {
+        rgba(246, 244, 255, 255)
+    } // #F6F4FF crisp lavender-tinted white
+    pub fn text2() -> Color {
+        rgba(165, 161, 194, 255)
+    } // #A5A1C2 cool slate-lavender
+    pub fn text3() -> Color {
+        rgba(138, 134, 170, 255)
+    } // #8A86AA muted slate-lavender (WCAG AA >= 4.5:1 on dark surfaces)
+    pub fn surface() -> Color {
+        rgba(235, 230, 255, 15)
+    }
+    pub fn surface_hi() -> Color {
+        rgba(235, 230, 255, 30)
+    }
+    pub fn hairline() -> Color {
+        rgba(235, 230, 255, 26)
+    }
 
     // Photo-Matched Luminous Violet & Pearlescent Lavender Palette
-    pub fn cyno_indigo() -> Color { rgba(62, 24, 138, 255) }         // #3E188A deep royal indigo-violet
-    pub fn cyno_deep() -> Color { rgba(93, 41, 196, 255) }           // #5D29C4 rich royal purple
-    pub fn cyno_violet() -> Color { rgba(124, 58, 237, 255) }        // #7C3AED vivid iris violet
-    pub fn cyno_orchid() -> Color { rgba(155, 89, 252, 255) }        // #9B59FC bright orchid bloom
-    pub fn cyno_violet_hi() -> Color { rgba(196, 148, 255, 255) }    // #C494FF luminous lavender-orchid accent
-    pub fn cyno_mist() -> Color { rgba(233, 218, 255, 255) }         // #E9DAFF pearlescent lavender highlight
-    pub fn cyno_lavender_white() -> Color { rgba(245, 240, 255, 255) } // #F5F0FF bright lavender-white accent
-    pub fn cyno_amber_deep() -> Color { rgba(161, 98, 7, 255) }      // legacy/contrast token
-    pub fn cyno_gold() -> Color { rgba(245, 158, 11, 255) }          // semantic warning/gold token
-    pub fn cyno_gold_hi() -> Color { rgba(253, 230, 138, 255) }      // semantic warning highlight
-    pub fn cyno_peach_gold() -> Color { rgba(233, 218, 255, 255) }   // lavender-white pill end
-    pub fn text_soft() -> Color { rgba(224, 217, 252, 255) }         // #E0D9FC crisp secondary lavender ink
-    pub fn cyan_hi() -> Color { rgba(125, 211, 252, 255) }           // #7DD3FC crisp hydration sky accent
-    pub fn cyno_badge_bg() -> Color { rgba(109, 40, 217, 78) }
-    pub fn cyno_badge_ring() -> Color { rgba(168, 85, 247, 195) }
+    pub fn cyno_indigo() -> Color {
+        rgba(62, 24, 138, 255)
+    } // #3E188A deep royal indigo-violet
+    pub fn cyno_deep() -> Color {
+        rgba(93, 41, 196, 255)
+    } // #5D29C4 rich royal purple
+    pub fn cyno_violet() -> Color {
+        rgba(124, 58, 237, 255)
+    } // #7C3AED vivid iris violet
+    pub fn cyno_orchid() -> Color {
+        rgba(155, 89, 252, 255)
+    } // #9B59FC bright orchid bloom
+    pub fn cyno_violet_hi() -> Color {
+        rgba(196, 148, 255, 255)
+    } // #C494FF luminous lavender-orchid accent
+    pub fn cyno_mist() -> Color {
+        rgba(233, 218, 255, 255)
+    } // #E9DAFF pearlescent lavender highlight
+    pub fn cyno_lavender_white() -> Color {
+        rgba(245, 240, 255, 255)
+    } // #F5F0FF bright lavender-white accent
+    pub fn cyno_amber_deep() -> Color {
+        rgba(161, 98, 7, 255)
+    } // legacy/contrast token
+    pub fn cyno_gold() -> Color {
+        rgba(245, 158, 11, 255)
+    } // semantic warning/gold token
+    pub fn cyno_gold_hi() -> Color {
+        rgba(253, 230, 138, 255)
+    } // semantic warning highlight
+    pub fn cyno_peach_gold() -> Color {
+        rgba(233, 218, 255, 255)
+    } // lavender-white pill end
+    pub fn text_soft() -> Color {
+        rgba(224, 217, 252, 255)
+    } // #E0D9FC crisp secondary lavender ink
+    pub fn cyan_hi() -> Color {
+        rgba(125, 211, 252, 255)
+    } // #7DD3FC crisp hydration sky accent
+    pub fn cyno_badge_bg() -> Color {
+        rgba(109, 40, 217, 78)
+    }
+    pub fn cyno_badge_ring() -> Color {
+        rgba(168, 85, 247, 195)
+    }
 }
 
 pub struct Hit {
@@ -130,7 +256,14 @@ pub fn rrect_corners4_path(
     }
     pb.line_to(x + w, y + h - rbr);
     if rbr > 0.0 {
-        pb.cubic_to(x + w, y + h - rbr + kbr, x + w - rbr + kbr, y + h, x + w - rbr, y + h);
+        pb.cubic_to(
+            x + w,
+            y + h - rbr + kbr,
+            x + w - rbr + kbr,
+            y + h,
+            x + w - rbr,
+            y + h,
+        );
     }
     pb.line_to(x + rbl, y + h);
     if rbl > 0.0 {
@@ -204,7 +337,15 @@ impl<'a> Painter<'a> {
         self.prepare_corners4_clip(x, y, w, h, r, r, r, r)
     }
 
-    pub fn prepare_corners_clip(&mut self, x: f32, y: f32, w: f32, h: f32, r_top: f32, r_bot: f32) -> bool {
+    pub fn prepare_corners_clip(
+        &mut self,
+        x: f32,
+        y: f32,
+        w: f32,
+        h: f32,
+        r_top: f32,
+        r_bot: f32,
+    ) -> bool {
         self.prepare_corners4_clip(x, y, w, h, r_top, r_top, r_bot, r_bot)
     }
 
@@ -273,16 +414,24 @@ impl<'a> Painter<'a> {
     pub fn fill_path(&mut self, path: &Path, c: Color) {
         let tf = self.tf();
         let col = self.col(c);
-        self.pm.fill_path(path, &Self::paint(col), FillRule::Winding, tf, None);
+        self.pm
+            .fill_path(path, &Self::paint(col), FillRule::Winding, tf, None);
     }
 
     pub fn fill_path_tf(&mut self, path: &Path, c: Color, local_tf: Transform) {
         let tf = self.tf().pre_concat(local_tf);
         let col = self.col(c);
-        self.pm.fill_path(path, &Self::paint(col), FillRule::Winding, tf, None);
+        self.pm
+            .fill_path(path, &Self::paint(col), FillRule::Winding, tf, None);
     }
 
-    pub fn fill_path_tf_blend(&mut self, path: &Path, c: Color, local_tf: Transform, blend: BlendMode) {
+    pub fn fill_path_tf_blend(
+        &mut self,
+        path: &Path,
+        c: Color,
+        local_tf: Transform,
+        blend: BlendMode,
+    ) {
         let tf = self.tf().pre_concat(local_tf);
         let col = self.col(c);
         let mut p = Self::paint(col);
@@ -339,7 +488,8 @@ impl<'a> Painter<'a> {
             line_join: LineJoin::Round,
             ..Default::default()
         };
-        self.pm.stroke_path(path, &Self::paint(col), &stroke, tf, None);
+        self.pm
+            .stroke_path(path, &Self::paint(col), &stroke, tf, None);
     }
 
     pub fn stroke_path_tf(&mut self, path: &Path, width: f32, c: Color, local_tf: Transform) {
@@ -351,7 +501,8 @@ impl<'a> Painter<'a> {
             line_join: LineJoin::Round,
             ..Default::default()
         };
-        self.pm.stroke_path(path, &Self::paint(col), &stroke, tf, None);
+        self.pm
+            .stroke_path(path, &Self::paint(col), &stroke, tf, None);
     }
 
     pub fn rrect(&mut self, x: f32, y: f32, w: f32, h: f32, r: f32, c: Color) {
@@ -367,7 +518,9 @@ impl<'a> Painter<'a> {
     }
 
     pub fn rrect_gradient(&mut self, x: f32, y: f32, w: f32, h: f32, r: f32, c0: Color, c1: Color) {
-        let Some(path) = rrect_path(x, y, w, h, r) else { return };
+        let Some(path) = rrect_path(x, y, w, h, r) else {
+            return;
+        };
         let (sc0, sc1) = (self.col(c0), self.col(c1));
         let Some(shader) = LinearGradient::new(
             Point::from_xy(x, y),
@@ -387,7 +540,16 @@ impl<'a> Painter<'a> {
         self.pm.fill_path(&path, &p, FillRule::Winding, tf, None);
     }
 
-    pub fn rrect_vertical_gradient(&mut self, x: f32, y: f32, w: f32, h: f32, r: f32, top_col: Color, bot_col: Color) {
+    pub fn rrect_vertical_gradient(
+        &mut self,
+        x: f32,
+        y: f32,
+        w: f32,
+        h: f32,
+        r: f32,
+        top_col: Color,
+        bot_col: Color,
+    ) {
         self.rrect_corners_vertical_gradient(x, y, w, h, r, r, top_col, bot_col);
     }
 
@@ -402,7 +564,9 @@ impl<'a> Painter<'a> {
         top_col: Color,
         bot_col: Color,
     ) {
-        self.rrect_corners4_vertical_gradient(x, y, w, h, r_top, r_top, r_bot, r_bot, top_col, bot_col);
+        self.rrect_corners4_vertical_gradient(
+            x, y, w, h, r_top, r_top, r_bot, r_bot, top_col, bot_col,
+        );
     }
 
     pub fn rrect_corners4_vertical_gradient(
@@ -418,7 +582,9 @@ impl<'a> Painter<'a> {
         top_col: Color,
         bot_col: Color,
     ) {
-        let Some(path) = rrect_corners4_path(x, y, w, h, r_tl, r_tr, r_br, r_bl) else { return };
+        let Some(path) = rrect_corners4_path(x, y, w, h, r_tl, r_tr, r_br, r_bl) else {
+            return;
+        };
         let (sc0, sc1) = (self.col(top_col), self.col(bot_col));
         let Some(shader) = LinearGradient::new(
             Point::from_xy(x, y),
@@ -438,7 +604,17 @@ impl<'a> Painter<'a> {
         self.pm.fill_path(&path, &p, FillRule::Winding, tf, None);
     }
 
-    pub fn rrect_bevel_stroke(&mut self, x: f32, y: f32, w: f32, h: f32, r: f32, width: f32, top_col: Color, bot_col: Color) {
+    pub fn rrect_bevel_stroke(
+        &mut self,
+        x: f32,
+        y: f32,
+        w: f32,
+        h: f32,
+        r: f32,
+        width: f32,
+        top_col: Color,
+        bot_col: Color,
+    ) {
         self.rrect_corners4_bevel_stroke(x, y, w, h, r, r, r, r, width, top_col, bot_col);
     }
 
@@ -454,7 +630,9 @@ impl<'a> Painter<'a> {
         top_col: Color,
         bot_col: Color,
     ) {
-        self.rrect_corners4_bevel_stroke(x, y, w, h, r_top, r_top, r_bot, r_bot, width, top_col, bot_col);
+        self.rrect_corners4_bevel_stroke(
+            x, y, w, h, r_top, r_top, r_bot, r_bot, width, top_col, bot_col,
+        );
     }
 
     pub fn rrect_corners4_bevel_stroke(
@@ -471,7 +649,9 @@ impl<'a> Painter<'a> {
         top_col: Color,
         bot_col: Color,
     ) {
-        let Some(path) = rrect_corners4_path(x, y, w, h, r_tl, r_tr, r_br, r_bl) else { return };
+        let Some(path) = rrect_corners4_path(x, y, w, h, r_tl, r_tr, r_br, r_bl) else {
+            return;
+        };
         let (sc0, sc1) = (self.col(top_col), self.col(bot_col));
         let Some(shader) = LinearGradient::new(
             Point::from_xy(x, y),
@@ -505,12 +685,16 @@ impl<'a> Painter<'a> {
 
     fn glow_curve_radial() -> &'static [f32; 256] {
         static LUT: std::sync::OnceLock<[f32; 256]> = std::sync::OnceLock::new();
-        LUT.get_or_init(|| Self::build_glow_curve(&[(0.0, 1.0), (0.45, 0.42), (0.75, 0.12), (1.0, 0.0)]))
+        LUT.get_or_init(|| {
+            Self::build_glow_curve(&[(0.0, 1.0), (0.45, 0.42), (0.75, 0.12), (1.0, 0.0)])
+        })
     }
 
     fn glow_curve_elliptical() -> &'static [f32; 256] {
         static LUT: std::sync::OnceLock<[f32; 256]> = std::sync::OnceLock::new();
-        LUT.get_or_init(|| Self::build_glow_curve(&[(0.0, 1.0), (0.42, 0.45), (0.76, 0.10), (1.0, 0.0)]))
+        LUT.get_or_init(|| {
+            Self::build_glow_curve(&[(0.0, 1.0), (0.42, 0.45), (0.76, 0.10), (1.0, 0.0)])
+        })
     }
 
     fn build_glow_curve(stops: &[(f32, f32); 4]) -> [f32; 256] {
@@ -552,7 +736,8 @@ impl<'a> Painter<'a> {
         if rxd <= 0.2 || ryd <= 0.2 || sc.alpha() <= 0.001 {
             return;
         }
-        let Some(rect) = self.glow_shade_rect(cxd - rxd, cyd - ryd, cxd + rxd, cyd + ryd, clipped) else {
+        let Some(rect) = self.glow_shade_rect(cxd - rxd, cyd - ryd, cxd + rxd, cyd + ryd, clipped)
+        else {
             return;
         };
 
@@ -578,7 +763,11 @@ impl<'a> Painter<'a> {
                     anti_alias: false,
                     ..Default::default()
                 };
-                let mask_opt = if clipped { Some(&*self.clip_mask) } else { None };
+                let mask_opt = if clipped {
+                    Some(&*self.clip_mask)
+                } else {
+                    None
+                };
                 self.pm.fill_rect(rect, &p, Transform::identity(), mask_opt);
             }
             return;
@@ -612,7 +801,8 @@ impl<'a> Painter<'a> {
         let plus = blend == BlendMode::Plus;
 
         let clip_rrect = if clipped {
-            self.clip_bounds.map(|(cx0, cy0, cx1, cy1)| (cx0, cy0, cx1, cy1, CLIP_RADII.get()))
+            self.clip_bounds
+                .map(|(cx0, cy0, cx1, cy1)| (cx0, cy0, cx1, cy1, CLIP_RADII.get()))
         } else {
             None
         };
@@ -677,9 +867,12 @@ impl<'a> Painter<'a> {
                 } else {
                     let inv_a = (255 - sa) as u32;
                     pm_data[off] = sr.saturating_add(Self::div255(pm_data[off] as u32 * inv_a));
-                    pm_data[off + 1] = sg.saturating_add(Self::div255(pm_data[off + 1] as u32 * inv_a));
-                    pm_data[off + 2] = sb.saturating_add(Self::div255(pm_data[off + 2] as u32 * inv_a));
-                    pm_data[off + 3] = sa.saturating_add(Self::div255(pm_data[off + 3] as u32 * inv_a));
+                    pm_data[off + 1] =
+                        sg.saturating_add(Self::div255(pm_data[off + 1] as u32 * inv_a));
+                    pm_data[off + 2] =
+                        sb.saturating_add(Self::div255(pm_data[off + 2] as u32 * inv_a));
+                    pm_data[off + 3] =
+                        sa.saturating_add(Self::div255(pm_data[off + 3] as u32 * inv_a));
                 }
             }
         }
@@ -688,7 +881,14 @@ impl<'a> Painter<'a> {
     /// Device-space rectangle the glow actually needs to shade: its own bounds,
     /// cropped to the prepared clip mask when one is active. The gradient is
     /// fully transparent at its radius, so cropping loses no visible pixels.
-    fn glow_shade_rect(&self, dev_x0: f32, dev_y0: f32, dev_x1: f32, dev_y1: f32, clipped: bool) -> Option<Rect> {
+    fn glow_shade_rect(
+        &self,
+        dev_x0: f32,
+        dev_y0: f32,
+        dev_x1: f32,
+        dev_y1: f32,
+        clipped: bool,
+    ) -> Option<Rect> {
         let (mut x0, mut y0, mut x1, mut y1) = (dev_x0, dev_y0, dev_x1, dev_y1);
         if clipped && let Some((cx0, cy0, cx1, cy1)) = self.clip_bounds {
             x0 = x0.max(cx0);
@@ -707,7 +907,15 @@ impl<'a> Painter<'a> {
         Rect::from_ltrb(x0, y0, x1, y1)
     }
 
-    pub fn radial_glow(&mut self, cx: f32, cy: f32, r: f32, c: Color, blend: BlendMode, clipped: bool) {
+    pub fn radial_glow(
+        &mut self,
+        cx: f32,
+        cy: f32,
+        r: f32,
+        c: Color,
+        blend: BlendMode,
+        clipped: bool,
+    ) {
         if r <= 0.0 {
             return;
         }
@@ -715,7 +923,16 @@ impl<'a> Painter<'a> {
         let s = self.s;
         let (cxd, cyd) = (self.origin_x + cx * s, self.origin_y + cy * s);
         let rd = r * s;
-        self.fill_glow_lut(cxd, cyd, rd, rd, sc, Self::glow_curve_radial(), blend, clipped);
+        self.fill_glow_lut(
+            cxd,
+            cyd,
+            rd,
+            rd,
+            sc,
+            Self::glow_curve_radial(),
+            blend,
+            clipped,
+        );
     }
 
     pub fn elliptical_glow(
@@ -735,10 +952,28 @@ impl<'a> Painter<'a> {
         let s = self.s;
         let (cxd, cyd) = (self.origin_x + cx * s, self.origin_y + cy * s);
         let (rxd, ryd) = (rx * s, ry * s);
-        self.fill_glow_lut(cxd, cyd, rxd, ryd, sc, Self::glow_curve_elliptical(), blend, clipped);
+        self.fill_glow_lut(
+            cxd,
+            cyd,
+            rxd,
+            ryd,
+            sc,
+            Self::glow_curve_elliptical(),
+            blend,
+            clipped,
+        );
     }
 
-    pub fn rrect_glow_aura(&mut self, x: f32, y: f32, w: f32, h: f32, r: f32, spread: f32, c: Color) {
+    pub fn rrect_glow_aura(
+        &mut self,
+        x: f32,
+        y: f32,
+        w: f32,
+        h: f32,
+        r: f32,
+        spread: f32,
+        c: Color,
+    ) {
         let steps = 3;
         let tf = self.tf();
         let sc = self.col(c);
@@ -747,7 +982,13 @@ impl<'a> Painter<'a> {
             let s_pad = spread * t;
             let alpha_factor = (1.0 - t) * (1.0 - t) * 0.56 + 0.08;
             let col = fade(sc, alpha_factor);
-            if let Some(path) = rrect_path(x - s_pad, y - s_pad, w + s_pad * 2.0, h + s_pad * 2.0, r + s_pad) {
+            if let Some(path) = rrect_path(
+                x - s_pad,
+                y - s_pad,
+                w + s_pad * 2.0,
+                h + s_pad * 2.0,
+                r + s_pad,
+            ) {
                 let mut p = Self::paint(col);
                 p.blend_mode = BlendMode::Plus;
                 self.pm.fill_path(&path, &p, FillRule::Winding, tf, None);
@@ -755,13 +996,29 @@ impl<'a> Painter<'a> {
         }
     }
 
-    pub fn rrect_drop_shadow(&mut self, x: f32, y: f32, w: f32, h: f32, r: f32, offset_y: f32, spread: f32, max_alpha: u8) {
+    pub fn rrect_drop_shadow(
+        &mut self,
+        x: f32,
+        y: f32,
+        w: f32,
+        h: f32,
+        r: f32,
+        offset_y: f32,
+        spread: f32,
+        max_alpha: u8,
+    ) {
         let steps = 2;
         for i in (0..steps).rev() {
             let t = (i + 1) as f32 / steps as f32;
             let pad = spread * t;
             let alpha = ((max_alpha as f32) * (1.0 - t * 0.45) / steps as f32) as u8;
-            if let Some(path) = rrect_path(x - pad * 0.5, y + offset_y * t - pad * 0.25, w + pad, h + pad, r + pad * 0.5) {
+            if let Some(path) = rrect_path(
+                x - pad * 0.5,
+                y + offset_y * t - pad * 0.25,
+                w + pad,
+                h + pad,
+                r + pad * 0.5,
+            ) {
                 self.fill_path(&path, rgba(0, 0, 0, alpha));
             }
         }
@@ -784,7 +1041,15 @@ impl<'a> Painter<'a> {
         }
     }
 
-    pub fn elevated_card(&mut self, x: f32, y: f32, w: f32, h: f32, r: f32, aurora: Option<(f32, f32, f32, Color)>) {
+    pub fn elevated_card(
+        &mut self,
+        x: f32,
+        y: f32,
+        w: f32,
+        h: f32,
+        r: f32,
+        aurora: Option<(f32, f32, f32, Color)>,
+    ) {
         // 1. Soft Ambient Drop Shadow below card
         let shadow_alpha = if self.frosted { 28 } else { 120 };
         self.rrect_drop_shadow(x, y, w, h, r, 3.0, 7.0, shadow_alpha);
@@ -803,7 +1068,14 @@ impl<'a> Painter<'a> {
         // 3. Clipped internal lighting (Aurora + Bottom Violet Mist + Specular top oval wash)
         if self.prepare_rrect_clip(x, y, w, h, r) {
             if let Some((gx, gy, gr, gcol)) = aurora {
-                self.radial_glow(x + gx, y + gy, gr, fade(gcol, 0.38), BlendMode::SourceOver, true);
+                self.radial_glow(
+                    x + gx,
+                    y + gy,
+                    gr,
+                    fade(gcol, 0.38),
+                    BlendMode::SourceOver,
+                    true,
+                );
             }
             // Subtle bottom-edge luminous violet mist matching the glass card aesthetic
             self.elliptical_glow(
@@ -828,7 +1100,16 @@ impl<'a> Painter<'a> {
         }
 
         // 4. Cool lavender-white top rim fading into soft violet bottom rim
-        self.rrect_bevel_stroke(x, y, w, h, r, 1.0, rgba(235, 230, 255, 62), rgba(168, 85, 247, 36));
+        self.rrect_bevel_stroke(
+            x,
+            y,
+            w,
+            h,
+            r,
+            1.0,
+            rgba(235, 230, 255, 62),
+            rgba(168, 85, 247, 36),
+        );
     }
 
     /// Volumetric Glossy Pill Button with smooth hover intensity `hover_t` (0.0..=1.0).
@@ -850,10 +1131,27 @@ impl<'a> Painter<'a> {
 
         // 1. Ambient Halo Bloom
         let glow_strength = lerp(0.50, 0.88, ht);
-        self.rrect_glow_aura(x, lift_y, w, h, r, lerp(5.5, 8.5, ht), fade(c_mid, glow_strength));
+        self.rrect_glow_aura(
+            x,
+            lift_y,
+            w,
+            h,
+            r,
+            lerp(5.5, 8.5, ht),
+            fade(c_mid, glow_strength),
+        );
 
         // 2. Crisp Separation Drop Shadow
-        self.rrect_drop_shadow(x, lift_y, w, h, r, lerp(2.5, 3.2, ht), lerp(4.0, 5.5, ht), 115);
+        self.rrect_drop_shadow(
+            x,
+            lift_y,
+            w,
+            h,
+            r,
+            lerp(2.5, 3.2, ht),
+            lerp(4.0, 5.5, ht),
+            115,
+        );
 
         // 3. Multi-stop diagonal mesh base fill (c_left -> c_mid -> c_right)
         if let Some(path) = rrect_path(x, lift_y, w, h, r) {
@@ -874,7 +1172,8 @@ impl<'a> Painter<'a> {
                     anti_alias: true,
                     ..Default::default()
                 };
-                self.pm.fill_path(&path, &p, FillRule::Winding, self.tf(), None);
+                self.pm
+                    .fill_path(&path, &p, FillRule::Winding, self.tf(), None);
             } else {
                 self.fill_path(&path, c_mid);
             }
@@ -956,8 +1255,24 @@ impl<'a> Painter<'a> {
         let ht = hover_t.clamp(0.0, 1.0);
         let lift_y = y - 0.55 * ht;
         if let Some(ac) = active_col {
-            self.rrect_glow_aura(x, lift_y, w, h, r, lerp(4.2, 6.8, ht), fade(ac, lerp(0.45, 0.62, ht)));
-            self.rrect_vertical_gradient(x, lift_y, w, h, r, fade(ac, lerp(0.42, 0.56, ht)), fade(ac, lerp(0.20, 0.30, ht)));
+            self.rrect_glow_aura(
+                x,
+                lift_y,
+                w,
+                h,
+                r,
+                lerp(4.2, 6.8, ht),
+                fade(ac, lerp(0.45, 0.62, ht)),
+            );
+            self.rrect_vertical_gradient(
+                x,
+                lift_y,
+                w,
+                h,
+                r,
+                fade(ac, lerp(0.42, 0.56, ht)),
+                fade(ac, lerp(0.20, 0.30, ht)),
+            );
             if self.prepare_rrect_clip(x, lift_y, w, h, r) {
                 self.elliptical_glow(
                     x + w * 0.5,
@@ -987,7 +1302,10 @@ impl<'a> Painter<'a> {
                 let top_hot = tok::scale_frosted(rgba(72, 56, 114, 152), self.frosted_opacity_pct);
                 let bot_base = tok::scale_frosted(rgba(20, 22, 36, 78), self.frosted_opacity_pct);
                 let bot_hot = tok::scale_frosted(rgba(44, 32, 74, 138), self.frosted_opacity_pct);
-                (lerp_color(top_base, top_hot, ht), lerp_color(bot_base, bot_hot, ht))
+                (
+                    lerp_color(top_base, top_hot, ht),
+                    lerp_color(bot_base, bot_hot, ht),
+                )
             } else {
                 let top = lerp_color(rgba(32, 34, 50, 255), rgba(64, 50, 102, 255), ht);
                 let bot = lerp_color(rgba(19, 20, 32, 245), rgba(38, 28, 66, 255), ht);
@@ -995,19 +1313,44 @@ impl<'a> Painter<'a> {
             };
             self.rrect_vertical_gradient(x, lift_y, w, h, r, top, bot);
             if ht > 0.05 {
-                self.rrect_glow_aura(x, lift_y, w, h, r, 4.2 * ht, fade(tok::cyno_violet(), 0.28 * ht));
+                self.rrect_glow_aura(
+                    x,
+                    lift_y,
+                    w,
+                    h,
+                    r,
+                    4.2 * ht,
+                    fade(tok::cyno_violet(), 0.28 * ht),
+                );
             }
             let rim_top = lerp_color(rgba(235, 230, 255, 54), rgba(196, 148, 255, 195), ht);
             self.rrect_bevel_stroke(x, lift_y, w, h, r, 1.0, rim_top, rgba(168, 85, 247, 22));
         }
     }
 
-    pub fn tactile_surface_pill(&mut self, x: f32, y: f32, w: f32, h: f32, r: f32, is_hot: bool, active_col: Option<Color>) {
+    pub fn tactile_surface_pill(
+        &mut self,
+        x: f32,
+        y: f32,
+        w: f32,
+        h: f32,
+        r: f32,
+        is_hot: bool,
+        active_col: Option<Color>,
+    ) {
         self.tactile_surface_pill_t(x, y, w, h, r, if is_hot { 1.0 } else { 0.0 }, active_col);
     }
 
     /// Smoothly animated pill toggle switch (`switch_t`: 0.0 off .. 1.0 on, `hover_t`: 0.0..1.0).
-    pub fn draw_toggle_switch(&mut self, x: f32, y: f32, w: f32, h: f32, switch_t: f32, hover_t: f32) {
+    pub fn draw_toggle_switch(
+        &mut self,
+        x: f32,
+        y: f32,
+        w: f32,
+        h: f32,
+        switch_t: f32,
+        hover_t: f32,
+    ) {
         let st = switch_t.clamp(0.0, 1.0);
         let ht = hover_t.clamp(0.0, 1.0);
         let r = h / 2.0;
@@ -1040,7 +1383,11 @@ impl<'a> Painter<'a> {
         let track_bot = lerp_color(off_bot, on_bot, st);
         self.rrect_vertical_gradient(x, y, w, h, r, track_top, track_bot);
 
-        let rim_top = lerp_color(rgba(235, 230, 255, lerp(54.0, 150.0, ht) as u8), rgba(245, 240, 255, 210), st);
+        let rim_top = lerp_color(
+            rgba(235, 230, 255, lerp(54.0, 150.0, ht) as u8),
+            rgba(245, 240, 255, 210),
+            st,
+        );
         let rim_bot = lerp_color(rgba(235, 230, 255, 18), rgba(196, 148, 255, 120), st);
         self.rrect_bevel_stroke(x, y, w, h, r, 1.0, rim_top, rim_bot);
 
@@ -1060,12 +1407,30 @@ impl<'a> Painter<'a> {
     }
 
     /// Glowing Striped Liquid Energy Bar (Directly inspired by Flight Card & Walk Fitness Card!)
-    pub fn glowing_striped_bar(&mut self, x: f32, y: f32, w: f32, h: f32, pct: f32, c0: Color, c1: Color) {
+    pub fn glowing_striped_bar(
+        &mut self,
+        x: f32,
+        y: f32,
+        w: f32,
+        h: f32,
+        pct: f32,
+        c0: Color,
+        c1: Color,
+    ) {
         let r = h / 2.0;
         // 1. Sunken track well
         let well = self.well_col();
         self.rrect(x, y, w, h, r, well);
-        self.rrect_bevel_stroke(x, y, w, h, r, 0.8, rgba(0, 0, 0, 120), rgba(255, 255, 255, 22));
+        self.rrect_bevel_stroke(
+            x,
+            y,
+            w,
+            h,
+            r,
+            0.8,
+            rgba(0, 0, 0, 120),
+            rgba(255, 255, 255, 22),
+        );
 
         let fill_w = (w * pct.clamp(0.0, 1.0)).max(0.0);
         if fill_w > 2.0 {
@@ -1091,7 +1456,8 @@ impl<'a> Painter<'a> {
                         anti_alias: true,
                         ..Default::default()
                     };
-                    self.pm.fill_path(&path, &p, FillRule::Winding, self.tf(), None);
+                    self.pm
+                        .fill_path(&path, &p, FillRule::Winding, self.tf(), None);
                 } else {
                     self.fill_path(&path, c1);
                 }
@@ -1113,19 +1479,46 @@ impl<'a> Painter<'a> {
                 if let Some(stripe_path) = pb.finish() {
                     let mut p = Self::paint(self.col(rgba(255, 255, 255, 32)));
                     p.blend_mode = BlendMode::Plus;
-                    self.pm.fill_path(&stripe_path, &p, FillRule::Winding, self.tf(), Some(&*self.clip_mask));
+                    self.pm.fill_path(
+                        &stripe_path,
+                        &p,
+                        FillRule::Winding,
+                        self.tf(),
+                        Some(&*self.clip_mask),
+                    );
                 }
 
                 // Specular bright top rim inside progress fill
-                if let Some(top_glint) = rrect_path(x + 1.0, y + 0.5, (fill_w - 2.0).max(0.0), (h * 0.42).max(1.0), r * 0.5) {
+                if let Some(top_glint) = rrect_path(
+                    x + 1.0,
+                    y + 0.5,
+                    (fill_w - 2.0).max(0.0),
+                    (h * 0.42).max(1.0),
+                    r * 0.5,
+                ) {
                     let mut p = Self::paint(self.col(rgba(255, 255, 255, 75)));
                     p.blend_mode = BlendMode::Plus;
-                    self.pm.fill_path(&top_glint, &p, FillRule::Winding, self.tf(), Some(&*self.clip_mask));
+                    self.pm.fill_path(
+                        &top_glint,
+                        &p,
+                        FillRule::Winding,
+                        self.tf(),
+                        Some(&*self.clip_mask),
+                    );
                 }
             }
 
             // 5. Crisp border highlight on filled liquid pill
-            self.rrect_bevel_stroke(x, y, fill_w, h, r, 0.8, rgba(255, 255, 255, 140), rgba(255, 255, 255, 25));
+            self.rrect_bevel_stroke(
+                x,
+                y,
+                fill_w,
+                h,
+                r,
+                0.8,
+                rgba(255, 255, 255, 140),
+                rgba(255, 255, 255, 25),
+            );
         }
     }
 
@@ -1161,12 +1554,18 @@ impl<'a> Painter<'a> {
         if sweep.abs() < 0.001 {
             return;
         }
-        let steps = ((sweep.abs() / std::f32::consts::TAU) * 96.0).ceil().max(2.0) as usize;
+        let steps = ((sweep.abs() / std::f32::consts::TAU) * 96.0)
+            .ceil()
+            .max(2.0) as usize;
         let mut pb = PathBuilder::new();
         for i in 0..=steps {
             let a = a0 + sweep * (i as f32 / steps as f32);
             let (x, y) = (cx + r * a.cos(), cy + r * a.sin());
-            if i == 0 { pb.move_to(x, y) } else { pb.line_to(x, y) }
+            if i == 0 {
+                pb.move_to(x, y)
+            } else {
+                pb.line_to(x, y)
+            }
         }
         if let Some(p) = pb.finish() {
             self.stroke_path(&p, width, c);
@@ -1180,6 +1579,11 @@ impl<'a> Painter<'a> {
 
     pub fn measure(&self, t: &str, size: f32, w: Weight) -> f32 {
         self.fonts.measure(t, self.eff_size(size) * self.s, w) / self.s
+    }
+
+    pub fn ellipsize_cow<'b>(&self, t: &'b str, size: f32, w: Weight, max_w: f32) -> Cow<'b, str> {
+        self.fonts
+            .ellipsize_cow(t, self.eff_size(size) * self.s, w, max_w * self.s)
     }
 
     pub fn ellipsize(&self, t: &str, size: f32, w: Weight, max_w: f32) -> String {
@@ -1245,7 +1649,7 @@ impl<'a> Painter<'a> {
         let eff = self.eff_size(size);
         let baseline_adj = baseline + (eff - size) * 0.34;
         let col = self.col(c);
-        self.fonts.draw(
+        let adv_px = self.fonts.draw(
             self.pm,
             t,
             self.origin_x + x * s,
@@ -1254,10 +1658,18 @@ impl<'a> Painter<'a> {
             w,
             col,
         );
-        self.measure(t, size, w)
+        adv_px / s
     }
 
-    pub fn text_right(&mut self, t: &str, right: f32, baseline: f32, size: f32, w: Weight, c: Color) {
+    pub fn text_right(
+        &mut self,
+        t: &str,
+        right: f32,
+        baseline: f32,
+        size: f32,
+        w: Weight,
+        c: Color,
+    ) {
         let tw = self.measure(t, size, w);
         self.text(t, right - tw, baseline, size, w, c);
     }
@@ -1282,12 +1694,28 @@ impl<'a> Painter<'a> {
         self.text(t, cx - tw / 2.0, baseline, fit, w, c);
     }
 
-    pub fn text_shadow(&mut self, t: &str, x: f32, baseline: f32, size: f32, w: Weight, c: Color) -> f32 {
+    pub fn text_shadow(
+        &mut self,
+        t: &str,
+        x: f32,
+        baseline: f32,
+        size: f32,
+        w: Weight,
+        c: Color,
+    ) -> f32 {
         self.text(t, x, baseline + 1.0, size, w, rgba(8, 4, 20, 145));
         self.text(t, x, baseline, size, w, c)
     }
 
-    pub fn text_center_shadow(&mut self, t: &str, cx: f32, baseline: f32, size: f32, w: Weight, c: Color) {
+    pub fn text_center_shadow(
+        &mut self,
+        t: &str,
+        cx: f32,
+        baseline: f32,
+        size: f32,
+        w: Weight,
+        c: Color,
+    ) {
         let tw = self.measure(t, size, w);
         self.text_shadow(t, cx - tw / 2.0, baseline, size, w, c);
     }

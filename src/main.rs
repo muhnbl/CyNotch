@@ -1,4 +1,4 @@
-﻿#![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
+#![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 use chrono::Timelike;
 use cynotch::models::{
@@ -9,17 +9,18 @@ use cynotch::screentime::ScreenTimeTracker;
 use cynotch::telemetry::TelemetryCollector;
 use cynotch::window::NotchWindow;
 use cynotch::*;
-use std::collections::VecDeque;
 use std::io::Write;
 use std::sync::atomic::Ordering;
 use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::{Duration, Instant};
-use windows::core::*;
 use windows::Win32::Foundation::*;
-use windows::Win32::System::Com::{CoInitializeEx, COINIT_APARTMENTTHREADED, COINIT_MULTITHREADED};
+use windows::Win32::System::Com::{COINIT_APARTMENTTHREADED, COINIT_MULTITHREADED, CoInitializeEx};
 use windows::Win32::System::Threading::CreateMutexW;
-use windows::Win32::UI::HiDpi::{SetProcessDpiAwarenessContext, DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2};
+use windows::Win32::UI::HiDpi::{
+    DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2, SetProcessDpiAwarenessContext,
+};
+use windows::core::*;
 
 macro_rules! log_info {
     ($($arg:tt)*) => {
@@ -110,8 +111,8 @@ fn snapshot(dir: &str) {
     s.telemetry.cpu_usage = 12.4;
     s.telemetry.net_down_kbps = 1480.0;
     s.telemetry.net_up_kbps = 264.0;
-    s.water.taken_ml = 750;
-    s.capture.last_path = Some("C:\\Users\\muhna\\Pictures\\CyNotch\\cyshot_desktop_20261111_184000.png".to_string());
+    s.capture.last_path =
+        Some("C:\\Users\\muhna\\Pictures\\CyNotch\\cyshot_desktop_20261111_184000.png".to_string());
     s.capture.last_filename = "cyshot_desktop_20261111_184000.png".to_string();
     s.capture.last_dims = "2560 × 1440".to_string();
     s.capture.clipboard_ok = true;
@@ -123,7 +124,6 @@ fn snapshot(dir: &str) {
         s.is_pinned = false;
         s.notification = None;
         s.media.is_playing = false;
-        s.timer.is_running = false;
         s.mem_reduct.is_purging = false;
         s.anim_time = 1.25;
         s.set_hovered(false);
@@ -133,14 +133,20 @@ fn snapshot(dir: &str) {
         s.media.is_playing = true;
     }
 
-    // Dedicated mascot animation mood showcases (Purging / Music / Focus / MemReduct-Purging)
-    let mood_shots: [(&str, bool, NotchMode, bool, bool, bool, f32); 4] = [
-        ("purge_anim", false, NotchMode::Home, false, true, false, 0.35),
-        ("music_idle", false, NotchMode::Home, true, false, false, 0.42),
-        ("focus_idle", false, NotchMode::Home, false, false, true, 0.78),
-        ("memreduct_purging", true, NotchMode::MemReduct, false, true, false, 0.35),
+    // Dedicated mascot animation mood showcases (Purging / Music / MemReduct-Purging)
+    let mood_shots: [(&str, bool, NotchMode, bool, bool, f32); 3] = [
+        ("purge_anim", false, NotchMode::Home, false, true, 0.35),
+        ("music_idle", false, NotchMode::Home, true, false, 0.42),
+        (
+            "memreduct_purging",
+            true,
+            NotchMode::MemReduct,
+            false,
+            true,
+            0.35,
+        ),
     ];
-    for (name, hovered, mode, playing, purging, timer_run, atime) in mood_shots {
+    for (name, hovered, mode, playing, purging, atime) in mood_shots {
         s.mode = mode;
         s.show_lyrics = false;
         s.is_pinned = hovered;
@@ -148,7 +154,6 @@ fn snapshot(dir: &str) {
         s.notification = None;
         s.media.is_playing = playing;
         s.mem_reduct.is_purging = purging;
-        s.timer.is_running = timer_run;
         s.anim_time = atime;
         if purging {
             s.mem_reduct.last_cleaned_status = "Cleaning RAM...".to_string();
@@ -158,20 +163,17 @@ fn snapshot(dir: &str) {
     }
     s.mem_reduct.is_purging = false;
     s.mem_reduct.last_cleaned_status = "Ready • Click to clean".to_string();
-    s.timer.is_running = false;
     s.anim_time = 0.0;
 
-    let shots: [(&str, bool, NotchMode, bool, Option<&str>); 14] = [
+    let shots: [(&str, bool, NotchMode, bool, Option<&str>); 12] = [
         ("idle", false, NotchMode::Home, false, None),
         ("pasted", false, NotchMode::Home, false, Some("pasted")),
-        ("water", false, NotchMode::Home, false, Some("water")),
         ("home", true, NotchMode::Home, false, None),
         ("music", true, NotchMode::Music, false, None),
         ("lyrics", true, NotchMode::Music, true, None),
         ("volume", true, NotchMode::Volume, false, None),
         ("memreduct", true, NotchMode::MemReduct, false, None),
         ("stats", true, NotchMode::Telemetry, false, None),
-        ("focus", true, NotchMode::FocusTimer, false, None),
         ("tasks", true, NotchMode::Tasks, false, None),
         ("shelf", true, NotchMode::Shelf, false, None),
         ("capture", true, NotchMode::Capture, false, None),
@@ -185,23 +187,19 @@ fn snapshot(dir: &str) {
         s.anim_time = if name == "music" { 0.42 } else { 0.25 };
         s.set_hovered(hovered);
         s.notification = None;
-        if let Some(notif) = notif_opt {
-            if notif == "water" {
-                s.set_water_reminder();
-            } else if notif == "pasted" {
-                s.set_notification(
-                    "Pasted".to_string(),
-                    "14 words · Chrome".to_string(),
-                    models::NotificationKind::Pasted,
-                    true,
-                );
-            }
+        if notif_opt == Some("pasted") {
+            s.set_notification(
+                "Pasted".to_string(),
+                "14 words · Chrome".to_string(),
+                models::NotificationKind::Pasted,
+                true,
+            );
         }
         s.sync_preview_settled();
         save_notch_snapshot(dir, name, &s);
     }
 
-    // v1.8 showcases: IdleMetric::NetSpeed, Home without Health Reminders, Large expanded preset, Vertical Left & Right docks
+    // v1.8 showcases: IdleMetric::NetSpeed, Large expanded preset, Vertical Left & Right docks
     {
         s.notification = None;
         s.show_lyrics = false;
@@ -213,7 +211,6 @@ fn snapshot(dir: &str) {
         s.expanded_size = ExpandedSizePreset::Standard;
         s.idle_metric = IdleMetric::NetSpeed;
         s.media.is_playing = false;
-        s.timer.is_running = false;
         s.is_pinned = false;
         s.mode = NotchMode::Home;
         s.anim_time = 0.25;
@@ -221,17 +218,11 @@ fn snapshot(dir: &str) {
         s.sync_preview_settled();
         save_notch_snapshot(dir, "idle_netspeed", &s);
 
-        // 2. Home Hub with Health Reminders OFF (Live Network & Quick Focus replacement card)
-        s.health_reminders_enabled = false;
-        s.timer.is_running = true;
+        // 2. Expanded Large hover size preset (1.15x)
         s.media.is_playing = true;
         s.is_pinned = true;
         s.idle_metric = IdleMetric::Ram;
         s.set_hovered(true);
-        s.sync_preview_settled();
-        save_notch_snapshot(dir, "home_no_health", &s);
-
-        // 3. Expanded Large hover size preset (1.15x)
         s.expanded_size = ExpandedSizePreset::Large;
         s.sync_preview_settled();
         save_notch_snapshot(dir, "expanded_large", &s);
@@ -241,7 +232,6 @@ fn snapshot(dir: &str) {
         s.placement = NotchPlacement::Left;
         s.minimized_island = true;
         s.media.is_playing = false;
-        s.timer.is_running = false;
         s.is_pinned = false;
         s.set_hovered(false);
         s.sync_preview_settled();
@@ -283,7 +273,9 @@ fn snapshot(dir: &str) {
         s.is_pinned = true;
         s.set_hovered(true);
         if s.lyrics.len() >= 3 {
-            s.lyrics[2].text = "Nowhere else we need to go when violet lightning lights the desert road".to_string();
+            s.lyrics[2].text =
+                "Nowhere else we need to go when violet lightning lights the desert road"
+                    .to_string();
         }
 
         s.lyric_style = LyricStyle::KaraokeGlow;
@@ -353,7 +345,6 @@ fn snapshot(dir: &str) {
         s.placement = NotchPlacement::Top;
         s.expanded_size = ExpandedSizePreset::Standard;
         s.idle_metric = IdleMetric::Ram;
-        s.health_reminders_enabled = true;
         s.minimized_island = false;
         s.is_pinned = false;
         s.mode = NotchMode::Home;
@@ -364,8 +355,10 @@ fn snapshot(dir: &str) {
         ("settings_general", models::SettingsCategory::General),
         ("settings_motion", models::SettingsCategory::Motion),
         ("settings_modules", models::SettingsCategory::Modules),
-        ("settings_notifications", models::SettingsCategory::Notifications),
-        ("settings_health", models::SettingsCategory::Health),
+        (
+            "settings_notifications",
+            models::SettingsCategory::Notifications,
+        ),
         ("settings_system", models::SettingsCategory::System),
     ];
     let (sw, sh, _) = settings_window::settings_dims_for_state(&s);
@@ -373,7 +366,6 @@ fn snapshot(dir: &str) {
     let mut mask = tiny_skia::Mask::new(sw, sh).unwrap();
     let mut fonts = font::FontRenderer::new();
     s.media.is_playing = false;
-    s.timer.is_running = false;
     s.mem_reduct.is_purging = false;
     s.notification = None;
     s.anim_time = 0.25;
@@ -382,8 +374,9 @@ fn snapshot(dir: &str) {
         s.set_settings_category(cat);
         s.set_settings_scroll(cat, 0.0);
         s.sync_preview_settled();
-        let (_hits, max_scroll) =
-            settings_window::render_settings_pixmap_with_meta(&s, None, &mut pm, &mut mask, &mut fonts);
+        let (_hits, max_scroll) = settings_window::render_settings_pixmap_with_meta(
+            &s, None, &mut pm, &mut mask, &mut fonts,
+        );
         let pad = 40;
         let mut bg = tiny_skia::Pixmap::new(sw + pad * 2, sh + pad * 2).unwrap();
         bg.fill(tiny_skia::Color::from_rgba8(236, 233, 248, 255));
@@ -439,7 +432,9 @@ fn snapshot(dir: &str) {
         tiny_skia::Transform::identity(),
         None,
     );
-    xl_bg.save_png(format!("{dir}/settings_general_xlarge.png")).unwrap();
+    xl_bg
+        .save_png(format!("{dir}/settings_general_xlarge.png"))
+        .unwrap();
     log_info!("snapshots written to {dir}");
 }
 
@@ -456,7 +451,13 @@ fn main() {
             .append(true)
             .open(&path)
         {
-            let _ = writeln!(f, "--- {} ---\nPANIC: {}\n{}", chrono::Local::now().to_rfc3339(), info, bt);
+            let _ = writeln!(
+                f,
+                "--- {} ---\nPANIC: {}\n{}",
+                chrono::Local::now().to_rfc3339(),
+                info,
+                bt
+            );
         }
     }));
 
@@ -474,9 +475,10 @@ fn main() {
                 let class_name: PCWSTR = w!("CyNotchWindowClass");
                 let win_name: PCWSTR = w!("CyNotch");
                 if let Ok(hwnd) = FindWindowW(class_name, win_name)
-                    && hwnd.0 as isize != 0 {
-                        let _ = PostMessageW(hwnd, 0x8000 + 1, WPARAM(0), LPARAM(0));
-                    }
+                    && hwnd.0 as isize != 0
+                {
+                    let _ = PostMessageW(hwnd, 0x8000 + 1, WPARAM(0), LPARAM(0));
+                }
                 log_info!("[CyNotch] Active instance signaled to expand. Exiting second launcher.");
                 return;
             }
@@ -508,12 +510,10 @@ fn main() {
         let mut audio_mon = audio::AudioMonitor::new();
         let mut notif_bridge = notifications::SystemNotificationBridge::new();
         let mut notif_retry_ticks: u32 = 0;
-        let mut pending_toasts: VecDeque<(String, String, String)> = VecDeque::new();
+        let mut incoming_toasts: Vec<(String, String, String, Option<String>)> = Vec::new();
         let mut last_threshold_clean = Instant::now();
         let mut last_interval_clean = Instant::now();
         let mut last_sec_tick = Instant::now();
-        let mut last_water_reminder = Instant::now();
-        let mut last_move_reminder = Instant::now();
         let mut last_song_title = String::new();
         let mut last_gsmtc_pos_ms: u64 = 0;
         let mut last_clock_minute: u32 = chrono::Local::now().minute();
@@ -543,9 +543,7 @@ fn main() {
                 tracker.reset_today();
             }
 
-            let media_opt = {
-                media_poller.poll()
-            };
+            let media_opt = { media_poller.poll() };
             let vol_opt = if !cynotch::window::IS_DRAGGING_VOLUME.load(Ordering::Acquire)
                 && !audio::recently_wrote_volume()
             {
@@ -565,8 +563,7 @@ fn main() {
                 })
                 .unwrap_or((true, false, false));
 
-            if cynotch::window::NOTIF_SYNC_REQUESTED.swap(false, Ordering::AcqRel)
-                && notif_enabled
+            if cynotch::window::NOTIF_SYNC_REQUESTED.swap(false, Ordering::AcqRel) && notif_enabled
             {
                 notif_bridge.reset();
                 notif_retry_ticks = 0;
@@ -575,74 +572,72 @@ fn main() {
 
             let mut notif_status_update: Option<String> = None;
             {
-            if notif_enabled {
-                if !notif_bridge.is_connected() {
-                    let st_now = notif_bridge.status();
-                    let should_try = st_now == "Off"
-                        || (st_now != "Permission needed" && notif_retry_ticks >= 10)
-                        || (st_now == "Permission needed" && notif_retry_ticks >= 20);
-                    if should_try {
-                        notif_retry_ticks = 0;
-                        let st_str = notif_bridge.try_init();
-                        // A reconnect must poll immediately, not wait for the
-                        // forced-refresh window.
-                        notif_db_sig = None;
-                        notif_status_update = Some(st_str);
-                    } else {
-                        notif_retry_ticks = notif_retry_ticks.saturating_add(1);
+                if notif_enabled {
+                    if !notif_bridge.is_connected() {
+                        let st_now = notif_bridge.status();
+                        let should_try = st_now == "Off"
+                            || (st_now != "Permission needed" && notif_retry_ticks >= 10)
+                            || (st_now == "Permission needed" && notif_retry_ticks >= 20);
+                        if should_try {
+                            notif_retry_ticks = 0;
+                            let st_str = notif_bridge.try_init();
+                            // A reconnect must poll immediately, not wait for the
+                            // forced-refresh window.
+                            notif_db_sig = None;
+                            notif_status_update = Some(st_str);
+                        } else {
+                            notif_retry_ticks = notif_retry_ticks.saturating_add(1);
+                        }
                     }
-                }
-                if notif_bridge.is_connected() {
-                    notif_retry_ticks = 0;
-                    // `GetNotificationsAsync().get()` marshals the whole Action
-                    // Center across RPC on every call: ~1 ms CPU per toast, so
-                    // 25-35 ms with a normal Action Center. The toast database
-                    // only changes when a toast arrives, is dismissed or expires,
-                    // so poll on that signal instead of on a blind 1 Hz timer.
-                    // `should_poll_toasts` still forces a poll every few seconds,
-                    // so banners cannot starve if the signal ever goes quiet.
-                    notif_poll_tick = notif_poll_tick.wrapping_add(1);
-                    if notif_poll_tick.is_multiple_of(2) {
-                        let sig = notifications::notifications_db_signature();
-                        let due = notifications::should_poll_toasts(
-                            notif_db_sig,
-                            &sig,
-                            last_notif_poll.elapsed().as_secs(),
-                        );
-                        if due {
-                            let batch = notif_bridge.poll_new_toasts();
-                            if notif_auto_clear {
-                                for (id, _, _, _) in &batch {
-                                    notif_bridge.remove_toast(*id);
+                    if notif_bridge.is_connected() {
+                        notif_retry_ticks = 0;
+                        // `GetNotificationsAsync().get()` marshals the whole Action
+                        // Center across RPC on every call: ~1 ms CPU per toast, so
+                        // 25-35 ms with a normal Action Center. The toast database
+                        // only changes when a toast arrives, is dismissed or expires,
+                        // so poll on that signal instead of on a blind 1 Hz timer.
+                        // `should_poll_toasts` still forces a poll every few seconds,
+                        // so banners cannot starve if the signal ever goes quiet.
+                        notif_poll_tick = notif_poll_tick.wrapping_add(1);
+                        if notif_poll_tick.is_multiple_of(2) {
+                            let sig = notifications::notifications_db_signature();
+                            let due = notifications::should_poll_toasts(
+                                notif_db_sig,
+                                &sig,
+                                last_notif_poll.elapsed().as_secs(),
+                            );
+                            if due {
+                                let batch = notif_bridge.poll_new_toasts_with_aumid();
+                                if notif_auto_clear {
+                                    for (id, _, _, _, _) in &batch {
+                                        notif_bridge.remove_toast(*id);
+                                    }
                                 }
-                            }
-                            // Baseline captured *after* the poll and after our own
-                            // auto-clear removals, so those writes do not look like
-                            // a fresh change and trigger another 55 ms poll.
-                            notif_db_sig = Some(notifications::notifications_db_signature());
-                            last_notif_poll = Instant::now();
-                            if !notif_bridge.is_connected() {
-                                notif_status_update = Some(notif_bridge.status().to_string());
-                            }
-                            for (_, app, title, sub) in batch {
-                                if pending_toasts.len() >= 12 {
-                                    pending_toasts.pop_front();
+                                // Baseline captured *after* the poll and after our own
+                                // auto-clear removals, so those writes do not look like
+                                // a fresh change and trigger another 55 ms poll.
+                                notif_db_sig = Some(notifications::notifications_db_signature());
+                                last_notif_poll = Instant::now();
+                                if !notif_bridge.is_connected() {
+                                    notif_status_update = Some(notif_bridge.status().to_string());
                                 }
-                                pending_toasts.push_back((app, title, sub));
+                                for (_, app, title, sub, aumid) in batch {
+                                    incoming_toasts.push((app, title, sub, aumid));
+                                }
                             }
                         }
                     }
+                } else if notif_bridge.is_connected() || notif_bridge.status() != "Off" {
+                    notif_bridge.reset();
+                    notif_retry_ticks = 0;
+                    notif_db_sig = None;
+                    incoming_toasts.clear();
+                    notif_status_update = Some("Off".to_string());
                 }
-            } else if notif_bridge.is_connected() || notif_bridge.status() != "Off" {
-                notif_bridge.reset();
-                notif_retry_ticks = 0;
-                notif_db_sig = None;
-                pending_toasts.clear();
-                notif_status_update = Some("Off".to_string());
-            }
             }
 
-            let (telem_opt, screen_stats) = if last_sec_tick.elapsed() >= Duration::from_millis(950) {
+            let (telem_opt, screen_stats) = if last_sec_tick.elapsed() >= Duration::from_millis(950)
+            {
                 last_sec_tick = Instant::now();
                 let st_opt = {
                     if screentime_enabled {
@@ -652,9 +647,7 @@ fn main() {
                         Some(tracker.stats(hour))
                     }
                 };
-                let telem = {
-                    collector.poll()
-                };
+                let telem = { collector.poll() };
                 (Some(telem), st_opt)
             } else {
                 (None, None)
@@ -672,34 +665,9 @@ fn main() {
                     s.notif_listener_status = next_status.clone();
                     settings_changed = true;
                 }
-                if s.notification.is_none()
-                    && let Some((app, title, sub)) = pending_toasts.pop_front()
-                {
-                    s.set_system_toast(app, title, sub);
+                for (app, title, sub, aumid) in incoming_toasts.drain(..) {
+                    s.push_system_toast(app, title, sub, aumid);
                     ui_changed = true;
-                }
-
-                if !s.health_reminders_enabled {
-                    last_water_reminder = Instant::now();
-                    last_move_reminder = Instant::now();
-                } else {
-                    let interval = s.water_interval_mins;
-                    if interval == 0 {
-                        last_water_reminder = Instant::now();
-                    } else if last_water_reminder.elapsed() >= Duration::from_secs((interval as u64) * 60) {
-                        last_water_reminder = Instant::now();
-                        s.set_water_reminder();
-                        ui_changed = true;
-                    }
-
-                    let move_interval = s.move_reminder_mins;
-                    if move_interval == 0 {
-                        last_move_reminder = Instant::now();
-                    } else if last_move_reminder.elapsed() >= Duration::from_secs((move_interval as u64) * 60) {
-                        last_move_reminder = Instant::now();
-                        s.set_move_reminder();
-                        ui_changed = true;
-                    }
                 }
 
                 if let Some(telem) = telem_opt {
@@ -707,9 +675,11 @@ fn main() {
                     let prev_used_tenth = (s.telemetry.memory_used_gb * 10.0).round() as i32;
                     let new_ram_int = telem.memory_percent.round() as i32;
                     let new_used_tenth = (telem.memory_used_gb * 10.0).round() as i32;
-                    let ram_changed = (s.telemetry.memory_percent - telem.memory_percent).abs() >= 0.5;
+                    let ram_changed =
+                        (s.telemetry.memory_percent - telem.memory_percent).abs() >= 0.5;
                     let cpu_changed = (s.telemetry.cpu_usage - telem.cpu_usage).abs() >= 1.0;
-                    let net_changed = (s.telemetry.net_down_kbps - telem.net_down_kbps).abs() >= 5.0
+                    let net_changed = (s.telemetry.net_down_kbps - telem.net_down_kbps).abs()
+                        >= 5.0
                         || (s.telemetry.net_up_kbps - telem.net_up_kbps).abs() >= 5.0;
                     let telem_changed = ram_changed
                         || (s.telemetry.pagefile_percent - telem.pagefile_percent).abs() >= 0.5
@@ -726,14 +696,16 @@ fn main() {
                     if telem_changed {
                         settings_changed = true;
                         if s.is_hovered
-                            && matches!(s.mode, NotchMode::Home | NotchMode::MemReduct | NotchMode::Telemetry)
+                            && matches!(
+                                s.mode,
+                                NotchMode::Home | NotchMode::MemReduct | NotchMode::Telemetry
+                            )
                         {
                             ui_changed = true;
                         } else if !s.is_hovered
                             && !s.minimized_island
                             && s.notification.is_none()
                             && !s.media.is_playing
-                            && !s.timer.is_running
                         {
                             let idle_metric_changed = (s.progress_arc_enabled && ram_changed)
                                 || match s.idle_metric {
@@ -756,7 +728,6 @@ fn main() {
                         && !s.minimized_island
                         && s.notification.is_none()
                         && !s.media.is_playing
-                        && !s.timer.is_running
                         && s.idle_metric == IdleMetric::Clock
                     {
                         ui_changed = true;
@@ -773,15 +744,16 @@ fn main() {
                 }
 
                 if let Some(v) = vol_opt
-                    && (s.volume_pct - v).abs() > 0.015 {
-                        s.volume_pct = v;
-                        if v > 0.05 {
-                            s.pre_mute_volume = v;
-                        }
-                        if s.is_hovered && s.mode == NotchMode::Volume {
-                            ui_changed = true;
-                        }
+                    && (s.volume_pct - v).abs() > 0.015
+                {
+                    s.volume_pct = v;
+                    if v > 0.05 {
+                        s.pre_mute_volume = v;
                     }
+                    if s.is_hovered && s.mode == NotchMode::Volume {
+                        ui_changed = true;
+                    }
+                }
 
                 if let Some(mut m) = media_opt {
                     let same_song = m.title == last_song_title && m.artist == s.media.artist;
@@ -824,13 +796,14 @@ fn main() {
                 if !s.lyrics.is_empty() && !s.media.is_idle() {
                     let pos_sec = s.media.position_ms as f64 / 1000.0;
                     if let Some(idx) = s.lyrics.iter().rposition(|l| l.seconds <= pos_sec)
-                        && s.current_lyric_index != Some(idx) {
-                            s.current_lyric_index = Some(idx);
-                            s.current_lyric_text = s.lyrics[idx].text.clone();
-                            if s.is_hovered && s.mode == NotchMode::Music && s.show_lyrics {
-                                ui_changed = true;
-                            }
+                        && s.current_lyric_index != Some(idx)
+                    {
+                        s.current_lyric_index = Some(idx);
+                        s.current_lyric_text = s.lyrics[idx].text.clone();
+                        if s.is_hovered && s.mode == NotchMode::Music && s.show_lyrics {
+                            ui_changed = true;
                         }
+                    }
                 }
 
                 if s.mem_reduct.every_mins == 0 {
@@ -878,7 +851,8 @@ fn main() {
                         if let Some(clean_res) = res {
                             s.apply_clean_result(clean_res);
                         } else {
-                            s.mem_reduct.last_cleaned_status = "Ready • Auto clean done".to_string();
+                            s.mem_reduct.last_cleaned_status =
+                                "Ready • Auto clean done".to_string();
                         }
                     }
                     cynotch::window::PURGE_IN_PROGRESS.store(false, Ordering::Release);
@@ -894,10 +868,11 @@ fn main() {
                     if !lines.is_empty() {
                         let mut updated = false;
                         if let Ok(mut s) = fetch_state.lock()
-                            && s.media.title == title {
-                                s.lyrics = lines;
-                                updated = true;
-                            }
+                            && s.media.title == title
+                        {
+                            s.lyrics = lines;
+                            updated = true;
+                        }
                         if updated {
                             cynotch::window::post_redraw();
                         }

@@ -5,33 +5,34 @@ use crate::capture::{
     capture_foreground_window_rect, copy_text_to_clipboard, grab_full_desktop_frame,
     grab_rect_frame, pictures_capture_dir, read_clipboard_text, save_frame, shell_open_path,
 };
-use crate::composition::FrostedHost;
+use crate::composition::DCompHost;
 use crate::media::{next_track, prev_track, seek_to_position_ms, toggle_play_pause};
 use crate::memreduct::execute_memory_clean_areas;
 use crate::models::{
-    Action, AppState, MotionPreset, NotchMode, NotchPlacement, NotchStyle, NotificationKind,
-    SettingEffects, ShelfKind,
+    Action, AppState, NotchMode, NotchPlacement, NotchStyle, NotificationKind, SettingEffects,
+    ShelfKind,
 };
 use crate::notifications;
 use crate::renderer::Renderer;
 use std::cell::RefCell;
 use std::sync::atomic::{AtomicBool, AtomicI32, AtomicIsize, AtomicU32, Ordering};
 use std::sync::{Arc, Mutex};
-use windows::core::*;
 use windows::Win32::Foundation::*;
 use windows::Win32::Graphics::Dwm::{
-    DwmGetWindowAttribute, DwmSetWindowAttribute, DWMWA_CLOAKED, DWMWA_EXTENDED_FRAME_BOUNDS,
-    DWMWA_TRANSITIONS_FORCEDISABLED,
+    DWMWA_CLOAKED, DWMWA_EXTENDED_FRAME_BOUNDS, DWMWA_TRANSITIONS_FORCEDISABLED,
+    DwmGetWindowAttribute, DwmSetWindowAttribute,
 };
 use windows::Win32::Graphics::Gdi::*;
 use windows::Win32::System::LibraryLoader::GetModuleHandleW;
 use windows::Win32::System::Threading::GetCurrentProcessId;
 use windows::Win32::UI::Input::KeyboardAndMouse::*;
 use windows::Win32::UI::Shell::{
-    SHQueryUserNotificationState, Shell_NotifyIconW, NOTIFYICONDATAW, NIF_ICON, NIF_MESSAGE,
-    NIF_TIP, NIM_ADD, NIM_DELETE, NIM_MODIFY, QUNS_PRESENTATION_MODE, QUNS_RUNNING_D3D_FULL_SCREEN,
+    NIF_ICON, NIF_MESSAGE, NIF_TIP, NIM_ADD, NIM_DELETE, NIM_MODIFY, NOTIFYICONDATAW,
+    QUNS_PRESENTATION_MODE, QUNS_RUNNING_D3D_FULL_SCREEN, SHQueryUserNotificationState,
+    Shell_NotifyIconW,
 };
 use windows::Win32::UI::WindowsAndMessaging::*;
+use windows::core::*;
 
 #[link(name = "winmm")]
 unsafe extern "system" {
@@ -110,7 +111,6 @@ pub static IGNORE_NEXT_CLIPBOARD: AtomicBool = AtomicBool::new(false);
 pub static SHUTDOWN_REQUESTED: AtomicBool = AtomicBool::new(false);
 pub static NOTIF_SYNC_REQUESTED: AtomicBool = AtomicBool::new(false);
 static CLASS_REGISTERED: AtomicBool = AtomicBool::new(false);
-static RECREATING_HWND: AtomicBool = AtomicBool::new(false);
 static HIGH_RES_SLOTS: AtomicU32 = AtomicU32::new(0);
 
 pub fn set_high_res_slot(bit: u32, active: bool) {
@@ -255,7 +255,11 @@ fn run_highres_pacer_loop() {
             guard = lock.lock().unwrap_or_else(|e| e.into_inner());
             for (idx, (did_fail, hwnd_raw)) in failed.into_iter().enumerate() {
                 if did_fail {
-                    let slot = if idx == 0 { &mut guard.notch } else { &mut guard.settings };
+                    let slot = if idx == 0 {
+                        &mut guard.notch
+                    } else {
+                        &mut guard.settings
+                    };
                     if slot.hwnd == hwnd_raw {
                         slot.in_flight = false;
                         slot.interval_ms = 0;
@@ -282,7 +286,9 @@ fn run_highres_pacer_loop() {
                     }
                     guard = lock.lock().unwrap_or_else(|e| e.into_inner());
                 } else {
-                    let (g, _) = cv.wait_timeout(guard, dur).unwrap_or_else(|e| e.into_inner());
+                    let (g, _) = cv
+                        .wait_timeout(guard, dur)
+                        .unwrap_or_else(|e| e.into_inner());
                     guard = g;
                 }
             }
@@ -301,7 +307,11 @@ fn set_pacer_slot(is_settings: bool, hwnd: HWND, msg: u32, interval_ms: u32) {
         if let Some((lock, cv)) = PACER.get()
             && let Ok(mut g) = lock.lock()
         {
-            let slot = if is_settings { &mut g.settings } else { &mut g.notch };
+            let slot = if is_settings {
+                &mut g.settings
+            } else {
+                &mut g.notch
+            };
             if hwnd_raw == 0 || slot.hwnd == hwnd_raw || slot.hwnd == 0 {
                 slot.interval_ms = 0;
                 slot.in_flight = false;
@@ -316,7 +326,11 @@ fn set_pacer_slot(is_settings: bool, hwnd: HWND, msg: u32, interval_ms: u32) {
     }
     let (lock, cv) = ensure_pacer();
     if let Ok(mut g) = lock.lock() {
-        let slot = if is_settings { &mut g.settings } else { &mut g.notch };
+        let slot = if is_settings {
+            &mut g.settings
+        } else {
+            &mut g.notch
+        };
         let changed = slot.hwnd != hwnd_raw || slot.interval_ms != interval_ms;
         slot.hwnd = hwnd_raw;
         slot.msg = msg;
@@ -324,8 +338,8 @@ fn set_pacer_slot(is_settings: bool, hwnd: HWND, msg: u32, interval_ms: u32) {
         if changed {
             slot.in_flight = false;
             slot.last_post = None;
-            slot.next_due = std::time::Instant::now()
-                + std::time::Duration::from_millis(interval_ms as u64);
+            slot.next_due =
+                std::time::Instant::now() + std::time::Duration::from_millis(interval_ms as u64);
         }
         cv.notify_all();
     }
@@ -409,18 +423,9 @@ pub fn post_redraw() {
     let raw = MAIN_HWND.load(Ordering::Acquire);
     if raw != 0 {
         unsafe {
-            let _ = PostMessageW(HWND(raw as *mut std::ffi::c_void), WM_APP_REDRAW, WPARAM(0), LPARAM(0));
-        }
-    }
-}
-
-pub fn post_sync_frosted() {
-    let raw = MAIN_HWND.load(Ordering::Acquire);
-    if raw != 0 {
-        unsafe {
             let _ = PostMessageW(
                 HWND(raw as *mut std::ffi::c_void),
-                WM_APP_SYNC_FROSTED,
+                WM_APP_REDRAW,
                 WPARAM(0),
                 LPARAM(0),
             );
@@ -452,10 +457,21 @@ fn play_chime_async(utype: u32) {
 enum DragMode {
     #[default]
     None,
-    Grip { start_cursor_x: i32, start_cursor_y: i32, start_offset: i32 },
-    IdlePressOrDrag { start_cursor_x: i32, start_cursor_y: i32, start_offset: i32, moved: bool },
+    Grip {
+        start_cursor_x: i32,
+        start_cursor_y: i32,
+        start_offset: i32,
+    },
+    IdlePressOrDrag {
+        start_cursor_x: i32,
+        start_cursor_y: i32,
+        start_offset: i32,
+        moved: bool,
+    },
     VolumeSlider,
-    MusicScrubber { moved: bool },
+    MusicScrubber {
+        moved: bool,
+    },
 }
 
 unsafe fn get_monitor_rect(hwnd: HWND) -> RECT {
@@ -484,12 +500,22 @@ fn floating_edge_gap(state: &AppState) -> i32 {
     match state.notch_style {
         NotchStyle::EdgeFlush => 0,
         NotchStyle::Floating => {
-            if state.minimized_island { 3 } else { 10 }
+            if state.minimized_island {
+                3
+            } else {
+                10
+            }
         }
     }
 }
 
-fn clamp_offset_for_mon(mon: &RECT, state: &AppState, canvas_w: i32, canvas_h: i32, raw: i32) -> i32 {
+fn clamp_offset_for_mon(
+    mon: &RECT,
+    state: &AppState,
+    canvas_w: i32,
+    canvas_h: i32,
+    raw: i32,
+) -> i32 {
     let mon_w = (mon.right - mon.left).max(320);
     let mon_h = (mon.bottom - mon.top).max(240);
     let margin = 8;
@@ -543,6 +569,46 @@ fn compute_window_pos(mon: &RECT, state: &AppState, canvas_w: i32, canvas_h: i32
     }
 }
 
+fn is_idle_collapsed(state: &AppState) -> bool {
+    !state.is_hovered
+        && state.notification.is_none()
+        && state.needs_animation_timer_ms().is_none()
+        && (state.current_width - state.idle_width()).abs() <= 0.5
+        && (state.current_height - state.idle_height()).abs() <= 0.5
+}
+
+fn compute_active_window_layout(
+    mon: &RECT,
+    state: &AppState,
+    compact_idle: bool,
+) -> (i32, i32, i32, i32) {
+    let full_w = state.canvas_width().max(1) as i32;
+    let full_h = state.canvas_height().max(1) as i32;
+    let (full_x, full_y) = compute_window_pos(mon, state, full_w, full_h);
+    if !compact_idle {
+        return (full_x, full_y, full_w, full_h);
+    }
+
+    let pad = 12.0f32;
+    let (cw, ch) = match state.placement {
+        NotchPlacement::Top => (
+            (state.idle_width() + 2.0 * pad).ceil().max(1.0) as i32,
+            (state.idle_height() + pad).ceil().max(1.0) as i32,
+        ),
+        NotchPlacement::Left | NotchPlacement::Right => (
+            (state.idle_width() + pad).ceil().max(1.0) as i32,
+            (state.idle_height() + 2.0 * pad).ceil().max(1.0) as i32,
+        ),
+    };
+    let cw = cw.min(full_w);
+    let ch = ch.min(full_h);
+    let (full_ox, full_oy) = Renderer::compute_origin(state, full_w as f32, full_h as f32);
+    let (comp_ox, comp_oy) = Renderer::compute_origin(state, cw as f32, ch as f32);
+    let win_x = full_x + (full_ox - comp_ox).round() as i32;
+    let win_y = full_y + (full_oy - comp_oy).round() as i32;
+    (win_x, win_y, cw, ch)
+}
+
 /// Applies responsive edge/corner/center snapping during drag.
 /// Returns `(did_snap, placement_changed)` so discrete jumps glide smoothly rather than teleporting.
 fn apply_responsive_drag_snap(
@@ -591,7 +657,7 @@ fn apply_responsive_drag_snap(
         } else {
             state.sync_collapsed_targets();
         }
-        if axis_changed || state.motion_preset == MotionPreset::Reduced {
+        if axis_changed {
             state.current_width = state.target_width;
             state.current_height = state.target_height;
         }
@@ -615,16 +681,12 @@ fn apply_responsive_drag_snap(
             let enter_tl = !prev_tl
                 && pt.y <= mon.top + corner_top_y
                 && (raw <= -(max_off + 18) || pt.x <= mon.left + corner_pull_x);
-            let stay_tl = prev_tl
-                && pt.y <= mon.top + corner_top_y
-                && raw <= -(max_off - 28);
+            let stay_tl = prev_tl && pt.y <= mon.top + corner_top_y && raw <= -(max_off - 28);
 
             let enter_tr = !prev_tr
                 && pt.y <= mon.top + corner_top_y
                 && (raw >= max_off + 18 || pt.x >= mon.right - corner_pull_x);
-            let stay_tr = prev_tr
-                && pt.y <= mon.top + corner_top_y
-                && raw >= max_off - 28;
+            let stay_tr = prev_tr && pt.y <= mon.top + corner_top_y && raw >= max_off - 28;
 
             if enter_tl || stay_tl {
                 state.x_offset = -max_off;
@@ -637,7 +699,11 @@ fn apply_responsive_drag_snap(
             } else {
                 let clamped = raw.clamp(-max_off, max_off);
                 let center_snap = if prev_center { 18 } else { 12 };
-                state.x_offset = if clamped.abs() <= center_snap { 0 } else { clamped };
+                state.x_offset = if clamped.abs() <= center_snap {
+                    0
+                } else {
+                    clamped
+                };
                 state.target_anchor_x = 0.5;
                 state.target_anchor_y = 0.5;
             }
@@ -650,18 +716,25 @@ fn apply_responsive_drag_snap(
                 start_offset + (pt.y - start_cursor_y)
             };
             let was_top_corner = prev_tl || prev_tr;
-            let enter_top = !was_top_corner
-                && (raw <= -(max_off + 18) || pt.y <= mon.top + 88);
+            let enter_top = !was_top_corner && (raw <= -(max_off + 18) || pt.y <= mon.top + 88);
             let stay_top = was_top_corner && raw <= -(max_off - 28);
 
             if enter_top || stay_top {
                 state.y_offset = -max_off;
-                state.target_anchor_x = if state.placement == NotchPlacement::Left { 0.0 } else { 1.0 };
+                state.target_anchor_x = if state.placement == NotchPlacement::Left {
+                    0.0
+                } else {
+                    1.0
+                };
                 state.target_anchor_y = 0.0;
             } else {
                 let clamped = raw.clamp(-max_off, max_off);
                 let center_snap = if prev_center { 18 } else { 12 };
-                state.y_offset = if clamped.abs() <= center_snap { 0 } else { clamped };
+                state.y_offset = if clamped.abs() <= center_snap {
+                    0
+                } else {
+                    clamped
+                };
                 state.target_anchor_x = 0.5;
                 state.target_anchor_y = 0.5;
             }
@@ -676,106 +749,10 @@ fn apply_responsive_drag_snap(
         state.x_offset
     };
     let cur_center = cur_off == 0 && !cur_tl && !cur_tr;
-    let did_snap = placement_changed
-        || prev_tl != cur_tl
-        || prev_tr != cur_tr
-        || prev_center != cur_center;
+    let did_snap =
+        placement_changed || prev_tl != cur_tl || prev_tr != cur_tr || prev_center != cur_center;
 
     (did_snap, placement_changed)
-}
-
-struct CachedDib {
-    hdc_screen: HDC,
-    hdc_mem: HDC,
-    h_bitmap: HBITMAP,
-    old_bmp: HGDIOBJ,
-    bits: *mut u8,
-    w: i32,
-    h: i32,
-}
-
-impl Default for CachedDib {
-    fn default() -> Self {
-        Self {
-            hdc_screen: HDC::default(),
-            hdc_mem: HDC::default(),
-            h_bitmap: HBITMAP::default(),
-            old_bmp: HGDIOBJ::default(),
-            bits: std::ptr::null_mut(),
-            w: 0,
-            h: 0,
-        }
-    }
-}
-
-impl CachedDib {
-    unsafe fn ensure(&mut self, w: i32, h: i32) -> bool {
-        if self.w == w && self.h == h && !self.bits.is_null() {
-            return true;
-        }
-        self.destroy();
-        let hdc_screen = GetDC(None);
-        if hdc_screen.is_invalid() {
-            return false;
-        }
-        let hdc_mem = CreateCompatibleDC(hdc_screen);
-        if hdc_mem.is_invalid() {
-            let _ = ReleaseDC(None, hdc_screen);
-            return false;
-        }
-        let bmi = BITMAPINFO {
-            bmiHeader: BITMAPINFOHEADER {
-                biSize: std::mem::size_of::<BITMAPINFOHEADER>() as u32,
-                biWidth: w,
-                biHeight: -h,
-                biPlanes: 1,
-                biBitCount: 32,
-                biCompression: BI_RGB.0,
-                ..Default::default()
-            },
-            ..Default::default()
-        };
-        let mut bits: *mut core::ffi::c_void = std::ptr::null_mut();
-        match CreateDIBSection(hdc_screen, &bmi, DIB_RGB_COLORS, &mut bits, None, 0) {
-            Ok(h_bitmap) if !bits.is_null() => {
-                let old_bmp = SelectObject(hdc_mem, h_bitmap);
-                self.hdc_screen = hdc_screen;
-                self.hdc_mem = hdc_mem;
-                self.h_bitmap = h_bitmap;
-                self.old_bmp = old_bmp;
-                self.bits = bits as *mut u8;
-                self.w = w;
-                self.h = h;
-                true
-            }
-            _ => {
-                let _ = DeleteDC(hdc_mem);
-                let _ = ReleaseDC(None, hdc_screen);
-                false
-            }
-        }
-    }
-
-    unsafe fn destroy(&mut self) {
-        if !self.h_bitmap.is_invalid() {
-            if !self.hdc_mem.is_invalid() {
-                SelectObject(self.hdc_mem, self.old_bmp);
-            }
-            let _ = DeleteObject(self.h_bitmap);
-            self.h_bitmap = HBITMAP::default();
-        }
-        if !self.hdc_mem.is_invalid() {
-            let _ = DeleteDC(self.hdc_mem);
-            self.hdc_mem = HDC::default();
-        }
-        if !self.hdc_screen.is_invalid() {
-            let _ = ReleaseDC(None, self.hdc_screen);
-            self.hdc_screen = HDC::default();
-        }
-        self.bits = std::ptr::null_mut();
-        self.w = 0;
-        self.h = 0;
-    }
 }
 
 pub struct NotchWindow {
@@ -798,10 +775,7 @@ fn get_global_state() -> Option<Arc<Mutex<AppState>>> {
 #[derive(Default)]
 struct NotchUi {
     renderer: Option<Renderer>,
-    dib: CachedDib,
-    frosted: Option<FrostedHost>,
-    is_frosted_hwnd: bool,
-    frosted_failed: bool,
+    dcomp: Option<DCompHost>,
     is_tracking_mouse: bool,
     pointer_pos: Option<(f32, f32)>,
     hover_hit_idx: Option<usize>,
@@ -822,15 +796,21 @@ struct NotchUi {
     snap_glide_active: bool,
     last_slider_redraw: Option<std::time::Instant>,
     last_rgn: Option<(i32, i32, i32, i32, i32, u8, u8, u8)>,
+    idle_since: Option<std::time::Instant>,
+    idle_caches_trimmed: bool,
 }
 
 thread_local! {
     static NOTCH_UI: RefCell<NotchUi> = RefCell::new(NotchUi::default());
 }
 
-fn compute_window_region_spec_full(state: &AppState) -> (i32, i32, i32, i32, i32, u8, u8, u8) {
-    let cw = state.canvas_width() as i32;
-    let ch = state.canvas_height() as i32;
+fn compute_window_region_spec_for_canvas(
+    state: &AppState,
+    cw: i32,
+    ch: i32,
+) -> (i32, i32, i32, i32, i32, u8, u8, u8) {
+    let cw = cw.max(1);
+    let ch = ch.max(1);
     let (ox, oy) = Renderer::compute_origin(state, cw as f32, ch as f32);
     let w = state.current_width.max(1.0);
     let h = state.current_height.max(1.0);
@@ -839,8 +819,12 @@ fn compute_window_region_spec_full(state: &AppState) -> (i32, i32, i32, i32, i32
 
     let x0 = (ox - 1.0).floor().clamp(0.0, cw as f32) as i32;
     let y0 = (oy - 1.0).floor().clamp(0.0, ch as f32) as i32;
-    let x1 = (ox + w + 1.0).ceil().clamp((x0 + 1) as f32, cw.max(x0 + 1) as f32) as i32;
-    let y1 = (oy + h + 1.0).ceil().clamp((y0 + 1) as f32, ch.max(y0 + 1) as f32) as i32;
+    let x1 = (ox + w + 1.0)
+        .ceil()
+        .clamp((x0 + 1) as f32, cw.max(x0 + 1) as f32) as i32;
+    let y1 = (oy + h + 1.0)
+        .ceil()
+        .clamp((y0 + 1) as f32, ch.max(y0 + 1) as f32) as i32;
     let max_d = (x1 - x0).min(y1 - y0).max(2);
     let diam = ((max_r * 2.0).round() as i32).clamp(2, max_d);
     let style_key = match state.notch_style {
@@ -871,13 +855,19 @@ fn compute_window_region_spec_full(state: &AppState) -> (i32, i32, i32, i32, i32
 /// Computes the exact Win32 window region parameters `(x0, y0, x1, y1, diam, style_key, place_key)`
 /// in HWND client coordinates matching the active visible notch shell.
 pub fn compute_window_region_spec(state: &AppState) -> (i32, i32, i32, i32, i32, u8, u8) {
-    let s = compute_window_region_spec_full(state);
+    let s = compute_window_region_spec_for_canvas(
+        state,
+        state.canvas_width() as i32,
+        state.canvas_height() as i32,
+    );
     (s.0, s.1, s.2, s.3, s.4, s.5, s.6)
 }
 
 #[allow(dead_code)]
-unsafe fn sync_notch_window_region(hwnd: HWND, state: &AppState) {
-    let spec = compute_window_region_spec_full(state);
+unsafe fn sync_notch_window_region(hwnd: HWND, state: &AppState, cw: i32, ch: i32) {
+    let cw = cw.max(1);
+    let ch = ch.max(1);
+    let spec = compute_window_region_spec_for_canvas(state, cw, ch);
     let unchanged = NOTCH_UI
         .try_with(|cell| {
             cell.try_borrow()
@@ -890,8 +880,6 @@ unsafe fn sync_notch_window_region(hwnd: HWND, state: &AppState) {
     }
 
     let (x0, y0, x1, y1, diam, style_key, place_key, sharp_mask) = spec;
-    let cw = state.canvas_width().max(1) as i32;
-    let ch = state.canvas_height().max(1) as i32;
     let x0 = (x0 - 2).max(0);
     let y0 = (y0 - 2).max(0);
     let x1 = (x1 + 2).min(cw);
@@ -994,19 +982,20 @@ unsafe fn tick_notch_animation(hwnd: HWND) {
     let mut needs_redraw = false;
     let mut desired_ms = None;
     let mut target_win_pos = None;
-    let mut reduced_motion = false;
+    let mut target_canvas = None;
     let mut active_interval = 16u32;
+    let mut idle_collapsed = false;
     if let Some(state_mutex) = get_global_state()
         && let Ok(mut state) = state_mutex.lock()
     {
         needs_redraw = state.update_animation(dt);
         desired_ms = state.needs_animation_timer_ms();
-        reduced_motion = state.motion_preset == MotionPreset::Reduced;
         active_interval = state.desired_active_interval_ms();
+        idle_collapsed = is_idle_collapsed(&state);
         let mon = get_monitor_rect(hwnd);
-        let cw = state.canvas_width() as i32;
-        let ch = state.canvas_height() as i32;
-        target_win_pos = Some(compute_window_pos(&mon, &state, cw, ch));
+        let (wx, wy, cw, ch) = compute_active_window_layout(&mon, &state, idle_collapsed);
+        target_win_pos = Some((wx, wy));
+        target_canvas = Some((cw, ch));
     }
 
     let mut win_glide_still_active = false;
@@ -1019,23 +1008,17 @@ unsafe fn tick_notch_animation(hwnd: HWND) {
                 ui.win_pos_initialized = true;
             }
             if ui.snap_glide_active {
-                if reduced_motion {
+                let alpha = 1.0 - (-18.0_f32 * dt).exp();
+                ui.anim_win_x += (tx as f32 - ui.anim_win_x) * alpha;
+                ui.anim_win_y += (ty as f32 - ui.anim_win_y) * alpha;
+                if (tx as f32 - ui.anim_win_x).abs() <= 0.65
+                    && (ty as f32 - ui.anim_win_y).abs() <= 0.65
+                {
                     ui.anim_win_x = tx as f32;
                     ui.anim_win_y = ty as f32;
                     ui.snap_glide_active = false;
                 } else {
-                    let alpha = 1.0 - (-18.0_f32 * dt).exp();
-                    ui.anim_win_x += (tx as f32 - ui.anim_win_x) * alpha;
-                    ui.anim_win_y += (ty as f32 - ui.anim_win_y) * alpha;
-                    if (tx as f32 - ui.anim_win_x).abs() <= 0.65
-                        && (ty as f32 - ui.anim_win_y).abs() <= 0.65
-                    {
-                        ui.anim_win_x = tx as f32;
-                        ui.anim_win_y = ty as f32;
-                        ui.snap_glide_active = false;
-                    } else {
-                        win_glide_still_active = true;
-                    }
+                    win_glide_still_active = true;
                 }
                 if !needs_redraw {
                     let rx = ui.anim_win_x.round() as i32;
@@ -1068,7 +1051,14 @@ unsafe fn tick_notch_animation(hwnd: HWND) {
         desired_ms
     };
     sync_animation_timer(hwnd, effective_ms);
-    if needs_redraw {
+    let needs_compact_shrink = if !needs_redraw && idle_collapsed && !win_glide_still_active {
+        target_canvas.is_some_and(|(cw, ch)| {
+            NOTCH_UI.with_borrow(|ui| ui.prev_dib_w != cw || ui.prev_dib_h != ch)
+        })
+    } else {
+        false
+    };
+    if needs_redraw || needs_compact_shrink {
         redraw_window(hwnd);
     }
 }
@@ -1139,22 +1129,23 @@ unsafe fn is_foreign_fullscreen_active(notch_hwnd: HWND) -> bool {
     let mut cls_buf = [0u16; 64];
     let len = GetClassNameW(fg, &mut cls_buf);
     if len > 0 {
-        let cls = String::from_utf16_lossy(&cls_buf[..len as usize]);
-        if matches!(
-            cls.as_str(),
-            "Progman"
-                | "WorkerW"
-                | "Shell_TrayWnd"
-                | "Shell_SecondaryTrayWnd"
-                | "Windows.UI.Core.CoreWindow"
-                | "XamlExplorerHostIslandWindow"
-                | "ApplicationManager_DesktopShellWindow"
-                | "MultitaskingViewFrame"
-                | "SearchHost"
-                | "StartMenuExperienceHost"
-                | "#32768"
-                | "tooltips_class32"
-        ) {
+        let cls = &cls_buf[..len as usize];
+        let is_shell_cls = [
+            windows::core::w!("Progman").as_wide(),
+            windows::core::w!("WorkerW").as_wide(),
+            windows::core::w!("Shell_TrayWnd").as_wide(),
+            windows::core::w!("Shell_SecondaryTrayWnd").as_wide(),
+            windows::core::w!("Windows.UI.Core.CoreWindow").as_wide(),
+            windows::core::w!("XamlExplorerHostIslandWindow").as_wide(),
+            windows::core::w!("ApplicationManager_DesktopShellWindow").as_wide(),
+            windows::core::w!("MultitaskingViewFrame").as_wide(),
+            windows::core::w!("SearchHost").as_wide(),
+            windows::core::w!("StartMenuExperienceHost").as_wide(),
+            windows::core::w!("#32768").as_wide(),
+            windows::core::w!("tooltips_class32").as_wide(),
+        ]
+        .contains(&cls);
+        if is_shell_cls {
             return false;
         }
     }
@@ -1186,10 +1177,8 @@ unsafe fn is_foreign_fullscreen_active(notch_hwnd: HWND) -> bool {
         return false;
     }
 
-    let covers_monitor = rc.left <= mr.left
-        && rc.top <= mr.top
-        && rc.right >= mr.right
-        && rc.bottom >= mr.bottom;
+    let covers_monitor =
+        rc.left <= mr.left && rc.top <= mr.top && rc.right >= mr.right && rc.bottom >= mr.bottom;
 
     let quns_exclusive = SHQueryUserNotificationState()
         .map(|s| s == QUNS_RUNNING_D3D_FULL_SCREEN || s == QUNS_PRESENTATION_MODE)
@@ -1293,9 +1282,19 @@ unsafe fn attach_hwnd_resources(hwnd: HWND) {
     );
     crate::borders::set_window_borderless(hwnd);
 
-    let _ = RegisterHotKey(hwnd, HOTKEY_TOGGLE_NOTCH, MOD_CONTROL | MOD_SHIFT, 'C' as u32);
+    let _ = RegisterHotKey(
+        hwnd,
+        HOTKEY_TOGGLE_NOTCH,
+        MOD_CONTROL | MOD_SHIFT,
+        'C' as u32,
+    );
     let _ = RegisterHotKey(hwnd, HOTKEY_PURGE_RAM, MOD_CONTROL | MOD_SHIFT, 'M' as u32);
-    let _ = RegisterHotKey(hwnd, HOTKEY_CAPTURE_SCREEN, MOD_CONTROL | MOD_SHIFT, 'S' as u32);
+    let _ = RegisterHotKey(
+        hwnd,
+        HOTKEY_CAPTURE_SCREEN,
+        MOD_CONTROL | MOD_SHIFT,
+        'S' as u32,
+    );
 
     let _ = AddClipboardFormatListener(hwnd);
     DragAcceptFiles(hwnd, 1);
@@ -1320,15 +1319,14 @@ unsafe fn detach_hwnd_resources(hwnd: HWND) {
 }
 
 unsafe fn create_notch_hwnd(
-    _want_frosted: bool,
     x: i32,
     y: i32,
     canvas_w: i32,
     canvas_h: i32,
     h_instance: HMODULE,
-) -> Result<(HWND, Option<FrostedHost>, bool)> {
+) -> Result<(HWND, DCompHost)> {
     let hwnd = CreateWindowExW(
-        WS_EX_TOPMOST | WS_EX_LAYERED | WS_EX_TOOLWINDOW | WS_EX_NOACTIVATE,
+        WS_EX_TOPMOST | WS_EX_NOREDIRECTIONBITMAP | WS_EX_TOOLWINDOW | WS_EX_NOACTIVATE,
         CLASS_NAME,
         WINDOW_NAME,
         WS_POPUP,
@@ -1341,21 +1339,28 @@ unsafe fn create_notch_hwnd(
         h_instance,
         None,
     )?;
-    Ok((hwnd, None, false))
-}
-
-unsafe fn sync_notch_frosted_mode(hwnd: HWND) -> HWND {
-    hwnd
+    let host = DCompHost::new(hwnd, canvas_w.max(1) as u32, canvas_h.max(1) as u32)?;
+    Ok((hwnd, host))
 }
 
 impl NotchWindow {
     pub fn create(state: Arc<Mutex<AppState>>) -> Result<Self> {
         let win_trans = notifications::is_windows_transparency_enabled();
-        let (canvas_w, canvas_h, snap) = {
+        let snap = {
             let mut s = state.lock().unwrap();
             s.windows_transparency_enabled = win_trans;
-            (s.canvas_width() as i32, s.canvas_height() as i32, s.clone())
+            s.clone()
         };
+        let mon = unsafe {
+            RECT {
+                left: 0,
+                top: 0,
+                right: GetSystemMetrics(SM_CXSCREEN).max(1280),
+                bottom: GetSystemMetrics(SM_CYSCREEN).max(720),
+            }
+        };
+        let (x, y, canvas_w, canvas_h) =
+            compute_active_window_layout(&mon, &snap, is_idle_collapsed(&snap));
         let r = Renderer::new(canvas_w as u32, canvas_h as u32);
         unsafe {
             NOTCH_UI.with_borrow_mut(|ui| {
@@ -1383,20 +1388,9 @@ impl NotchWindow {
                 RegisterClassExW(&wnd_class);
             }
 
-            let mon = RECT {
-                left: 0,
-                top: 0,
-                right: GetSystemMetrics(SM_CXSCREEN).max(1280),
-                bottom: GetSystemMetrics(SM_CYSCREEN).max(720),
-            };
-            let (x, y) = compute_window_pos(&mon, &snap, canvas_w, canvas_h);
-            let want_frosted = snap.is_frosted_active() && NOTCH_UI.with_borrow(|ui| !ui.frosted_failed);
-
-            let (hwnd, host, is_fr) =
-                create_notch_hwnd(want_frosted, x, y, canvas_w, canvas_h, h_instance)?;
+            let (hwnd, host) = create_notch_hwnd(x, y, canvas_w, canvas_h, h_instance)?;
             NOTCH_UI.with_borrow_mut(|ui| {
-                ui.frosted = host;
-                ui.is_frosted_hwnd = is_fr;
+                ui.dcomp = Some(host);
             });
 
             attach_hwnd_resources(hwnd);
@@ -1406,7 +1400,15 @@ impl NotchWindow {
 
             redraw_window(hwnd);
             let _ = ShowWindow(hwnd, SW_SHOWNOACTIVATE);
-            let _ = SetWindowPos(hwnd, HWND_TOPMOST, x, y, canvas_w, canvas_h, SWP_NOACTIVATE | SWP_SHOWWINDOW);
+            let _ = SetWindowPos(
+                hwnd,
+                HWND_TOPMOST,
+                0,
+                0,
+                0,
+                0,
+                SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE | SWP_SHOWWINDOW,
+            );
 
             Ok(Self { hwnd, state })
         }
@@ -1428,16 +1430,36 @@ static LAST_TRAY_RAM_PCT: AtomicI32 = AtomicI32::new(-1);
 static LAST_TRAY_USED_TENTH: AtomicI32 = AtomicI32::new(-1);
 
 const DIGIT_5X7: [[u8; 7]; 10] = [
-    [0b01110, 0b10001, 0b10011, 0b10101, 0b11001, 0b10001, 0b01110], // 0
-    [0b00100, 0b01100, 0b00100, 0b00100, 0b00100, 0b00100, 0b01110], // 1
-    [0b01110, 0b10001, 0b00001, 0b00110, 0b01000, 0b10000, 0b11111], // 2
-    [0b11110, 0b00001, 0b00001, 0b01110, 0b00001, 0b00001, 0b11110], // 3
-    [0b00010, 0b00110, 0b01010, 0b10010, 0b11111, 0b00010, 0b00010], // 4
-    [0b11111, 0b10000, 0b11110, 0b00001, 0b00001, 0b10001, 0b01110], // 5
-    [0b01110, 0b10000, 0b11110, 0b10001, 0b10001, 0b10001, 0b01110], // 6
-    [0b11111, 0b00001, 0b00010, 0b00100, 0b01000, 0b01000, 0b01000], // 7
-    [0b01110, 0b10001, 0b10001, 0b01110, 0b10001, 0b10001, 0b01110], // 8
-    [0b01110, 0b10001, 0b10001, 0b01111, 0b00001, 0b00001, 0b01110], // 9
+    [
+        0b01110, 0b10001, 0b10011, 0b10101, 0b11001, 0b10001, 0b01110,
+    ], // 0
+    [
+        0b00100, 0b01100, 0b00100, 0b00100, 0b00100, 0b00100, 0b01110,
+    ], // 1
+    [
+        0b01110, 0b10001, 0b00001, 0b00110, 0b01000, 0b10000, 0b11111,
+    ], // 2
+    [
+        0b11110, 0b00001, 0b00001, 0b01110, 0b00001, 0b00001, 0b11110,
+    ], // 3
+    [
+        0b00010, 0b00110, 0b01010, 0b10010, 0b11111, 0b00010, 0b00010,
+    ], // 4
+    [
+        0b11111, 0b10000, 0b11110, 0b00001, 0b00001, 0b10001, 0b01110,
+    ], // 5
+    [
+        0b01110, 0b10000, 0b11110, 0b10001, 0b10001, 0b10001, 0b01110,
+    ], // 6
+    [
+        0b11111, 0b00001, 0b00010, 0b00100, 0b01000, 0b01000, 0b01000,
+    ], // 7
+    [
+        0b01110, 0b10001, 0b10001, 0b01110, 0b10001, 0b10001, 0b01110,
+    ], // 8
+    [
+        0b01110, 0b10001, 0b10001, 0b01111, 0b00001, 0b00001, 0b01110,
+    ], // 9
 ];
 
 unsafe fn create_ram_tray_icon(pct: u32, size: i32) -> Option<HICON> {
@@ -1535,7 +1557,11 @@ unsafe fn create_ram_tray_icon(pct: u32, size: i32) -> Option<HICON> {
         let _ = DeleteObject(hbm_color);
         return None;
     }
-    std::ptr::copy_nonoverlapping(bgra.as_ptr() as *const u8, bits_ptr as *mut u8, bgra.len() * 4);
+    std::ptr::copy_nonoverlapping(
+        bgra.as_ptr() as *const u8,
+        bits_ptr as *mut u8,
+        bgra.len() * 4,
+    );
     let hbm_mask = CreateBitmap(sz, sz, 1, 1, None);
     let ii = ICONINFO {
         fIcon: TRUE,
@@ -1585,7 +1611,10 @@ unsafe fn add_tray_icon(hwnd: HWND) {
         hIcon: hicon,
         ..Default::default()
     };
-    let tip_str = format!("CyNotch · RAM {}% ({:.1}/{:.1} GB)\0", pct, used_gb, total_gb);
+    let tip_str = format!(
+        "CyNotch · RAM {}% ({:.1}/{:.1} GB)\0",
+        pct, used_gb, total_gb
+    );
     let tip: Vec<u16> = tip_str.encode_utf16().collect();
     let copy_len = tip.len().min(nid.szTip.len());
     nid.szTip[..copy_len].copy_from_slice(&tip[..copy_len]);
@@ -1620,7 +1649,10 @@ unsafe fn update_tray_icon(hwnd: HWND) {
         nid.uFlags |= NIF_ICON;
         nid.hIcon = ic;
     }
-    let tip_str = format!("CyNotch · RAM {}% ({:.1}/{:.1} GB)\0", pct, used_gb, total_gb);
+    let tip_str = format!(
+        "CyNotch · RAM {}% ({:.1}/{:.1} GB)\0",
+        pct, used_gb, total_gb
+    );
     let tip: Vec<u16> = tip_str.encode_utf16().collect();
     let copy_len = tip.len().min(nid.szTip.len());
     nid.szTip[..copy_len].copy_from_slice(&tip[..copy_len]);
@@ -1655,7 +1687,11 @@ unsafe fn remove_tray_icon(hwnd: HWND) {
 
 unsafe fn track_last_foreground(exclude_hwnd: HWND) {
     let fg = GetForegroundWindow();
-    if !fg.0.is_null() && fg != exclude_hwnd && IsWindowVisible(fg).as_bool() && !IsIconic(fg).as_bool() {
+    if !fg.0.is_null()
+        && fg != exclude_hwnd
+        && IsWindowVisible(fg).as_bool()
+        && !IsIconic(fg).as_bool()
+    {
         NOTCH_UI.with_borrow_mut(|ui| {
             ui.last_other_hwnd = Some(fg);
         });
@@ -1670,16 +1706,19 @@ unsafe fn perform_capture_async(hwnd: HWND, active_window_only: bool) {
     let target_rect = if active_window_only {
         let mut rect = None;
         if let Some(prev) = last_other
-            && prev != hwnd && IsWindowVisible(prev).as_bool() && !IsIconic(prev).as_bool() {
-                let mut rc = RECT::default();
-                if GetWindowRect(prev, &mut rc).is_ok() {
-                    let w = rc.right - rc.left;
-                    let h = rc.bottom - rc.top;
-                    if w > 80 && h > 80 {
-                        rect = Some((rc.left, rc.top, w, h));
-                    }
+            && prev != hwnd
+            && IsWindowVisible(prev).as_bool()
+            && !IsIconic(prev).as_bool()
+        {
+            let mut rc = RECT::default();
+            if GetWindowRect(prev, &mut rc).is_ok() {
+                let w = rc.right - rc.left;
+                let h = rc.bottom - rc.top;
+                if w > 80 && h > 80 {
+                    rect = Some((rc.left, rc.top, w, h));
                 }
             }
+        }
         rect.or_else(|| capture_foreground_window_rect(hwnd))
     } else {
         None
@@ -1725,31 +1764,32 @@ unsafe fn perform_capture_async(hwnd: HWND, active_window_only: bool) {
 
         let mut chime = false;
         if let Some(state_mutex) = get_global_state()
-            && let Ok(mut state) = state_mutex.lock() {
-                if let Some(cap) = res {
-                    state.capture.last_path = Some(cap.path.clone());
-                    state.capture.last_filename = cap.filename.clone();
-                    state.capture.last_dims = format!("{} × {}", cap.width, cap.height);
-                    state.capture.clipboard_ok = cap.clipboard_ok;
-                    state.capture.total_captures += 1;
+            && let Ok(mut state) = state_mutex.lock()
+        {
+            if let Some(cap) = res {
+                state.capture.last_path = Some(cap.path.clone());
+                state.capture.last_filename = cap.filename.clone();
+                state.capture.last_dims = format!("{} × {}", cap.width, cap.height);
+                state.capture.clipboard_ok = cap.clipboard_ok;
+                state.capture.total_captures += 1;
 
-                    chime = state.chime_enabled;
-                    let dims_label = state.capture.last_dims.clone();
-                    state.set_notification(
-                        "Screenshot Captured".to_string(),
-                        format!("{} ({})", cap.filename, dims_label),
-                        NotificationKind::Capture,
-                        true,
-                    );
-                } else {
-                    state.set_notification(
-                        "Capture Failed".to_string(),
-                        "Unable to grab desktop frame".to_string(),
-                        NotificationKind::Capture,
-                        false,
-                    );
-                }
+                chime = state.chime_enabled;
+                let dims_label = state.capture.last_dims.clone();
+                state.set_notification(
+                    "Screenshot Captured".to_string(),
+                    format!("{} ({})", cap.filename, dims_label),
+                    NotificationKind::Capture,
+                    true,
+                );
+            } else {
+                state.set_notification(
+                    "Capture Failed".to_string(),
+                    "Unable to grab desktop frame".to_string(),
+                    NotificationKind::Capture,
+                    false,
+                );
             }
+        }
         if chime {
             let _ = MessageBeep(0x40);
         }
@@ -1787,15 +1827,16 @@ unsafe fn trigger_purge_ram_async(hwnd: HWND) {
         let res = execute_memory_clean_areas(&areas);
         let mut chime = false;
         if let Some(state_mutex) = get_global_state()
-            && let Ok(mut state) = state_mutex.lock() {
-                state.mem_reduct.is_purging = false;
-                if let Some(clean_res) = res {
-                    chime = state.chime_enabled;
-                    state.apply_clean_result(clean_res);
-                } else {
-                    state.mem_reduct.last_cleaned_status = "Ready • Clean finished".to_string();
-                }
+            && let Ok(mut state) = state_mutex.lock()
+        {
+            state.mem_reduct.is_purging = false;
+            if let Some(clean_res) = res {
+                chime = state.chime_enabled;
+                state.apply_clean_result(clean_res);
+            } else {
+                state.mem_reduct.last_cleaned_status = "Ready • Clean finished".to_string();
             }
+        }
         if chime {
             let _ = MessageBeep(0x40);
         }
@@ -1824,19 +1865,18 @@ unsafe extern "system" fn wnd_proc(
     }
 }
 
-unsafe fn wnd_proc_inner(
-    hwnd: HWND,
-    msg: u32,
-    wparam: WPARAM,
-    lparam: LPARAM,
-) -> LRESULT {
+unsafe fn wnd_proc_inner(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPARAM) -> LRESULT {
     match msg {
         WM_MOUSEACTIVATE => LRESULT(MA_NOACTIVATE as isize),
         WM_WINDOWPOSCHANGING => {
             if lparam.0 != 0 {
                 let wp = &mut *(lparam.0 as *mut WINDOWPOS);
                 let hidden = NOTCH_UI
-                    .try_with(|cell| cell.try_borrow().map(|ui| ui.hidden_for_fullscreen).unwrap_or(false))
+                    .try_with(|cell| {
+                        cell.try_borrow()
+                            .map(|ui| ui.hidden_for_fullscreen)
+                            .unwrap_or(false)
+                    })
                     .unwrap_or(false);
                 if !hidden
                     && !CAPTURE_IN_PROGRESS.load(Ordering::Acquire)
@@ -1851,9 +1891,10 @@ unsafe fn wnd_proc_inner(
         WM_DISPLAYCHANGE => {
             let hz = detect_monitor_hz();
             if let Some(state_mutex) = get_global_state()
-                && let Ok(mut s) = state_mutex.lock() {
-                    s.detected_hz = hz;
-                }
+                && let Ok(mut s) = state_mutex.lock()
+            {
+                s.detected_hz = hz;
+            }
             let hidden = NOTCH_UI.with_borrow_mut(|ui| {
                 ui.has_ulw_initialized = false;
                 ui.hidden_for_fullscreen
@@ -1872,11 +1913,6 @@ unsafe fn wnd_proc_inner(
             let _ = DestroyWindow(hwnd);
             LRESULT(0)
         }
-        WM_APP_SYNC_FROSTED => {
-            let active = sync_notch_frosted_mode(hwnd);
-            redraw_window(active);
-            LRESULT(0)
-        }
         WM_SETTINGCHANGE => {
             let win_trans = notifications::is_windows_transparency_enabled();
             if let Some(state_mutex) = get_global_state()
@@ -1884,9 +1920,7 @@ unsafe fn wnd_proc_inner(
             {
                 s.windows_transparency_enabled = win_trans;
             }
-            let active = sync_notch_frosted_mode(hwnd);
-            crate::settings_window::post_sync_frosted();
-            redraw_window(active);
+            redraw_window(hwnd);
             LRESULT(0)
         }
         WM_NCHITTEST => {
@@ -1907,8 +1941,13 @@ unsafe fn wnd_proc_inner(
             let in_capsule = if let Some(state_mutex) = get_global_state()
                 && let Ok(st) = state_mutex.lock()
             {
-                let cw = st.canvas_width() as f32;
-                let ch = st.canvas_height() as f32;
+                let (cw, ch) = NOTCH_UI.with_borrow(|ui| {
+                    if ui.prev_dib_w > 0 && ui.prev_dib_h > 0 {
+                        (ui.prev_dib_w as f32, ui.prev_dib_h as f32)
+                    } else {
+                        (st.canvas_width() as f32, st.canvas_height() as f32)
+                    }
+                });
                 Renderer::point_in_capsule(&st, cw, ch, pt.x as f32, pt.y as f32)
             } else {
                 false
@@ -1924,8 +1963,8 @@ unsafe fn wnd_proc_inner(
             LRESULT(0)
         }
         WM_APP_HIGHRES_ANIM_TICK => {
-            clear_notch_pacer_in_flight();
             tick_notch_animation(hwnd);
+            clear_notch_pacer_in_flight();
             LRESULT(0)
         }
         WM_APP_UPDATE_TRAY => {
@@ -1937,7 +1976,15 @@ unsafe fn wnd_proc_inner(
                 ui.hidden_for_fullscreen = false;
             });
             let _ = ShowWindow(hwnd, SW_SHOWNOACTIVATE);
-            let _ = SetWindowPos(hwnd, HWND_TOPMOST, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE | SWP_SHOWWINDOW);
+            let _ = SetWindowPos(
+                hwnd,
+                HWND_TOPMOST,
+                0,
+                0,
+                0,
+                0,
+                SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE | SWP_SHOWWINDOW,
+            );
             redraw_window(hwnd);
             LRESULT(0)
         }
@@ -1946,11 +1993,20 @@ unsafe fn wnd_proc_inner(
                 ui.hidden_for_fullscreen = false;
             });
             if let Some(state_mutex) = get_global_state()
-                && let Ok(mut state) = state_mutex.lock() {
-                    state.set_hovered(true);
-                }
+                && let Ok(mut state) = state_mutex.lock()
+            {
+                state.set_hovered(true);
+            }
             let _ = ShowWindow(hwnd, SW_SHOWNOACTIVATE);
-            let _ = SetWindowPos(hwnd, HWND_TOPMOST, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE | SWP_SHOWWINDOW);
+            let _ = SetWindowPos(
+                hwnd,
+                HWND_TOPMOST,
+                0,
+                0,
+                0,
+                0,
+                SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE | SWP_SHOWWINDOW,
+            );
             redraw_window(hwnd);
             LRESULT(0)
         }
@@ -1959,12 +2015,21 @@ unsafe fn wnd_proc_inner(
                 ui.hidden_for_fullscreen = false;
             });
             if let Some(state_mutex) = get_global_state()
-                && let Ok(mut state) = state_mutex.lock() {
-                    let next = !state.is_hovered;
-                    state.set_hovered(next);
-                }
+                && let Ok(mut state) = state_mutex.lock()
+            {
+                let next = !state.is_hovered;
+                state.set_hovered(next);
+            }
             let _ = ShowWindow(hwnd, SW_SHOWNOACTIVATE);
-            let _ = SetWindowPos(hwnd, HWND_TOPMOST, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE | SWP_SHOWWINDOW);
+            let _ = SetWindowPos(
+                hwnd,
+                HWND_TOPMOST,
+                0,
+                0,
+                0,
+                0,
+                SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE | SWP_SHOWWINDOW,
+            );
             redraw_window(hwnd);
             LRESULT(0)
         }
@@ -1975,39 +2040,71 @@ unsafe fn wnd_proc_inner(
                     ui.hidden_for_fullscreen = false;
                 });
                 if let Some(state_mutex) = get_global_state()
-                    && let Ok(mut state) = state_mutex.lock() {
-                        let next = !state.is_hovered;
-                        state.set_hovered(next);
-                    }
+                    && let Ok(mut state) = state_mutex.lock()
+                {
+                    let next = !state.is_hovered;
+                    state.set_hovered(next);
+                }
                 let _ = ShowWindow(hwnd, SW_SHOWNOACTIVATE);
-                let _ = SetWindowPos(hwnd, HWND_TOPMOST, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE | SWP_SHOWWINDOW);
+                let _ = SetWindowPos(
+                    hwnd,
+                    HWND_TOPMOST,
+                    0,
+                    0,
+                    0,
+                    0,
+                    SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE | SWP_SHOWWINDOW,
+                );
                 redraw_window(hwnd);
             } else if evt == WM_RBUTTONUP
-                && let Ok(hmenu) = CreatePopupMenu() {
-                    let minimized = get_global_state()
-                        .and_then(|m| m.lock().ok().map(|s| s.minimized_island))
-                        .unwrap_or(false);
-                    let _ = AppendMenuW(hmenu, MF_STRING, MENU_TOGGLE, w!("Toggle CyNotch (Ctrl+Shift+C)"));
-                    let _ = AppendMenuW(
-                        hmenu,
-                        if minimized { MF_STRING | MF_CHECKED } else { MF_STRING },
-                        MENU_MINIMIZE,
-                        w!("Minimize Idle Island"),
-                    );
-                    let _ = AppendMenuW(hmenu, MF_STRING, MENU_CAPTURE, w!("Capture Screen (Ctrl+Shift+S)"));
-                    let _ = AppendMenuW(hmenu, MF_STRING, MENU_PURGE, w!("Purge RAM (Ctrl+Shift+M)"));
-                    let _ = AppendMenuW(hmenu, MF_STRING, MENU_PIN, w!("Pin / Unpin Open"));
-                    let _ = AppendMenuW(hmenu, MF_STRING, MENU_SETTINGS, w!("Open Settings"));
-                    let _ = AppendMenuW(hmenu, MF_SEPARATOR, 0, PCWSTR::null());
-                    let _ = AppendMenuW(hmenu, MF_STRING, MENU_EXIT, w!("Exit CyNotch"));
+                && let Ok(hmenu) = CreatePopupMenu()
+            {
+                let minimized = get_global_state()
+                    .and_then(|m| m.lock().ok().map(|s| s.minimized_island))
+                    .unwrap_or(false);
+                let _ = AppendMenuW(
+                    hmenu,
+                    MF_STRING,
+                    MENU_TOGGLE,
+                    w!("Toggle CyNotch (Ctrl+Shift+C)"),
+                );
+                let _ = AppendMenuW(
+                    hmenu,
+                    if minimized {
+                        MF_STRING | MF_CHECKED
+                    } else {
+                        MF_STRING
+                    },
+                    MENU_MINIMIZE,
+                    w!("Minimize Idle Island"),
+                );
+                let _ = AppendMenuW(
+                    hmenu,
+                    MF_STRING,
+                    MENU_CAPTURE,
+                    w!("Capture Screen (Ctrl+Shift+S)"),
+                );
+                let _ = AppendMenuW(hmenu, MF_STRING, MENU_PURGE, w!("Purge RAM (Ctrl+Shift+M)"));
+                let _ = AppendMenuW(hmenu, MF_STRING, MENU_PIN, w!("Pin / Unpin Open"));
+                let _ = AppendMenuW(hmenu, MF_STRING, MENU_SETTINGS, w!("Open Settings"));
+                let _ = AppendMenuW(hmenu, MF_SEPARATOR, 0, PCWSTR::null());
+                let _ = AppendMenuW(hmenu, MF_STRING, MENU_EXIT, w!("Exit CyNotch"));
 
-                    let mut pt = POINT::default();
-                    let _ = GetCursorPos(&mut pt);
-                    let _ = SetForegroundWindow(hwnd);
-                    let _ = TrackPopupMenu(hmenu, TPM_RIGHTBUTTON | TPM_BOTTOMALIGN, pt.x, pt.y, 0, hwnd, None);
-                    let _ = PostMessageW(hwnd, WM_NULL, WPARAM(0), LPARAM(0));
-                    let _ = DestroyMenu(hmenu);
-                }
+                let mut pt = POINT::default();
+                let _ = GetCursorPos(&mut pt);
+                let _ = SetForegroundWindow(hwnd);
+                let _ = TrackPopupMenu(
+                    hmenu,
+                    TPM_RIGHTBUTTON | TPM_BOTTOMALIGN,
+                    pt.x,
+                    pt.y,
+                    0,
+                    hwnd,
+                    None,
+                );
+                let _ = PostMessageW(hwnd, WM_NULL, WPARAM(0), LPARAM(0));
+                let _ = DestroyMenu(hmenu);
+            }
             LRESULT(0)
         }
         WM_COMMAND => {
@@ -2018,12 +2115,21 @@ unsafe fn wnd_proc_inner(
                         ui.hidden_for_fullscreen = false;
                     });
                     let _ = ShowWindow(hwnd, SW_SHOWNOACTIVATE);
-                    let _ = SetWindowPos(hwnd, HWND_TOPMOST, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE | SWP_SHOWWINDOW);
+                    let _ = SetWindowPos(
+                        hwnd,
+                        HWND_TOPMOST,
+                        0,
+                        0,
+                        0,
+                        0,
+                        SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE | SWP_SHOWWINDOW,
+                    );
                     if let Some(state_mutex) = get_global_state()
-                        && let Ok(mut state) = state_mutex.lock() {
-                            let next = !state.is_hovered;
-                            state.set_hovered(next);
-                        }
+                        && let Ok(mut state) = state_mutex.lock()
+                    {
+                        let next = !state.is_hovered;
+                        state.set_hovered(next);
+                    }
                     redraw_window(hwnd);
                 }
                 MENU_CAPTURE => {
@@ -2037,15 +2143,24 @@ unsafe fn wnd_proc_inner(
                         ui.hidden_for_fullscreen = false;
                     });
                     let _ = ShowWindow(hwnd, SW_SHOWNOACTIVATE);
-                    let _ = SetWindowPos(hwnd, HWND_TOPMOST, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE | SWP_SHOWWINDOW);
+                    let _ = SetWindowPos(
+                        hwnd,
+                        HWND_TOPMOST,
+                        0,
+                        0,
+                        0,
+                        0,
+                        SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE | SWP_SHOWWINDOW,
+                    );
                     if let Some(state_mutex) = get_global_state()
-                        && let Ok(mut state) = state_mutex.lock() {
-                            state.is_pinned = !state.is_pinned;
-                            if state.is_pinned {
-                                state.set_hovered(true);
-                            }
-                            state.save_config();
+                        && let Ok(mut state) = state_mutex.lock()
+                    {
+                        state.is_pinned = !state.is_pinned;
+                        if state.is_pinned {
+                            state.set_hovered(true);
                         }
+                        state.save_config();
+                    }
                     redraw_window(hwnd);
                     crate::settings_window::post_redraw();
                 }
@@ -2060,15 +2175,24 @@ unsafe fn wnd_proc_inner(
                         ui.hidden_for_fullscreen = false;
                     });
                     let _ = ShowWindow(hwnd, SW_SHOWNOACTIVATE);
-                    let _ = SetWindowPos(hwnd, HWND_TOPMOST, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE | SWP_SHOWWINDOW);
+                    let _ = SetWindowPos(
+                        hwnd,
+                        HWND_TOPMOST,
+                        0,
+                        0,
+                        0,
+                        0,
+                        SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE | SWP_SHOWWINDOW,
+                    );
                     if let Some(state_mutex) = get_global_state()
-                        && let Ok(mut state) = state_mutex.lock() {
-                            state.minimized_island = !state.minimized_island;
-                            if !state.is_pinned {
-                                state.set_hovered(false);
-                            }
-                            state.save_config();
+                        && let Ok(mut state) = state_mutex.lock()
+                    {
+                        state.minimized_island = !state.minimized_island;
+                        if !state.is_pinned {
+                            state.set_hovered(false);
                         }
+                        state.save_config();
+                    }
                     redraw_window(hwnd);
                     crate::settings_window::post_redraw();
                 }
@@ -2086,12 +2210,21 @@ unsafe fn wnd_proc_inner(
                     ui.hidden_for_fullscreen = false;
                 });
                 let _ = ShowWindow(hwnd, SW_SHOWNOACTIVATE);
-                let _ = SetWindowPos(hwnd, HWND_TOPMOST, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE | SWP_SHOWWINDOW);
+                let _ = SetWindowPos(
+                    hwnd,
+                    HWND_TOPMOST,
+                    0,
+                    0,
+                    0,
+                    0,
+                    SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE | SWP_SHOWWINDOW,
+                );
                 if let Some(state_mutex) = get_global_state()
-                    && let Ok(mut state) = state_mutex.lock() {
-                        let next = !state.is_hovered;
-                        state.set_hovered(next);
-                    }
+                    && let Ok(mut state) = state_mutex.lock()
+                {
+                    let next = !state.is_hovered;
+                    state.set_hovered(next);
+                }
                 redraw_window(hwnd);
             } else if hotkey_id == HOTKEY_PURGE_RAM {
                 trigger_purge_ram_async(hwnd);
@@ -2111,13 +2244,15 @@ unsafe fn wnd_proc_inner(
                 return LRESULT(0);
             }
             if let Some(text) = read_clipboard_text(hwnd) {
-                let app = crate::screentime::get_active_app_name().unwrap_or_else(|| "App".to_string());
+                let app =
+                    crate::screentime::get_active_app_name().unwrap_or_else(|| "App".to_string());
                 let mut updated = false;
                 if let Some(state_mutex) = get_global_state()
-                    && let Ok(mut state) = state_mutex.lock() {
-                        state.push_clipboard(text, &app);
-                        updated = true;
-                    }
+                    && let Ok(mut state) = state_mutex.lock()
+                {
+                    state.push_clipboard(text, &app);
+                    updated = true;
+                }
                 if updated {
                     redraw_window(hwnd);
                 }
@@ -2130,22 +2265,23 @@ unsafe fn wnd_proc_inner(
             let mut play_chime = false;
             if count > 0
                 && let Some(state_mutex) = get_global_state()
-                    && let Ok(mut state) = state_mutex.lock() {
-                        for i in 0..count.min(8) {
-                            let len = DragQueryFileW(h_drop, i, std::ptr::null_mut(), 0);
-                            if len > 0 {
-                                let mut buf = vec![0u16; (len as usize) + 1];
-                                let copied = DragQueryFileW(h_drop, i, buf.as_mut_ptr(), len + 1);
-                                if copied > 0 {
-                                    let path = String::from_utf16_lossy(&buf[..copied as usize]);
-                                    state.push_dropped_file(path);
-                                }
-                            }
+                && let Ok(mut state) = state_mutex.lock()
+            {
+                for i in 0..count.min(8) {
+                    let len = DragQueryFileW(h_drop, i, std::ptr::null_mut(), 0);
+                    if len > 0 {
+                        let mut buf = vec![0u16; (len as usize) + 1];
+                        let copied = DragQueryFileW(h_drop, i, buf.as_mut_ptr(), len + 1);
+                        if copied > 0 {
+                            let path = String::from_utf16_lossy(&buf[..copied as usize]);
+                            state.push_dropped_file(path);
                         }
-                        state.mode = NotchMode::Shelf;
-                        state.set_hovered(true);
-                        play_chime = state.chime_enabled;
                     }
+                }
+                state.mode = NotchMode::Shelf;
+                state.set_hovered(true);
+                play_chime = state.chime_enabled;
+            }
             DragFinish(h_drop);
             if play_chime {
                 play_chime_async(0);
@@ -2159,59 +2295,61 @@ unsafe fn wnd_proc_inner(
             let mut changed = false;
             if let Some(state_mutex) = get_global_state()
                 && let Ok(mut state) = state_mutex.lock()
-                    && state.is_hovered {
-                        match state.mode {
-                            NotchMode::Volume => {
-                                let next = (state.volume_pct + (steps as f32) * 0.05).clamp(0.0, 1.0);
-                                state.volume_pct = next;
-                                if next > 0.05 {
-                                    state.pre_mute_volume = next;
-                                }
-                                set_master_volume(next);
-                                changed = true;
-                            }
-                            NotchMode::Music => {
-                                if state.show_lyrics {
-                                    state.lyrics_offset = (state.lyrics_offset - steps).clamp(-20, 20);
-                                    changed = true;
-                                } else if !state.media.is_idle() && state.media.duration_ms > 0 {
-                                    let cur = state.media.position_ms as i64;
-                                    let target = (cur + (steps as i64) * 5_000)
-                                        .clamp(0, state.media.duration_ms as i64) as u64;
-                                    state.media.position_ms = target;
-                                    seek_to_position_ms(target);
-                                    changed = true;
-                                }
-                            }
-                            NotchMode::Tasks => {
-                                let vis = if state.placement.is_vertical() { 5 } else { 3 };
-                                let max_scroll = state.tasks.len().saturating_sub(vis);
-                                let next_scroll = if steps > 0 {
-                                    state.tasks_scroll.saturating_sub(1)
-                                } else {
-                                    (state.tasks_scroll + 1).min(max_scroll)
-                                };
-                                if next_scroll != state.tasks_scroll {
-                                    state.tasks_scroll = next_scroll;
-                                    changed = true;
-                                }
-                            }
-                            NotchMode::Shelf => {
-                                let vis = if state.placement.is_vertical() { 6 } else { 3 };
-                                let max_scroll = state.shelf_items.len().saturating_sub(vis);
-                                let next_scroll = if steps > 0 {
-                                    state.shelf_scroll.saturating_sub(1)
-                                } else {
-                                    (state.shelf_scroll + 1).min(max_scroll)
-                                };
-                                if next_scroll != state.shelf_scroll {
-                                    state.shelf_scroll = next_scroll;
-                                    changed = true;
-                                }
-                            }
-                            _ => {}
+                && state.is_hovered
+            {
+                match state.mode {
+                    NotchMode::Volume => {
+                        let next = (state.volume_pct + (steps as f32) * 0.05).clamp(0.0, 1.0);
+                        state.volume_pct = next;
+                        if next > 0.05 {
+                            state.pre_mute_volume = next;
+                        }
+                        set_master_volume(next);
+                        changed = true;
+                    }
+                    NotchMode::Music => {
+                        if state.show_lyrics {
+                            state.lyrics_offset = (state.lyrics_offset - steps).clamp(-20, 20);
+                            changed = true;
+                        } else if !state.media.is_idle() && state.media.duration_ms > 0 {
+                            let cur = state.media.position_ms as i64;
+                            let target = (cur + (steps as i64) * 5_000)
+                                .clamp(0, state.media.duration_ms as i64)
+                                as u64;
+                            state.media.position_ms = target;
+                            seek_to_position_ms(target);
+                            changed = true;
                         }
                     }
+                    NotchMode::Tasks => {
+                        let vis = if state.placement.is_vertical() { 5 } else { 3 };
+                        let max_scroll = state.tasks.len().saturating_sub(vis);
+                        let next_scroll = if steps > 0 {
+                            state.tasks_scroll.saturating_sub(1)
+                        } else {
+                            (state.tasks_scroll + 1).min(max_scroll)
+                        };
+                        if next_scroll != state.tasks_scroll {
+                            state.tasks_scroll = next_scroll;
+                            changed = true;
+                        }
+                    }
+                    NotchMode::Shelf => {
+                        let vis = if state.placement.is_vertical() { 6 } else { 3 };
+                        let max_scroll = state.shelf_items.len().saturating_sub(vis);
+                        let next_scroll = if steps > 0 {
+                            state.shelf_scroll.saturating_sub(1)
+                        } else {
+                            (state.shelf_scroll + 1).min(max_scroll)
+                        };
+                        if next_scroll != state.shelf_scroll {
+                            state.shelf_scroll = next_scroll;
+                            changed = true;
+                        }
+                    }
+                    _ => {}
+                }
+            }
             if changed {
                 redraw_window(hwnd);
             }
@@ -2227,7 +2365,11 @@ unsafe fn wnd_proc_inner(
 
             // Handle active 1:1 hardware drag or slider drags
             match drag_mode {
-                DragMode::Grip { start_cursor_x, start_cursor_y, start_offset } => {
+                DragMode::Grip {
+                    start_cursor_x,
+                    start_cursor_y,
+                    start_offset,
+                } => {
                     let mut pt = POINT::default();
                     if GetCursorPos(&mut pt).is_ok() {
                         let mon = get_monitor_rect(hwnd);
@@ -2245,10 +2387,11 @@ unsafe fn wnd_proc_inner(
                                 start_cursor_y,
                                 start_offset,
                             );
-                            let cw = state.canvas_width() as i32;
-                            let ch = state.canvas_height() as i32;
-                            let (win_x, win_y) = compute_window_pos(&mon, &state, cw, ch);
-                            let reduced = state.motion_preset == MotionPreset::Reduced;
+                            let (win_x, win_y, _cw, _ch) = compute_active_window_layout(
+                                &mon,
+                                &state,
+                                is_idle_collapsed(&state),
+                            );
                             let new_off = if state.placement.is_vertical() {
                                 state.y_offset
                             } else {
@@ -2257,9 +2400,6 @@ unsafe fn wnd_proc_inner(
                             let desired = state.needs_animation_timer_ms();
                             let active_iv = state.desired_active_interval_ms();
                             NOTCH_UI.with_borrow_mut(|ui| {
-                                if let Some(host) = ui.frosted.as_mut() {
-                                    let _ = host.set_blur_amount(0.0);
-                                }
                                 if placement_changed {
                                     ui.drag_mode = DragMode::Grip {
                                         start_cursor_x: pt.x,
@@ -2267,12 +2407,13 @@ unsafe fn wnd_proc_inner(
                                         start_offset: new_off,
                                     };
                                 }
-                                if did_snap && !reduced {
+                                if did_snap {
                                     ui.snap_glide_active = true;
                                     ui.last_anim_instant = Some(std::time::Instant::now());
                                     trigger_glide_redraw = true;
-                                    glide_interval = Some(desired.map_or(active_iv, |m| m.min(active_iv)));
-                                } else if !ui.snap_glide_active || reduced {
+                                    glide_interval =
+                                        Some(desired.map_or(active_iv, |m| m.min(active_iv)));
+                                } else if !ui.snap_glide_active {
                                     ui.snap_glide_active = false;
                                     ui.anim_win_x = win_x as f32;
                                     ui.anim_win_y = win_y as f32;
@@ -2281,7 +2422,8 @@ unsafe fn wnd_proc_inner(
                                     ui.last_win_y = win_y;
                                     move_immediate = Some((win_x, win_y));
                                 } else {
-                                    glide_interval = Some(desired.map_or(active_iv, |m| m.min(active_iv)));
+                                    glide_interval =
+                                        Some(desired.map_or(active_iv, |m| m.min(active_iv)));
                                 }
                             });
                         }
@@ -2304,7 +2446,12 @@ unsafe fn wnd_proc_inner(
                     }
                     return LRESULT(0);
                 }
-                DragMode::IdlePressOrDrag { start_cursor_x, start_cursor_y, start_offset, moved } => {
+                DragMode::IdlePressOrDrag {
+                    start_cursor_x,
+                    start_cursor_y,
+                    start_offset,
+                    moved,
+                } => {
                     let mut pt = POINT::default();
                     if GetCursorPos(&mut pt).is_ok() {
                         let now_moved = moved
@@ -2336,10 +2483,11 @@ unsafe fn wnd_proc_inner(
                                     start_cursor_y,
                                     start_offset,
                                 );
-                                let cw = state.canvas_width() as i32;
-                                let ch = state.canvas_height() as i32;
-                                let (win_x, win_y) = compute_window_pos(&mon, &state, cw, ch);
-                                let reduced = state.motion_preset == MotionPreset::Reduced;
+                                let (win_x, win_y, _cw, _ch) = compute_active_window_layout(
+                                    &mon,
+                                    &state,
+                                    is_idle_collapsed(&state),
+                                );
                                 let new_off = if state.placement.is_vertical() {
                                     state.y_offset
                                 } else {
@@ -2348,9 +2496,6 @@ unsafe fn wnd_proc_inner(
                                 let desired = state.needs_animation_timer_ms();
                                 let active_iv = state.desired_active_interval_ms();
                                 NOTCH_UI.with_borrow_mut(|ui| {
-                                    if let Some(host) = ui.frosted.as_mut() {
-                                        let _ = host.set_blur_amount(0.0);
-                                    }
                                     if placement_changed {
                                         ui.drag_mode = DragMode::IdlePressOrDrag {
                                             start_cursor_x: pt.x,
@@ -2359,12 +2504,13 @@ unsafe fn wnd_proc_inner(
                                             moved: true,
                                         };
                                     }
-                                    if did_snap && !reduced {
+                                    if did_snap {
                                         ui.snap_glide_active = true;
                                         ui.last_anim_instant = Some(std::time::Instant::now());
                                         trigger_glide_redraw = true;
-                                        glide_interval = Some(desired.map_or(active_iv, |m| m.min(active_iv)));
-                                    } else if !ui.snap_glide_active || reduced {
+                                        glide_interval =
+                                            Some(desired.map_or(active_iv, |m| m.min(active_iv)));
+                                    } else if !ui.snap_glide_active {
                                         ui.snap_glide_active = false;
                                         ui.anim_win_x = win_x as f32;
                                         ui.anim_win_y = win_y as f32;
@@ -2373,7 +2519,8 @@ unsafe fn wnd_proc_inner(
                                         ui.last_win_y = win_y;
                                         move_immediate = Some((win_x, win_y));
                                     } else {
-                                        glide_interval = Some(desired.map_or(active_iv, |m| m.min(active_iv)));
+                                        glide_interval =
+                                            Some(desired.map_or(active_iv, |m| m.min(active_iv)));
                                     }
                                 });
                             }
@@ -2400,27 +2547,32 @@ unsafe fn wnd_proc_inner(
                 DragMode::VolumeSlider => {
                     let mut min_iv_ms = 12u32;
                     if let Some(state_mutex) = get_global_state()
-                        && let Ok(mut state) = state_mutex.lock() {
-                            let (cw, ch) = (state.canvas_width() as f32, state.canvas_height() as f32);
-                            let (origin_x, _origin_y) = Renderer::compute_origin(&state, cw, ch);
-                            let local_px = (px - origin_x) / state.expanded_scale().max(0.5);
-                            let (sx, sw) = if state.placement.is_vertical() {
-                                (AppState::VERT_VOLUME_SLIDER_X, AppState::VERT_VOLUME_SLIDER_W)
-                            } else {
-                                (AppState::VOLUME_SLIDER_X, AppState::VOLUME_SLIDER_W)
-                            };
-                            let frac = ((local_px - sx) / sw).clamp(0.0, 1.0);
-                            state.volume_pct = frac;
-                            if frac > 0.05 {
-                                state.pre_mute_volume = frac;
-                            }
-                            set_master_volume(frac);
-                            min_iv_ms = state.desired_active_interval_ms().clamp(6, 16);
+                        && let Ok(mut state) = state_mutex.lock()
+                    {
+                        let (cw, ch) = (state.canvas_width() as f32, state.canvas_height() as f32);
+                        let (origin_x, _origin_y) = Renderer::compute_origin(&state, cw, ch);
+                        let local_px = (px - origin_x) / state.expanded_scale().max(0.5);
+                        let (sx, sw) = if state.placement.is_vertical() {
+                            (
+                                AppState::VERT_VOLUME_SLIDER_X,
+                                AppState::VERT_VOLUME_SLIDER_W,
+                            )
+                        } else {
+                            (AppState::VOLUME_SLIDER_X, AppState::VOLUME_SLIDER_W)
+                        };
+                        let frac = ((local_px - sx) / sw).clamp(0.0, 1.0);
+                        state.volume_pct = frac;
+                        if frac > 0.05 {
+                            state.pre_mute_volume = frac;
                         }
+                        set_master_volume(frac);
+                        min_iv_ms = state.desired_active_interval_ms().clamp(6, 16);
+                    }
                     let now = std::time::Instant::now();
                     let do_redraw = NOTCH_UI.with_borrow_mut(|ui| {
                         let ready = ui.last_slider_redraw.is_none_or(|prev| {
-                            now.duration_since(prev) >= std::time::Duration::from_millis(min_iv_ms as u64)
+                            now.duration_since(prev)
+                                >= std::time::Duration::from_millis(min_iv_ms as u64)
                         });
                         if ready {
                             ui.last_slider_redraw = Some(now);
@@ -2439,24 +2591,30 @@ unsafe fn wnd_proc_inner(
                     });
                     if let Some(state_mutex) = get_global_state()
                         && let Ok(mut state) = state_mutex.lock()
-                            && !state.media.is_idle() && state.media.duration_ms > 0 {
-                                let (cw, ch) = (state.canvas_width() as f32, state.canvas_height() as f32);
-                                let (origin_x, _origin_y) = Renderer::compute_origin(&state, cw, ch);
-                                let local_px = (px - origin_x) / state.expanded_scale().max(0.5);
-                                let (sx, sw) = if state.placement.is_vertical() {
-                                    (AppState::VERT_MUSIC_SCRUBBER_X, AppState::VERT_MUSIC_SCRUBBER_W)
-                                } else {
-                                    (AppState::MUSIC_SCRUBBER_X, AppState::MUSIC_SCRUBBER_W)
-                                };
-                                let frac = ((local_px - sx) / sw).clamp(0.0, 1.0);
-                                let pos = ((state.media.duration_ms as f32) * frac) as u64;
-                                state.media.position_ms = pos;
-                                min_iv_ms = state.desired_active_interval_ms().clamp(6, 16);
-                            }
+                        && !state.media.is_idle()
+                        && state.media.duration_ms > 0
+                    {
+                        let (cw, ch) = (state.canvas_width() as f32, state.canvas_height() as f32);
+                        let (origin_x, _origin_y) = Renderer::compute_origin(&state, cw, ch);
+                        let local_px = (px - origin_x) / state.expanded_scale().max(0.5);
+                        let (sx, sw) = if state.placement.is_vertical() {
+                            (
+                                AppState::VERT_MUSIC_SCRUBBER_X,
+                                AppState::VERT_MUSIC_SCRUBBER_W,
+                            )
+                        } else {
+                            (AppState::MUSIC_SCRUBBER_X, AppState::MUSIC_SCRUBBER_W)
+                        };
+                        let frac = ((local_px - sx) / sw).clamp(0.0, 1.0);
+                        let pos = ((state.media.duration_ms as f32) * frac) as u64;
+                        state.media.position_ms = pos;
+                        min_iv_ms = state.desired_active_interval_ms().clamp(6, 16);
+                    }
                     let now = std::time::Instant::now();
                     let do_redraw = NOTCH_UI.with_borrow_mut(|ui| {
                         let ready = ui.last_slider_redraw.is_none_or(|prev| {
-                            now.duration_since(prev) >= std::time::Duration::from_millis(min_iv_ms as u64)
+                            now.duration_since(prev)
+                                >= std::time::Duration::from_millis(min_iv_ms as u64)
                         });
                         if ready {
                             ui.last_slider_redraw = Some(now);
@@ -2491,16 +2649,21 @@ unsafe fn wnd_proc_inner(
 
                 if let Some(state_mutex) = get_global_state()
                     && let Ok(mut state) = state_mutex.lock()
-                        && !state.click_to_open {
-                            state.set_hovered(true);
-                        }
+                    && !state.click_to_open
+                    && state.notification.is_none()
+                {
+                    // Keep notification banners unexpanded on hover so the user can reach the dismiss/action buttons.
+                    state.set_hovered(true);
+                }
             }
 
             let (new_idx, idx_changed) = NOTCH_UI.with_borrow_mut(|ui| {
                 let new_idx = ui.renderer.as_ref().and_then(|r| {
                     r.hits.iter().position(|h| {
-                        px >= h.rect.x() && px <= h.rect.x() + h.rect.width()
-                            && py >= h.rect.y() && py <= h.rect.y() + h.rect.height()
+                        px >= h.rect.x()
+                            && px <= h.rect.x() + h.rect.width()
+                            && py >= h.rect.y()
+                            && py <= h.rect.y() + h.rect.height()
                     })
                 });
                 let changed = entered || new_idx != ui.hover_hit_idx;
@@ -2512,16 +2675,16 @@ unsafe fn wnd_proc_inner(
 
             if idx_changed {
                 if let Some(state_mutex) = get_global_state()
-                    && let Ok(mut state) = state_mutex.lock() {
-                        state.hover_target_idx = new_idx;
-                        if let Some(i) = new_idx
-                            && state.micro_interactions
-                                && state.motion_preset != MotionPreset::Reduced
-                                && i < state.hover_slots.len()
-                            {
-                                state.hover_slots[i] = state.hover_slots[i].max(0.02);
-                            }
+                    && let Ok(mut state) = state_mutex.lock()
+                {
+                    state.hover_target_idx = new_idx;
+                    if let Some(i) = new_idx
+                        && state.micro_interactions
+                        && i < state.hover_slots.len()
+                    {
+                        state.hover_slots[i] = state.hover_slots[i].max(0.02);
                     }
+                }
                 redraw_window(hwnd);
             }
             LRESULT(0)
@@ -2536,14 +2699,15 @@ unsafe fn wnd_proc_inner(
             let mut should_redraw = true;
             if is_idle_drag
                 && let Some(state_mutex) = get_global_state()
-                    && let Ok(mut state) = state_mutex.lock() {
-                        state.hover_target_idx = None;
-                        if !state.is_pinned {
-                            state.set_hovered(false);
-                        } else if !state.is_hovered {
-                            should_redraw = false;
-                        }
-                    }
+                && let Ok(mut state) = state_mutex.lock()
+            {
+                state.hover_target_idx = None;
+                if !state.is_pinned {
+                    state.set_hovered(false);
+                } else if !state.is_hovered {
+                    should_redraw = false;
+                }
+            }
             if should_redraw {
                 redraw_window(hwnd);
             }
@@ -2567,19 +2731,17 @@ unsafe fn wnd_proc_inner(
             });
             if matches!(hit_action, Some(Action::StartGripDrag)) {
                 let _ = ReleaseCapture();
-                let mut reduced = false;
                 if let Some(state_mutex) = get_global_state()
                     && let Ok(mut state) = state_mutex.lock()
                 {
                     state.x_offset = 0;
                     state.y_offset = 0;
                     state.reset_anchor_for_placement();
-                    reduced = state.motion_preset == MotionPreset::Reduced;
                     state.save_config();
                 }
                 NOTCH_UI.with_borrow_mut(|ui| {
                     ui.drag_mode = DragMode::None;
-                    ui.snap_glide_active = !reduced;
+                    ui.snap_glide_active = true;
                     ui.last_anim_instant = Some(std::time::Instant::now());
                 });
                 crate::settings_window::post_redraw();
@@ -2611,7 +2773,7 @@ unsafe fn wnd_proc_inner(
                                 state.x_offset = 0;
                                 state.y_offset = 0;
                                 state.reset_anchor_for_placement();
-                                glide_on_release = state.motion_preset != MotionPreset::Reduced;
+                                glide_on_release = true;
                             }
                             state.save_config();
                         }
@@ -2626,9 +2788,10 @@ unsafe fn wnd_proc_inner(
                     }
                     DragMode::IdlePressOrDrag { moved: false, .. } => {
                         if let Some(state_mutex) = get_global_state()
-                            && let Ok(mut state) = state_mutex.lock() {
-                                state.set_hovered(true);
-                            }
+                            && let Ok(mut state) = state_mutex.lock()
+                        {
+                            state.set_hovered(true);
+                        }
                         redraw_window(hwnd);
                     }
                     DragMode::VolumeSlider => {
@@ -2638,9 +2801,10 @@ unsafe fn wnd_proc_inner(
                         let mut seek_pos = None;
                         if let Some(state_mutex) = get_global_state()
                             && let Ok(s) = state_mutex.lock()
-                                && !s.media.is_idle() {
-                                    seek_pos = Some(s.media.position_ms);
-                                }
+                            && !s.media.is_idle()
+                        {
+                            seek_pos = Some(s.media.position_ms);
+                        }
                         if let Some(pos) = seek_pos {
                             seek_to_position_ms(pos);
                         }
@@ -2660,8 +2824,10 @@ unsafe fn wnd_proc_inner(
                     r.hits
                         .iter()
                         .find(|h| {
-                            x >= h.rect.x() && x <= h.rect.x() + h.rect.width()
-                                && y >= h.rect.y() && y <= h.rect.y() + h.rect.height()
+                            x >= h.rect.x()
+                                && x <= h.rect.x() + h.rect.width()
+                                && y >= h.rect.y()
+                                && y <= h.rect.y() + h.rect.height()
                         })
                         .map(|h| h.action)
                 })
@@ -2686,301 +2852,305 @@ unsafe fn wnd_proc_inner(
             let mut start_idle_press: Option<i32> = None;
             let mut new_drag_mode: Option<DragMode> = None;
             let mut extra_effects: Option<SettingEffects> = None;
+            let mut activate_notif: Option<(String, Option<String>)> = None;
 
             if let Some(state_mutex) = get_global_state()
-                && let Ok(mut state) = state_mutex.lock() {
-                    if let Some(action) = hit_action {
-                        match action {
-                            Action::SetMode(mode) => {
-                                state.set_mode(mode);
-                            }
-                            Action::TogglePin => {
-                                state.is_pinned = !state.is_pinned;
-                                state.save_config();
-                                notify_settings = true;
-                            }
-                            Action::StartGripDrag => {
-                                start_grip_offset = Some(if state.placement.is_vertical() {
-                                    state.y_offset
-                                } else {
-                                    state.x_offset
-                                });
-                            }
-                            Action::ResetPosition => {
-                                state.x_offset = 0;
-                                state.y_offset = 0;
-                                state.reset_anchor_for_placement();
-                                let reduced = state.motion_preset == MotionPreset::Reduced;
-                                state.save_config();
-                                notify_settings = true;
-                                NOTCH_UI.with_borrow_mut(|ui| {
-                                    ui.snap_glide_active = !reduced;
-                                    ui.last_anim_instant = Some(std::time::Instant::now());
-                                });
-                            }
-                            Action::DrinkWater(ml) => {
-                                state.drink_water(ml);
-                                if state.chime_enabled {
-                                    chime_to_play = Some(0);
-                                }
-                                notify_settings = true;
-                            }
-                            Action::ToggleLyrics => {
-                                state.show_lyrics = !state.show_lyrics;
-                                state.lyrics_offset = 0;
-                            }
-                            Action::ScrollLyrics(delta) => {
-                                state.lyrics_offset = (state.lyrics_offset + delta).clamp(-20, 20);
-                            }
-                            Action::PrevTrack => {
-                                if !state.media.is_idle() {
-                                    prev_track();
-                                }
-                            }
-                            Action::TogglePlayPause => {
-                                if !state.media.is_idle() {
-                                    toggle_play_pause();
-                                    state.media.is_playing = !state.media.is_playing;
-                                } else {
-                                    state.set_notification(
-                                        "No Media Active".to_string(),
-                                        "Open Spotify, YouTube, or a player first".to_string(),
-                                        NotificationKind::General,
-                                        false,
-                                    );
-                                }
-                            }
-                            Action::NextTrack => {
-                                if !state.media.is_idle() {
-                                    next_track();
-                                }
-                            }
-                            Action::PurgeRam => {
-                                purge_trigger = true;
-                            }
-                            Action::ToggleAutoClean => {
-                                state.mem_reduct.auto_clean_enabled = !state.mem_reduct.auto_clean_enabled;
-                                state.save_config();
-                                notify_settings = true;
-                            }
-                            Action::ToggleArea(idx) => {
-                                state.toggle_mem_area(idx);
-                                notify_settings = true;
-                            }
-                            Action::CycleThreshold => {
-                                state.cycle_threshold();
-                                notify_settings = true;
-                            }
-                            Action::CycleInterval => {
-                                state.cycle_interval();
-                                notify_settings = true;
-                            }
-                            Action::ToggleFocusTimer => {
-                                state.timer.is_running = !state.timer.is_running;
-                            }
-                            Action::ResetFocusTimer => {
-                                state.timer.remaining_secs = state.timer.total_secs;
-                                state.timer.is_running = false;
-                            }
-                            Action::SetFocusDuration(mins) => {
-                                state.timer.is_break = mins == 5;
-                                state.timer.total_secs = mins * 60;
-                                state.timer.remaining_secs = mins * 60;
-                                state.timer.is_running = false;
-                            }
-                            Action::ToggleTimerPhase => {
-                                state.toggle_timer_phase();
-                            }
-                            Action::ToggleTask(idx) => {
-                                if let Some(task) = state.tasks.get_mut(idx) {
-                                    task.completed = !task.completed;
-                                    state.save_tasks();
-                                }
-                            }
-                            Action::DeleteTask(idx) => {
-                                if idx < state.tasks.len() {
-                                    state.tasks.remove(idx);
-                                    let vis = if state.placement.is_vertical() { 5 } else { 3 };
-                                    let max_s = state.tasks.len().saturating_sub(vis);
-                                    state.tasks_scroll = state.tasks_scroll.min(max_s);
-                                    state.save_tasks();
-                                }
-                            }
-                            Action::ClearCompletedTasks => {
-                                state.tasks.retain(|t| !t.completed);
-                                let vis = if state.placement.is_vertical() { 5 } else { 3 };
-                                let max_s = state.tasks.len().saturating_sub(vis);
-                                state.tasks_scroll = state.tasks_scroll.min(max_s);
-                                state.save_tasks();
-                            }
-                            Action::PasteAsTask => {
-                                let raw_opt = clip_for_task.or_else(|| {
-                                    state
-                                        .shelf_items
-                                        .iter()
-                                        .find(|s| s.kind == ShelfKind::Text)
-                                        .map(|s| s.label.clone())
-                                });
-                                let clean = raw_opt
-                                    .as_deref()
-                                    .and_then(|s| s.lines().map(str::trim).find(|l| !l.is_empty()))
-                                    .unwrap_or("")
-                                    .to_string();
-                                if !clean.is_empty() {
-                                    state.tasks.insert(0, crate::models::TaskItem {
-                                        text: clean,
-                                        completed: false,
-                                    });
-                                    state.tasks_scroll = 0;
-                                    state.save_tasks();
-                                    if state.chime_enabled {
-                                        chime_to_play = Some(0);
-                                    }
-                                } else {
-                                    state.set_notification(
-                                        "Clipboard Empty".to_string(),
-                                        "Copy text first to paste a task".to_string(),
-                                        NotificationKind::General,
-                                        false,
-                                    );
-                                }
-                            }
-                            Action::ActivateShelfItem(idx) => {
-                                if let Some(item) = state.shelf_items.get(idx).cloned() {
-                                    match item.kind {
-                                        ShelfKind::Text => {
-                                            let char_len = item.payload.chars().count();
-                                            clip_copy = Some(item.payload);
-                                            state.set_notification(
-                                                "Copied to Clipboard".to_string(),
-                                                format!("{} chars ready to paste", char_len),
-                                                NotificationKind::Pasted,
-                                                true,
-                                            );
-                                        }
-                                        ShelfKind::File => {
-                                            open_path = Some(item.payload);
-                                            state.set_notification(
-                                                "Opened File".to_string(),
-                                                item.label,
-                                                NotificationKind::Pasted,
-                                                true,
-                                            );
-                                        }
-                                    }
-                                    if state.chime_enabled {
-                                        chime_to_play = Some(0);
-                                    }
-                                }
-                            }
-                            Action::DeleteShelfItem(idx) => {
-                                if idx < state.shelf_items.len() {
-                                    state.shelf_items.remove(idx);
-                                    let vis = if state.placement.is_vertical() { 6 } else { 3 };
-                                    let max_s = state.shelf_items.len().saturating_sub(vis);
-                                    state.shelf_scroll = state.shelf_scroll.min(max_s);
-                                    state.save_shelf();
-                                }
-                            }
-                            Action::ClearShelf => {
-                                state.shelf_items.clear();
-                                state.shelf_scroll = 0;
-                                state.save_shelf();
-                            }
-                            Action::CaptureScreen => {
-                                cap_trigger = Some(false);
-                            }
-                            Action::CaptureWindow => {
-                                cap_trigger = Some(true);
-                            }
-                            Action::OpenCaptureFolder => {
-                                create_capture_dir = true;
-                            }
-                            Action::SeekMusic(pct) => {
-                                if !state.media.is_idle() && state.media.duration_ms > 0 {
-                                    if !state.show_lyrics {
-                                        new_drag_mode = Some(DragMode::MusicScrubber { moved: false });
-                                    }
-                                    let pos = ((state.media.duration_ms as f32) * pct)
-                                        .clamp(0.0, state.media.duration_ms as f32) as u64;
-                                    state.media.position_ms = pos;
-                                    seek_to_position_ms(pos);
-                                }
-                            }
-                            Action::SetVolume(pct) => {
-                                let (cw, ch) = (state.canvas_width() as f32, state.canvas_height() as f32);
-                                let (_ox, oy) = Renderer::compute_origin(&state, cw, ch);
-                                let ly = (y - oy) / state.expanded_scale().max(0.5);
-                                let cutoff = if state.placement.is_vertical() { 365.0 } else { 150.0 };
-                                if ly < cutoff {
-                                    new_drag_mode = Some(DragMode::VolumeSlider);
-                                    IS_DRAGGING_VOLUME.store(true, Ordering::Release);
-                                }
-                                let clamped = pct.clamp(0.0, 1.0);
-                                state.volume_pct = clamped;
-                                if clamped > 0.05 {
-                                    state.pre_mute_volume = clamped;
-                                }
-                                set_master_volume(clamped);
-                            }
-                            Action::ToggleMute => {
-                                if state.volume_pct <= 0.01 {
-                                    let restore = if state.pre_mute_volume > 0.05 { state.pre_mute_volume } else { 0.50 };
-                                    state.volume_pct = restore;
-                                    set_master_volume(restore);
-                                } else {
-                                    state.pre_mute_volume = state.volume_pct;
-                                    state.volume_pct = 0.0;
-                                    set_master_volume(0.0);
-                                }
-                            }
-                            Action::OpenSettings => {
-                                open_settings_win = true;
-                            }
-                            Action::ToggleAutostart => {
-                                state.autostart = !state.autostart;
-                                autostart_update = Some(state.autostart);
-                                notify_settings = true;
-                            }
-                            Action::ToggleChime => {
-                                state.chime_enabled = !state.chime_enabled;
-                                state.save_config();
-                                notify_settings = true;
-                            }
-                            Action::SetWaterInterval(mins) => {
-                                state.water_interval_mins = mins;
-                                state.save_config();
-                                notify_settings = true;
-                            }
-                            Action::Quit => {
-                                drop(state);
-                                let _ = DestroyWindow(hwnd);
-                                return LRESULT(0);
-                            }
-                            other => {
-                                extra_effects = state.apply_setting_action(other);
-                                notify_settings = true;
-                            }
+                && let Ok(mut state) = state_mutex.lock()
+            {
+                if let Some(action) = hit_action {
+                    match action {
+                        Action::SetMode(mode) => {
+                            state.set_mode(mode);
                         }
-                    } else if !state.is_hovered {
-                        start_idle_press = Some(if state.placement.is_vertical() {
-                            state.y_offset
-                        } else {
-                            state.x_offset
-                        });
-                    } else {
-                        let (cw, ch) = (state.canvas_width() as f32, state.canvas_height() as f32);
-                        let (_ox, oy) = Renderer::compute_origin(&state, cw, ch);
-                        let ly = (y - oy) / state.expanded_scale().max(0.5);
-                        if (0.0..=56.0).contains(&ly) {
+                        Action::TogglePin => {
+                            state.is_pinned = !state.is_pinned;
+                            state.save_config();
+                            notify_settings = true;
+                        }
+                        Action::StartGripDrag => {
                             start_grip_offset = Some(if state.placement.is_vertical() {
                                 state.y_offset
                             } else {
                                 state.x_offset
                             });
                         }
+                        Action::ResetPosition => {
+                            state.x_offset = 0;
+                            state.y_offset = 0;
+                            state.reset_anchor_for_placement();
+                            state.save_config();
+                            notify_settings = true;
+                            NOTCH_UI.with_borrow_mut(|ui| {
+                                ui.snap_glide_active = true;
+                                ui.last_anim_instant = Some(std::time::Instant::now());
+                            });
+                        }
+                        Action::ToggleLyrics => {
+                            state.show_lyrics = !state.show_lyrics;
+                            state.lyrics_offset = 0;
+                        }
+                        Action::ScrollLyrics(delta) => {
+                            state.lyrics_offset = (state.lyrics_offset + delta).clamp(-20, 20);
+                        }
+                        Action::PrevTrack => {
+                            if !state.media.is_idle() {
+                                prev_track();
+                            }
+                        }
+                        Action::TogglePlayPause => {
+                            if !state.media.is_idle() {
+                                toggle_play_pause();
+                                state.media.is_playing = !state.media.is_playing;
+                            } else {
+                                state.set_notification(
+                                    "No Media Active".to_string(),
+                                    "Open Spotify, YouTube, or a player first".to_string(),
+                                    NotificationKind::General,
+                                    false,
+                                );
+                            }
+                        }
+                        Action::NextTrack => {
+                            if !state.media.is_idle() {
+                                next_track();
+                            }
+                        }
+                        Action::PurgeRam => {
+                            purge_trigger = true;
+                        }
+                        Action::ToggleAutoClean => {
+                            state.mem_reduct.auto_clean_enabled =
+                                !state.mem_reduct.auto_clean_enabled;
+                            state.save_config();
+                            notify_settings = true;
+                        }
+                        Action::ToggleArea(idx) => {
+                            state.toggle_mem_area(idx);
+                            notify_settings = true;
+                        }
+                        Action::CycleThreshold => {
+                            state.cycle_threshold();
+                            notify_settings = true;
+                        }
+                        Action::CycleInterval => {
+                            state.cycle_interval();
+                            notify_settings = true;
+                        }
+                        Action::ToggleTask(idx) => {
+                            if let Some(task) = state.tasks.get_mut(idx) {
+                                task.completed = !task.completed;
+                                state.save_tasks();
+                            }
+                        }
+                        Action::DeleteTask(idx) => {
+                            if idx < state.tasks.len() {
+                                state.tasks.remove(idx);
+                                let vis = if state.placement.is_vertical() { 5 } else { 3 };
+                                let max_s = state.tasks.len().saturating_sub(vis);
+                                state.tasks_scroll = state.tasks_scroll.min(max_s);
+                                state.save_tasks();
+                            }
+                        }
+                        Action::ClearCompletedTasks => {
+                            state.tasks.retain(|t| !t.completed);
+                            let vis = if state.placement.is_vertical() { 5 } else { 3 };
+                            let max_s = state.tasks.len().saturating_sub(vis);
+                            state.tasks_scroll = state.tasks_scroll.min(max_s);
+                            state.save_tasks();
+                        }
+                        Action::PasteAsTask => {
+                            let raw_opt = clip_for_task.or_else(|| {
+                                state
+                                    .shelf_items
+                                    .iter()
+                                    .find(|s| s.kind == ShelfKind::Text)
+                                    .map(|s| s.label.clone())
+                            });
+                            let clean = raw_opt
+                                .as_deref()
+                                .and_then(|s| s.lines().map(str::trim).find(|l| !l.is_empty()))
+                                .unwrap_or("")
+                                .to_string();
+                            if !clean.is_empty() {
+                                state.tasks.insert(
+                                    0,
+                                    crate::models::TaskItem {
+                                        text: clean,
+                                        completed: false,
+                                    },
+                                );
+                                state.tasks_scroll = 0;
+                                state.save_tasks();
+                                if state.chime_enabled {
+                                    chime_to_play = Some(0);
+                                }
+                            } else {
+                                state.set_notification(
+                                    "Clipboard Empty".to_string(),
+                                    "Copy text first to paste a task".to_string(),
+                                    NotificationKind::General,
+                                    false,
+                                );
+                            }
+                        }
+                        Action::ActivateShelfItem(idx) => {
+                            if let Some(item) = state.shelf_items.get(idx).cloned() {
+                                match item.kind {
+                                    ShelfKind::Text => {
+                                        let char_len = item.payload.chars().count();
+                                        clip_copy = Some(item.payload);
+                                        state.set_notification(
+                                            "Copied to Clipboard".to_string(),
+                                            format!("{} chars ready to paste", char_len),
+                                            NotificationKind::Pasted,
+                                            true,
+                                        );
+                                    }
+                                    ShelfKind::File => {
+                                        open_path = Some(item.payload);
+                                        state.set_notification(
+                                            "Opened File".to_string(),
+                                            item.label,
+                                            NotificationKind::Pasted,
+                                            true,
+                                        );
+                                    }
+                                }
+                                if state.chime_enabled {
+                                    chime_to_play = Some(0);
+                                }
+                            }
+                        }
+                        Action::DeleteShelfItem(idx) => {
+                            if idx < state.shelf_items.len() {
+                                state.shelf_items.remove(idx);
+                                let vis = if state.placement.is_vertical() { 6 } else { 3 };
+                                let max_s = state.shelf_items.len().saturating_sub(vis);
+                                state.shelf_scroll = state.shelf_scroll.min(max_s);
+                                state.save_shelf();
+                            }
+                        }
+                        Action::ClearShelf => {
+                            state.shelf_items.clear();
+                            state.shelf_scroll = 0;
+                            state.save_shelf();
+                        }
+                        Action::CaptureScreen => {
+                            cap_trigger = Some(false);
+                        }
+                        Action::CaptureWindow => {
+                            cap_trigger = Some(true);
+                        }
+                        Action::OpenCaptureFolder => {
+                            create_capture_dir = true;
+                        }
+                        Action::SeekMusic(pct) => {
+                            if !state.media.is_idle() && state.media.duration_ms > 0 {
+                                if !state.show_lyrics {
+                                    new_drag_mode = Some(DragMode::MusicScrubber { moved: false });
+                                }
+                                let pos = ((state.media.duration_ms as f32) * pct)
+                                    .clamp(0.0, state.media.duration_ms as f32)
+                                    as u64;
+                                state.media.position_ms = pos;
+                                seek_to_position_ms(pos);
+                            }
+                        }
+                        Action::SetVolume(pct) => {
+                            let (cw, ch) =
+                                (state.canvas_width() as f32, state.canvas_height() as f32);
+                            let (_ox, oy) = Renderer::compute_origin(&state, cw, ch);
+                            let ly = (y - oy) / state.expanded_scale().max(0.5);
+                            let cutoff = if state.placement.is_vertical() {
+                                365.0
+                            } else {
+                                150.0
+                            };
+                            if ly < cutoff {
+                                new_drag_mode = Some(DragMode::VolumeSlider);
+                                IS_DRAGGING_VOLUME.store(true, Ordering::Release);
+                            }
+                            let clamped = pct.clamp(0.0, 1.0);
+                            state.volume_pct = clamped;
+                            if clamped > 0.05 {
+                                state.pre_mute_volume = clamped;
+                            }
+                            set_master_volume(clamped);
+                        }
+                        Action::ToggleMute => {
+                            if state.volume_pct <= 0.01 {
+                                let restore = if state.pre_mute_volume > 0.05 {
+                                    state.pre_mute_volume
+                                } else {
+                                    0.50
+                                };
+                                state.volume_pct = restore;
+                                set_master_volume(restore);
+                            } else {
+                                state.pre_mute_volume = state.volume_pct;
+                                state.volume_pct = 0.0;
+                                set_master_volume(0.0);
+                            }
+                        }
+                        Action::OpenSettings => {
+                            open_settings_win = true;
+                        }
+                        Action::ToggleAutostart => {
+                            state.autostart = !state.autostart;
+                            autostart_update = Some(state.autostart);
+                            notify_settings = true;
+                        }
+                        Action::ToggleChime => {
+                            state.chime_enabled = !state.chime_enabled;
+                            state.save_config();
+                            notify_settings = true;
+                        }
+                        Action::ActivateNotification => {
+                            if let Some(notif) = state.notification.take() {
+                                activate_notif = Some((notif.app_name, notif.aumid));
+                                state.advance_notification_queue();
+                                if state.notification.is_none() && !state.is_pinned {
+                                    state.set_hovered(false);
+                                }
+                            }
+                        }
+                        Action::ActivateHistoryItem(idx) => {
+                            if let Some(entry) = state.notif_history.get(idx).cloned() {
+                                activate_notif = Some((entry.app_name, entry.aumid));
+                                if !state.is_pinned {
+                                    state.set_hovered(false);
+                                }
+                            }
+                        }
+                        Action::Quit => {
+                            drop(state);
+                            let _ = DestroyWindow(hwnd);
+                            return LRESULT(0);
+                        }
+                        other => {
+                            extra_effects = state.apply_setting_action(other);
+                            notify_settings = true;
+                        }
+                    }
+                } else if !state.is_hovered {
+                    start_idle_press = Some(if state.placement.is_vertical() {
+                        state.y_offset
+                    } else {
+                        state.x_offset
+                    });
+                } else {
+                    let (cw, ch) = (state.canvas_width() as f32, state.canvas_height() as f32);
+                    let (_ox, oy) = Renderer::compute_origin(&state, cw, ch);
+                    let ly = (y - oy) / state.expanded_scale().max(0.5);
+                    if (0.0..=56.0).contains(&ly) {
+                        start_grip_offset = Some(if state.placement.is_vertical() {
+                            state.y_offset
+                        } else {
+                            state.x_offset
+                        });
                     }
                 }
+            }
 
             if let Some(start_offset) = start_grip_offset {
                 let mut pt = POINT::default();
@@ -3015,7 +3185,11 @@ unsafe fn wnd_proc_inner(
                 SetCapture(hwnd);
             }
 
-            let mut active_hwnd = hwnd;
+            if let Some((app_name, aumid)) = activate_notif {
+                notifications::activate_source_app(&app_name, aumid.as_deref());
+            }
+
+            let active_hwnd = hwnd;
             if let Some(eff) = extra_effects {
                 if let Some(enabled) = eff.update_autostart {
                     autostart_update = Some(enabled);
@@ -3030,7 +3204,10 @@ unsafe fn wnd_proc_inner(
                     let needs_privacy = get_global_state()
                         .and_then(|arc| {
                             arc.lock().ok().map(|st| {
-                                !matches!(st.notif_listener_status.as_str(), "Connected" | "Listening" | "Off")
+                                !matches!(
+                                    st.notif_listener_status.as_str(),
+                                    "Connected" | "Listening" | "Off"
+                                )
                             })
                         })
                         .unwrap_or(false);
@@ -3058,10 +3235,6 @@ unsafe fn wnd_proc_inner(
                         post_redraw();
                         crate::settings_window::post_redraw();
                     });
-                }
-                if eff.sync_frosted_window {
-                    active_hwnd = sync_notch_frosted_mode(hwnd);
-                    crate::settings_window::post_sync_frosted();
                 }
                 if let Some(rm_borders) = eff.sync_windows_borders {
                     crate::borders::set_enabled(rm_borders);
@@ -3125,17 +3298,17 @@ unsafe fn wnd_proc_inner(
             });
             let mut post_ms = None;
             if let Some(state_mutex) = get_global_state()
-                && let Ok(mut st) = state_mutex.lock() {
-                    st.hover_target_idx = refreshed;
-                    if let Some(i) = refreshed
-                        && st.micro_interactions
-                            && st.motion_preset != MotionPreset::Reduced
-                            && i < st.hover_slots.len()
-                        {
-                            st.hover_slots[i] = st.hover_slots[i].max(0.02);
-                        }
-                    post_ms = st.needs_animation_timer_ms();
+                && let Ok(mut st) = state_mutex.lock()
+            {
+                st.hover_target_idx = refreshed;
+                if let Some(i) = refreshed
+                    && st.micro_interactions
+                    && i < st.hover_slots.len()
+                {
+                    st.hover_slots[i] = st.hover_slots[i].max(0.02);
                 }
+                post_ms = st.needs_animation_timer_ms();
+            }
             sync_animation_timer(active_hwnd, post_ms);
             LRESULT(0)
         }
@@ -3143,92 +3316,105 @@ unsafe fn wnd_proc_inner(
             if wparam.0 == TIMER_ANIMATION_ID {
                 tick_notch_animation(hwnd);
             } else if wparam.0 == TIMER_POLL_ID {
-                track_last_foreground(hwnd);
-                let one_sec_elapsed = NOTCH_UI.with_borrow_mut(|ui| {
-                    let now = std::time::Instant::now();
-                    match ui.last_second_tick {
-                        Some(prev) if now.duration_since(prev) >= std::time::Duration::from_millis(950) => {
-                            ui.last_second_tick = Some(now);
-                            true
-                        }
-                        None => {
-                            ui.last_second_tick = Some(now);
-                            false
-                        }
-                        _ => false,
+                let now = std::time::Instant::now();
+                let one_sec_elapsed = NOTCH_UI.with_borrow_mut(|ui| match ui.last_second_tick {
+                    Some(prev)
+                        if now.duration_since(prev) >= std::time::Duration::from_millis(950) =>
+                    {
+                        ui.last_second_tick = Some(now);
+                        true
                     }
+                    None => {
+                        ui.last_second_tick = Some(now);
+                        false
+                    }
+                    _ => false,
                 });
                 let mut needs_redraw = false;
-                let mut play_done_chime = false;
                 let mut hide_fullscreen_pref = false;
                 let mut is_protected = false;
+                let mut idle_collapsed = false;
                 if let Some(state_mutex) = get_global_state()
-                    && let Ok(mut state) = state_mutex.lock() {
-                        hide_fullscreen_pref = state.hide_in_fullscreen;
-                        is_protected = state.is_hovered
-                            || state.is_pinned
-                            || CAPTURE_IN_PROGRESS.load(Ordering::Acquire)
-                            || state.notification_overlays_fullscreen();
-                        if state.expire_notification() {
+                    && let Ok(mut state) = state_mutex.lock()
+                {
+                    hide_fullscreen_pref = state.hide_in_fullscreen;
+                    is_protected = state.is_hovered
+                        || state.is_pinned
+                        || CAPTURE_IN_PROGRESS.load(Ordering::Acquire)
+                        || state.notification_overlays_fullscreen();
+                    if state.notification.is_some() && state.expire_notification() {
+                        needs_redraw = true;
+                    }
+                    if one_sec_elapsed
+                        && state.media.is_playing
+                        && !state.media.is_idle()
+                        && state.media.duration_ms > 0
+                    {
+                        state.media.position_ms =
+                            (state.media.position_ms + 1000).min(state.media.duration_ms);
+                        if state.is_hovered && state.mode == NotchMode::Music {
                             needs_redraw = true;
                         }
-                        if one_sec_elapsed {
-                            if state.media.is_playing && !state.media.is_idle() && state.media.duration_ms > 0 {
-                                state.media.position_ms = (state.media.position_ms + 1000).min(state.media.duration_ms);
-                                if state.is_hovered && state.mode == NotchMode::Music {
-                                    needs_redraw = true;
-                                }
-                            }
-                            if state.timer.is_running {
-                                let done = state.on_focus_second_tick();
-                                if done && state.chime_enabled {
-                                    play_done_chime = true;
-                                }
-                                if !state.is_hovered || state.mode == NotchMode::FocusTimer || done {
-                                    needs_redraw = true;
-                                }
-                            }
-                        }
                     }
-                if hide_fullscreen_pref && !is_protected && is_foreign_fullscreen_active(hwnd) {
-                    let became_hidden = NOTCH_UI.with_borrow_mut(|ui| {
-                        if !ui.hidden_for_fullscreen {
-                            ui.hidden_for_fullscreen = true;
-                            true
-                        } else {
-                            false
-                        }
-                    });
-                    if became_hidden {
-                        let _ = ShowWindow(hwnd, SW_HIDE);
-                    }
-                } else if !CAPTURE_IN_PROGRESS.load(Ordering::Acquire) {
-                    let became_shown = NOTCH_UI.with_borrow_mut(|ui| {
-                        if ui.hidden_for_fullscreen {
-                            ui.hidden_for_fullscreen = false;
-                            true
-                        } else {
-                            false
-                        }
-                    });
-                    if became_shown {
-                        let _ = ShowWindow(hwnd, SW_SHOWNOACTIVATE);
-                        let _ = SetWindowPos(
-                            hwnd,
-                            HWND_TOPMOST,
-                            0,
-                            0,
-                            0,
-                            0,
-                            SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE | SWP_SHOWWINDOW,
-                        );
-                        needs_redraw = true;
-                    } else {
-                        ensure_topmost_zorder(hwnd);
-                    }
+                    idle_collapsed = is_idle_collapsed(&state);
                 }
-                if play_done_chime {
-                    play_chime_async(0x40);
+
+                NOTCH_UI.with_borrow_mut(|ui| {
+                    if idle_collapsed {
+                        let since = ui.idle_since.get_or_insert(now);
+                        if !ui.idle_caches_trimmed
+                            && now.duration_since(*since) >= std::time::Duration::from_secs(3)
+                        {
+                            if let Some(ren) = ui.renderer.as_mut() {
+                                ren.trim_idle_caches();
+                            }
+                            ui.idle_caches_trimmed = true;
+                        }
+                    } else {
+                        ui.idle_since = None;
+                        ui.idle_caches_trimmed = false;
+                    }
+                });
+
+                if !idle_collapsed || one_sec_elapsed {
+                    track_last_foreground(hwnd);
+                    if hide_fullscreen_pref && !is_protected && is_foreign_fullscreen_active(hwnd) {
+                        let became_hidden = NOTCH_UI.with_borrow_mut(|ui| {
+                            if !ui.hidden_for_fullscreen {
+                                ui.hidden_for_fullscreen = true;
+                                true
+                            } else {
+                                false
+                            }
+                        });
+                        if became_hidden {
+                            let _ = ShowWindow(hwnd, SW_HIDE);
+                        }
+                    } else if !CAPTURE_IN_PROGRESS.load(Ordering::Acquire) {
+                        let became_shown = NOTCH_UI.with_borrow_mut(|ui| {
+                            if ui.hidden_for_fullscreen {
+                                ui.hidden_for_fullscreen = false;
+                                true
+                            } else {
+                                false
+                            }
+                        });
+                        if became_shown {
+                            let _ = ShowWindow(hwnd, SW_SHOWNOACTIVATE);
+                            let _ = SetWindowPos(
+                                hwnd,
+                                HWND_TOPMOST,
+                                0,
+                                0,
+                                0,
+                                0,
+                                SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE | SWP_SHOWWINDOW,
+                            );
+                            needs_redraw = true;
+                        } else {
+                            ensure_topmost_zorder(hwnd);
+                        }
+                    }
                 }
                 if needs_redraw {
                     redraw_window(hwnd);
@@ -3237,14 +3423,6 @@ unsafe fn wnd_proc_inner(
             LRESULT(0)
         }
         WM_DESTROY => {
-            if RECREATING_HWND.load(Ordering::Acquire) {
-                set_notch_pacer(hwnd, 0);
-                NOTCH_UI.with_borrow_mut(|ui| {
-                    ui.frosted = None;
-                    ui.dib.destroy();
-                });
-                return LRESULT(0);
-            }
             SHUTDOWN_REQUESTED.store(true, Ordering::Release);
             set_notch_pacer(hwnd, 0);
             set_settings_pacer(HWND::default(), 0);
@@ -3254,9 +3432,7 @@ unsafe fn wnd_proc_inner(
             crate::settings_window::close_if_open();
             detach_hwnd_resources(hwnd);
             NOTCH_UI.with_borrow_mut(|ui| {
-                ui.frosted = None;
-                ui.is_frosted_hwnd = false;
-                ui.dib.destroy();
+                ui.dcomp = None;
                 ui.renderer = None;
                 ui.pointer_pos = None;
                 ui.hover_hit_idx = None;
@@ -3277,6 +3453,8 @@ unsafe fn wnd_proc_inner(
                 ui.snap_glide_active = false;
                 ui.last_slider_redraw = None;
                 ui.last_rgn = None;
+                ui.idle_since = None;
+                ui.idle_caches_trimmed = false;
             });
             PostQuitMessage(0);
             LRESULT(0)
@@ -3319,22 +3497,32 @@ unsafe fn redraw_window(hwnd: HWND) {
         }
     }
 
-    let effective_timer_ms = NOTCH_UI.with_borrow(|ui| {
-        if ui.snap_glide_active && state_snapshot.motion_preset != MotionPreset::Reduced {
+    let (effective_timer_ms, snap_glide) = NOTCH_UI.with_borrow(|ui| {
+        let eff = if ui.snap_glide_active {
             let act = state_snapshot.desired_active_interval_ms();
             Some(desired_timer_ms.map_or(act, |m| m.min(act)))
         } else {
             desired_timer_ms
-        }
+        };
+        (eff, ui.snap_glide_active)
     });
     sync_animation_timer(hwnd, effective_timer_ms);
 
-    let canvas_w = state_snapshot.canvas_width() as i32;
-    let canvas_h = state_snapshot.canvas_height() as i32;
+    let idle_collapsed = is_idle_collapsed(&state_snapshot);
+    let compact_idle = idle_collapsed && !snap_glide;
     let mon = get_monitor_rect(hwnd);
-    let (target_x, target_y) = compute_window_pos(&mon, &state_snapshot, canvas_w, canvas_h);
+    let (target_x, target_y, canvas_w, canvas_h) =
+        compute_active_window_layout(&mon, &state_snapshot, compact_idle);
     let (win_x, win_y) = NOTCH_UI.with_borrow_mut(|ui| {
-        if !ui.win_pos_initialized || !ui.snap_glide_active || state_snapshot.motion_preset == MotionPreset::Reduced {
+        if idle_collapsed {
+            if ui.idle_since.is_none() {
+                ui.idle_since = Some(std::time::Instant::now());
+            }
+        } else {
+            ui.idle_since = None;
+            ui.idle_caches_trimmed = false;
+        }
+        if !ui.win_pos_initialized || !ui.snap_glide_active {
             ui.anim_win_x = target_x as f32;
             ui.anim_win_y = target_y as f32;
             ui.win_pos_initialized = true;
@@ -3345,224 +3533,77 @@ unsafe fn redraw_window(hwnd: HWND) {
         }
     });
 
-    enum PresentOut {
-        None,
-        Frosted,
-        FrostedFallback,
-        Layered(HDC, HDC, Option<RECT>),
-    }
-
-    let (
-        is_fr,
-        is_dragging,
-        prev_init,
-        size_changed,
-        pos_changed,
-        pointer_pos,
-        ren_opt,
-        mut host_opt,
-    ) = NOTCH_UI.with_borrow_mut(|ui| {
-        let prev_init = ui.has_ulw_initialized;
-        let size_changed = ui.prev_dib_w != canvas_w || ui.prev_dib_h != canvas_h;
-        let pos_changed = ui.last_win_x != win_x || ui.last_win_y != win_y;
-        let is_dragging = matches!(
-            ui.drag_mode,
-            DragMode::Grip { .. } | DragMode::IdlePressOrDrag { moved: true, .. }
-        );
-        (
-            ui.is_frosted_hwnd,
-            is_dragging,
-            prev_init,
-            size_changed,
-            pos_changed,
-            ui.pointer_pos,
-            ui.renderer.take(),
-            ui.frosted.take(),
-        )
-    });
+    let (prev_init, size_changed, pos_changed, pointer_pos, ren_opt, mut host_opt) = NOTCH_UI
+        .with_borrow_mut(|ui| {
+            let prev_init = ui.has_ulw_initialized;
+            let size_changed = ui.prev_dib_w != canvas_w || ui.prev_dib_h != canvas_h;
+            let pos_changed = ui.last_win_x != win_x || ui.last_win_y != win_y;
+            (
+                prev_init,
+                size_changed,
+                pos_changed,
+                ui.pointer_pos,
+                ui.renderer.take(),
+                ui.dcomp.take(),
+            )
+        });
     let force_full = !prev_init || size_changed || pos_changed;
 
     let Some(mut ren) = ren_opt else {
         if let Some(h) = host_opt {
-            NOTCH_UI.with_borrow_mut(|ui| ui.frosted = Some(h));
+            NOTCH_UI.with_borrow_mut(|ui| ui.dcomp = Some(h));
         }
         return;
     };
     ren.resize(canvas_w as u32, canvas_h as u32);
     ren.render_centered(&state_snapshot, pointer_pos);
 
-    let present_out = if is_fr {
-        if force_full {
-            let _ = SetWindowPos(
-                hwnd,
-                HWND_TOPMOST,
-                win_x,
-                win_y,
-                canvas_w,
-                canvas_h,
-                SWP_NOACTIVATE | SWP_NOZORDER,
-            );
-        }
-        let mut ok = false;
-        if let Some(host) = host_opt.as_mut() {
-            let blur_px = if is_dragging {
-                0.0
-            } else {
-                state_snapshot.frosted_blur_px as f32
-            };
-            let _ = host.set_blur_amount(blur_px);
-            let (origin_x, origin_y) =
-                Renderer::compute_origin(&state_snapshot, canvas_w as f32, canvas_h as f32);
-            let w = state_snapshot.current_width;
-            let h = state_snapshot.current_height;
-            let radii = state_snapshot.corner_radii();
-            let _ = host.set_clip(
-                origin_x,
-                origin_y,
-                w,
-                h,
-                radii,
-                state_snapshot.notch_style,
-                state_snapshot.placement,
-            );
-            ok = host
-                .present_rgba_premultiplied(ren.pixmap.data(), canvas_w as u32, canvas_h as u32)
-                .is_ok();
-        }
-        NOTCH_UI.with_borrow_mut(|ui| {
-            ui.renderer = Some(ren);
-            if ok {
-                ui.frosted = host_opt;
-                ui.has_ulw_initialized = true;
-                ui.prev_dib_w = canvas_w;
-                ui.prev_dib_h = canvas_h;
-                ui.last_win_x = win_x;
-                ui.last_win_y = win_y;
-            } else {
-                ui.frosted = None;
-                ui.frosted_failed = true;
-            }
-        });
-        if ok {
-            PresentOut::Frosted
-        } else {
-            PresentOut::FrostedFallback
-        }
+    if force_full {
+        let _ = SetWindowPos(
+            hwnd,
+            HWND_TOPMOST,
+            win_x,
+            win_y,
+            canvas_w,
+            canvas_h,
+            SWP_NOACTIVATE | SWP_NOZORDER,
+        );
+    }
+    let dirty = if force_full {
+        None
     } else {
-        NOTCH_UI.with_borrow_mut(|ui| {
-            if host_opt.is_some() {
-                ui.frosted = host_opt;
-            }
-            let dib = &mut ui.dib;
-            let res = if dib.ensure(canvas_w, canvas_h) {
-                let src = ren.pixmap.data();
-                let dst = std::slice::from_raw_parts_mut(dib.bits, src.len());
-                let (dx0, dy0, dx1, dy1) = ren.dirty_rect;
-                let cw_u = canvas_w as u32;
-                let ch_u = canvas_h as u32;
-                let x0 = dx0.min(cw_u);
-                let y0 = dy0.min(ch_u);
-                let x1 = dx1.min(cw_u);
-                let y1 = dy1.min(ch_u);
-
-                if force_full || x1 <= x0 || y1 <= y0 {
-                    for (d, s) in dst
-                        .as_chunks_mut::<4>()
-                        .0
-                        .iter_mut()
-                        .zip(src.as_chunks::<4>().0.iter())
-                    {
-                        let px = u32::from_le_bytes(*s);
-                        *d = ((px & 0xFF00_FF00) | ((px >> 16) & 0xFF) | ((px & 0xFF) << 16)).to_le_bytes();
-                    }
-                    ui.has_ulw_initialized = true;
-                    ui.prev_dib_w = canvas_w;
-                    ui.prev_dib_h = canvas_h;
-                    ui.last_win_x = win_x;
-                    ui.last_win_y = win_y;
-                    PresentOut::Layered(dib.hdc_screen, dib.hdc_mem, None)
-                } else {
-                    let stride = (canvas_w as usize) * 4;
-                    for row in (y0 as usize)..(y1 as usize) {
-                        let row_off = row * stride + (x0 as usize) * 4;
-                        let count = (x1 - x0) as usize;
-                        let s_slice = &src[row_off..row_off + count * 4];
-                        let d_slice = &mut dst[row_off..row_off + count * 4];
-                        for (d, s) in d_slice
-                            .as_chunks_mut::<4>()
-                            .0
-                            .iter_mut()
-                            .zip(s_slice.as_chunks::<4>().0.iter())
-                        {
-                            let px = u32::from_le_bytes(*s);
-                            *d = ((px & 0xFF00_FF00) | ((px >> 16) & 0xFF) | ((px & 0xFF) << 16)).to_le_bytes();
-                        }
-                    }
-                    let dirty_rc = RECT {
-                        left: x0 as i32,
-                        top: y0 as i32,
-                        right: x1 as i32,
-                        bottom: y1 as i32,
-                    };
-                    PresentOut::Layered(dib.hdc_screen, dib.hdc_mem, Some(dirty_rc))
-                }
-            } else {
-                PresentOut::None
-            };
-            ui.renderer = Some(ren);
-            res
-        })
+        let (x0, y0, x1, y1) = ren.last_dirty_rect();
+        let dw = x1.saturating_sub(x0);
+        let dh = y1.saturating_sub(y0);
+        if dw > 0 && dh > 0 {
+            Some((x0, y0, dw, dh))
+        } else {
+            None
+        }
     };
-
-    match present_out {
-        PresentOut::Frosted => {
-            sync_notch_window_region(hwnd, &state_snapshot);
+    let mut ok = false;
+    if let Some(host) = host_opt.as_mut() {
+        ok = host
+            .present_rgba_premultiplied_rect(
+                ren.pixmap.data(),
+                canvas_w as u32,
+                canvas_h as u32,
+                dirty,
+            )
+            .is_ok();
+    }
+    NOTCH_UI.with_borrow_mut(|ui| {
+        ui.renderer = Some(ren);
+        ui.dcomp = host_opt;
+        if ok {
+            ui.has_ulw_initialized = true;
+            ui.prev_dib_w = canvas_w;
+            ui.prev_dib_h = canvas_h;
+            ui.last_win_x = win_x;
+            ui.last_win_y = win_y;
         }
-        PresentOut::FrostedFallback => {
-            post_sync_frosted();
-        }
-        PresentOut::Layered(hdc_screen, hdc_mem, dirty_opt) => {
-            let pt_src = POINT { x: 0, y: 0 };
-            let pt_dst = POINT { x: win_x, y: win_y };
-            let size = SIZE { cx: canvas_w, cy: canvas_h };
-
-            let blend = BLENDFUNCTION {
-                BlendOp: AC_SRC_OVER as u8,
-                BlendFlags: 0,
-                SourceConstantAlpha: 255,
-                AlphaFormat: AC_SRC_ALPHA as u8,
-            };
-
-            let info = UPDATELAYEREDWINDOWINFO {
-                cbSize: std::mem::size_of::<UPDATELAYEREDWINDOWINFO>() as u32,
-                hdcDst: hdc_screen,
-                pptDst: &pt_dst,
-                psize: &size,
-                hdcSrc: hdc_mem,
-                pptSrc: &pt_src,
-                crKey: COLORREF(0),
-                pblend: &blend,
-                dwFlags: ULW_ALPHA,
-                prcDirty: dirty_opt
-                    .as_ref()
-                    .map_or(std::ptr::null(), |rc| rc as *const RECT),
-            };
-
-            if !UpdateLayeredWindowIndirect(hwnd, &info).as_bool() {
-                let _ = UpdateLayeredWindow(
-                    hwnd,
-                    hdc_screen,
-                    Some(&pt_dst),
-                    Some(&size),
-                    hdc_mem,
-                    Some(&pt_src),
-                    COLORREF(0),
-                    Some(&blend),
-                    ULW_ALPHA,
-                );
-            }
-            sync_notch_window_region(hwnd, &state_snapshot);
-        }
-        PresentOut::None => {}
+    });
+    if ok {
+        sync_notch_window_region(hwnd, &state_snapshot, canvas_w, canvas_h);
     }
 }

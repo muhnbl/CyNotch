@@ -1,66 +1,91 @@
-﻿# ⚡ CyNotch (General Mahamatra Dynamic Island for Windows)
+﻿# ⚡ CyNotch — General Mahamatra Dynamic Island for Windows
 
-**CyNotch** is an ultra-lightweight Dynamic Island & Ambient Command Hub application for Windows 10 & 11 written from scratch using **Rust**. Inspired by Nusa & Layzee, CyNotch adopts the **Cyno (Genshin Impact)** theme with an Electro Purple & Gold color palette, and includes a heavy-class memory-optimisation module **Memory Reduct** built in.
+**CyNotch** is an ultra-lightweight **Dynamic Island & Ambient Command Hub** for Windows 10 & 11, written from scratch in **Rust**. Inspired by Nusa & Layzee, CyNotch features a **Cyno (Genshin Impact)** Electro Purple & Sacred Gold aesthetic and ships with a built-in **Memory Reduct** engine for one-click and automated RAM optimization.
 
 ---
 
-## 🌟 Main Features
+## 🌟 Features
 
-### 1. ⚡ Memory Reduct Engine
+### 1. ⚡ Built-in Memory Reduct Engine
 - **Clean Areas:**
-  - `[✓] Working Sets`: Clears the working set of all active processes via `K32EmptyWorkingSet`.
-  - `[✓] System WS`: Trims the internal system working set memory.
-  - `[✓] Standby List`: Optimises the standby memory cache.
-- **When Above (Threshold Trigger):**
-  - Options: `70%`, `80%`, `90%`.
-  - Automatically performs cleaning when RAM usage exceeds the selected threshold.
-- **Every (Interval Trigger):**
-  - Options: `5 minutes`, `15 minutes`, `30 minutes`.
-- **Instant Purge Button:**
-  - **`[ ⚡ PURGE RAM (JUDGMENT) ]`** button for one-click instant cleaning.
-  - Shows the total megabytes freed in real time.
+  - **Working Sets:** Trims active process working sets via `K32EmptyWorkingSet`.
+  - **System WS:** Trims internal system working set memory.
+  - **Standby List:** Optimizes standby memory cache.
+- **Threshold Trigger ("When Above"):** Automatically cleans RAM when usage exceeds `70%`, `80%`, or `90%`.
+- **Interval Trigger ("Every"):** Scheduled cleanup every `5 minutes`, `15 minutes`, or `30 minutes`.
+- **Instant Purge Button:** One-click **`[ ⚡ PURGE RAM (JUDGMENT) ]`** with real-time reporting of freed megabytes.
 
 ### 2. 🐺 Cyno Mascot & Electro Sumeru Aesthetic
-- **Cyno Mascot Silhouette:**
-  - Wolf/feral-ear headdress (Anubis hood) typical of the General Mahamatra.
-  - Silver/white layered hair with an electro gold headband.
-  - Amber/gold eyes glowing with electro sparks.
-- **Cyno's Signature Quote:** Provides dynamic status and dialogue (*"Judgment is passed! A heavy burden of RAM has been purged."*).
+- **Custom Vector Mascot:** Anubis-hood silhouette, layered silver/white hair with electro gold headband, and glowing amber eyes with animated electro sparks.
+- **Dynamic Dialogue:** Cyno's signature status lines (*"Judgment is passed! A heavy burden of RAM has been purged."*).
 - **Color Palette:** Obsidian Violet (`#0D0A18`), Electro Violet (`#9333EA`, `#A855F7`), and Sacred Gold (`#F59E0B`).
 
 ### 3. 🎵 Smarter Media & LRCLIB Lyrics
-- Integration of WinRT GSMTC (`GlobalSystemMediaTransportControlsSessionManager`) for Spotify, YouTube, Chrome, etc.
-- Live lyric synchronization via the LRCLIB API (`lrclib.net`).
-- Direct Play/Pause media control from the notch.
+- **WinRT GSMTC Integration** (`GlobalSystemMediaTransportControlsSessionManager`) for Spotify, YouTube, Chrome, and other Windows media players.
+- **Live Synced Lyrics** powered by the [LRCLIB](https://lrclib.net) API.
+- **Inline Controls:** Play/Pause directly from the notch.
 
 ### 4. ⏱️ Pomodoro Focus Timer
-- 25/5-minute focus timer with a circular progress bar and countdown status.
+- 25/5-minute focus timer with a circular progress indicator and live countdown.
 
-### 5. 📊 Real-time Hardware Telemetry
-- Live monitoring of CPU load and RAM usage.
+### 5. 📊 Real-Time Hardware Telemetry
+- Live CPU load, RAM usage, and network speed monitoring.
 
 ### 6. 📋 Quick Shelf
-- Space for quick notes and an instant scratchpad.
+- Instant scratchpad for quick notes right inside the expanded hub.
 
 ---
 
-## 🚀 Performance & Technical Architecture
+## 📦 Download & Quick Start (Portable)
 
-- **Binary Size:** **3.84 MB** (release `lto = "fat"`, `codegen-units = 1`, `strip = "symbols"`).
-- **CPU Usage when Idle:** **~4.6 % of one core** (A/B 3×30 seconds in *minimized island* active state; down from ~6.9 % before v2.5 optimisation).
-- **Memory Footprint:** **~11.5 MB** working set after Windows trim (private ~64 MB, including DComp/D3D11 surface for *frosted glass*).
-- **Rendering:** Direct2D / Win32 layered window with per-pixel alpha transparency via `tiny-skia` + Windows GDI typography.
-- **Execution Location:** `C:\Users\muhna\.local\bin\cynotch.exe`.
-- **Render Benchmark:** `cargo run --release --example bench_render` (optional `-- <iters> <state>` with states `minimized_vert`, `idle`, `idle_vert`, `home`, `lyrics`, `settings`, `glowmicro`).
+Pre-built Windows x64 binaries are available on the [**Releases**](https://github.com/muhnbl/CyNotch/releases) page:
 
-### Optimisation Notes (v2.5)
-Full details are in [`OPTIMIZATION_REPORT.md`](OPTIMIZATION_REPORT.md). Summary:
+1. Download either `CyNotch-v0.2.1-portable.exe` (standalone executable) or `CyNotch-v0.2.1-portable-win64.zip` (includes helper scripts).
+2. Extract (if using `.zip`) and run `cynotch.exe` (or `Start-CyNotch.bat`).
+3. *(Optional)* Run `Enable-AutoStart.ps1` to launch CyNotch automatically on Windows startup, or `Disable-AutoStart.ps1` to remove it.
 
-| Metric | Before | After |
-| --- | --- | --- |
-| CPU idle (1 core, average of 3 samples) | ~6.9 % | **~4.6 %** |
-| Render capsule minimized | 249 µs/frame | **200 µs/frame** |
-| Render idle capsule | 496 µs/frame | **413 µs/frame** |
-| Render expanded Home | 9.90 ms/frame | **8.51 ms/frame** |
-| Render Preferences (937×785) | 33.9 ms/frame | **20.4 ms/frame** |
-| Binary size | 4.15 MB | **3.84 MB** |
+> **Requirements:** Windows 10 or Windows 11 (x64). No external runtime required.
+
+---
+
+## 🛠️ Building from Source
+
+### Prerequisites
+- [Rust](https://www.rust-lang.org/tools/install) (Edition 2024, MSVC toolchain on Windows)
+
+### Build & Run
+```powershell
+git clone https://github.com/muhnbl/CyNotch.git
+cd CyNotch
+cargo build --release
+.\target\release\cynotch.exe
+```
+
+### Tests & Benchmarks
+```powershell
+cargo test --release
+cargo run --release --example bench_render -- 150
+```
+
+Optional benchmark arguments: `cargo run --release --example bench_render -- <iters> <state>` where `<state>` can be `minimized_vert`, `idle`, `idle_vert`, `home`, `lyrics`, `settings`, or `glowmicro`.
+
+---
+
+## 🚀 Tech Stack & Performance
+
+- **Language:** Rust (Edition 2024)
+- **Rendering:** Win32 Layered Window + DirectComposition/D3D11 frosted glass + `tiny-skia` vector rendering + `fontdue` / Windows GDI typography
+- **Windows APIs:** `windows` & `windows-core` crates (WinRT GSMTC, UserNotificationListener, CoreAudio, IP Helper, Registry, Memory Management)
+- **Networking & Serialization:** `ureq`, `serde`, `serde_json`, `chrono`
+- **Binary Size:** **~3.8 MB** (`opt-level = 3`, `lto = "fat"`, `codegen-units = 1`, `strip = "symbols"`)
+- **Idle CPU Usage:** **~2.6% of one core** (v0.2.1 / v2.6 architecture; down from ~6.9% baseline)
+- **Memory Footprint:** **~11.5 MB** working set after Windows trim
+
+See [`OPTIMIZATION_REPORT.md`](OPTIMIZATION_REPORT.md) for detailed profiling and A/B benchmark results.
+
+---
+
+## 🙏 Credits
+- Inspired by **Nusa** & **Layzee**
+- Character theme inspired by **Cyno** (Genshin Impact / HoYoverse)
+- Lyrics sync powered by **LRCLIB**

@@ -1,5 +1,5 @@
-use windows::core::*;
 use windows::Win32::System::Registry::*;
+use windows::core::*;
 
 pub fn is_autostart_enabled() -> bool {
     unsafe {
@@ -34,7 +34,8 @@ pub fn set_autostart(enable: bool) -> bool {
             if enable {
                 if let Ok(exe_path) = std::env::current_exe() {
                     let path_str = exe_path.to_string_lossy();
-                    let wide_path: Vec<u16> = path_str.encode_utf16().chain(std::iter::once(0)).collect();
+                    let wide_path: Vec<u16> =
+                        path_str.encode_utf16().chain(std::iter::once(0)).collect();
                     let byte_slice = std::slice::from_raw_parts(
                         wide_path.as_ptr() as *const u8,
                         wide_path.len() * 2,

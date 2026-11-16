@@ -6,15 +6,15 @@ use std::mem::size_of;
 use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use windows::Win32::Foundation::{BOOL, HWND, LPARAM, WPARAM};
 use windows::Win32::Graphics::Dwm::{
-    DwmGetWindowAttribute, DwmSetWindowAttribute, DWMWCP_ROUND, DWMWA_BORDER_COLOR, DWMWA_CLOAKED,
-    DWMWA_COLOR_DEFAULT, DWMWA_COLOR_NONE, DWMWA_WINDOW_CORNER_PREFERENCE,
+    DWMWA_BORDER_COLOR, DWMWA_CLOAKED, DWMWA_COLOR_DEFAULT, DWMWA_COLOR_NONE,
+    DWMWA_WINDOW_CORNER_PREFERENCE, DWMWCP_ROUND, DwmGetWindowAttribute, DwmSetWindowAttribute,
 };
 use windows::Win32::System::Threading::GetCurrentThreadId;
 use windows::Win32::UI::WindowsAndMessaging::{
-    DispatchMessageW, EnumWindows, GetMessageW, GetWindowLongPtrW, IsWindow, IsWindowVisible,
-    KillTimer, PostThreadMessageW, SetTimer, TranslateMessage, EVENT_OBJECT_CREATE,
-    EVENT_OBJECT_SHOW, EVENT_SYSTEM_FOREGROUND, EVENT_SYSTEM_MOVESIZEEND, GWL_EXSTYLE, GWL_STYLE,
-    MSG, OBJID_WINDOW, WINEVENT_OUTOFCONTEXT, WINEVENT_SKIPOWNPROCESS, WM_QUIT, WM_TIMER,
+    DispatchMessageW, EVENT_OBJECT_CREATE, EVENT_OBJECT_SHOW, EVENT_SYSTEM_FOREGROUND,
+    EVENT_SYSTEM_MOVESIZEEND, EnumWindows, GWL_EXSTYLE, GWL_STYLE, GetMessageW, GetWindowLongPtrW,
+    IsWindow, IsWindowVisible, KillTimer, MSG, OBJID_WINDOW, PostThreadMessageW, SetTimer,
+    TranslateMessage, WINEVENT_OUTOFCONTEXT, WINEVENT_SKIPOWNPROCESS, WM_QUIT, WM_TIMER,
     WS_CAPTION, WS_EX_TOOLWINDOW, WS_THICKFRAME,
 };
 
@@ -153,57 +153,53 @@ pub fn set_enabled(enabled: bool) {
             apply_all(DWMWA_COLOR_NONE);
             return;
         }
-        std::thread::spawn(|| {
-            unsafe {
-                let tid = GetCurrentThreadId();
-                WORKER_TID.store(tid, Ordering::Release);
+        std::thread::spawn(|| unsafe {
+            let tid = GetCurrentThreadId();
+            WORKER_TID.store(tid, Ordering::Release);
 
-                apply_all(DWMWA_COLOR_NONE);
+            apply_all(DWMWA_COLOR_NONE);
 
-                let flags = WINEVENT_OUTOFCONTEXT | WINEVENT_SKIPOWNPROCESS;
-                let hook_show = SetWinEventHook(
-                    EVENT_OBJECT_CREATE,
-                    EVENT_OBJECT_SHOW,
-                    std::ptr::null_mut(),
-                    win_event_cb,
-                    0,
-                    0,
-                    flags,
-                );
-                let hook_fg = SetWinEventHook(
-                    EVENT_SYSTEM_FOREGROUND,
-                    EVENT_SYSTEM_MOVESIZEEND,
-                    std::ptr::null_mut(),
-                    win_event_cb,
-                    0,
-                    0,
-                    flags,
-                );
-                let timer_id = SetTimer(None, 1, 5000, None);
+            let flags = WINEVENT_OUTOFCONTEXT | WINEVENT_SKIPOWNPROCESS;
+            let hook_show = SetWinEventHook(
+                EVENT_OBJECT_CREATE,
+                EVENT_OBJECT_SHOW,
+                std::ptr::null_mut(),
+                win_event_cb,
+                0,
+                0,
+                flags,
+            );
+            let hook_fg = SetWinEventHook(
+                EVENT_SYSTEM_FOREGROUND,
+                EVENT_SYSTEM_MOVESIZEEND,
+                std::ptr::null_mut(),
+                win_event_cb,
+                0,
+                0,
+                flags,
+            );
+            let timer_id = SetTimer(None, 1, 30_000, None);
 
-                let mut msg = MSG::default();
-                while ACTIVE.load(Ordering::Acquire)
-                    && GetMessageW(&mut msg, None, 0, 0).as_bool()
-                {
-                    if msg.message == WM_TIMER {
-                        apply_all(DWMWA_COLOR_NONE);
-                    } else {
-                        let _ = TranslateMessage(&msg);
-                        DispatchMessageW(&msg);
-                    }
+            let mut msg = MSG::default();
+            while ACTIVE.load(Ordering::Acquire) && GetMessageW(&mut msg, None, 0, 0).as_bool() {
+                if msg.message == WM_TIMER {
+                    apply_all(DWMWA_COLOR_NONE);
+                } else {
+                    let _ = TranslateMessage(&msg);
+                    DispatchMessageW(&msg);
                 }
-
-                if timer_id != 0 {
-                    let _ = KillTimer(None, timer_id);
-                }
-                if !hook_show.is_null() {
-                    let _ = UnhookWinEvent(hook_show);
-                }
-                if !hook_fg.is_null() {
-                    let _ = UnhookWinEvent(hook_fg);
-                }
-                WORKER_TID.store(0, Ordering::Release);
             }
+
+            if timer_id != 0 {
+                let _ = KillTimer(None, timer_id);
+            }
+            if !hook_show.is_null() {
+                let _ = UnhookWinEvent(hook_show);
+            }
+            if !hook_fg.is_null() {
+                let _ = UnhookWinEvent(hook_fg);
+            }
+            WORKER_TID.store(0, Ordering::Release);
         });
     } else {
         let was_active = ACTIVE.swap(false, Ordering::AcqRel);

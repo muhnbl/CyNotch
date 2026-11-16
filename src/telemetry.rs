@@ -1,4 +1,4 @@
-use crate::memreduct::{query_memory_pools, MemoryPoolStats};
+use crate::memreduct::{MemoryPoolStats, query_memory_pools};
 use crate::models::HardwareTelemetry;
 use std::ffi::c_void;
 use std::time::Instant;
