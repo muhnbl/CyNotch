@@ -1,13 +1,13 @@
-﻿<!doctype html>
+<!doctype html>
 <html lang="en">
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>CyNotch â€” Judgment at the top of your screen</title>
+<title>CyNotch — Judgment at the top of your screen</title>
 <meta name="description" content="CyNotch is an ultra-lightweight Dynamic Island for Windows 10/11 in Rust (~3.8 MB). Media controls, synced lyrics, telemetry, and Memory Reduct.">
 <meta name="theme-color" content="#0A0712">
 <meta property="og:type" content="website">
-<meta property="og:title" content="CyNotch â€” Judgment at the top of your screen">
+<meta property="og:title" content="CyNotch — Judgment at the top of your screen">
 <meta property="og:description" content="A Dynamic Island for Windows 10/11 in about 3.8 MB of Rust. Media, synced lyrics, telemetry and RAM judgment.">
 <meta property="og:image" content="https://raw.githubusercontent.com/muhnbl/CyNotch/main/assets/cynotch_icon.png">
 <meta name="twitter:card" content="summary">
@@ -121,7 +121,7 @@ kbd{display:inline-flex;align-items:center;justify-content:center;min-width:26px
 .rail-menu a:hover{background:rgba(199,125,255,.08);color:var(--text)}
 .rail-menu .btn{margin-top:6px}
 
-/* real screenshot treatment â€” seamless transparent-edge CyNotch renders */
+/* real screenshot treatment — seamless transparent-edge CyNotch renders */
 .shot-frame{display:block;position:relative;padding:0;background:transparent;border:0;border-radius:0;box-shadow:none}
 .shot-frame img{width:100%;height:auto;display:block;filter:drop-shadow(0 24px 48px rgba(0,0,0,.78)) drop-shadow(0 0 36px rgba(147,51,234,.22));transition:transform .28s cubic-bezier(.2,.8,.2,1),filter .28s ease}
 .real-note{margin-top:10px;font-family:var(--mono);font-size:.6rem;letter-spacing:.08em;color:var(--dim)}
@@ -405,13 +405,13 @@ kbd{display:inline-flex;align-items:center;justify-content:center;min-width:26px
     <div class="hero-shot reveal">
       <div class="shot-frame"><img id="heroPreviewImg" src="./assets/real/cynotch-home.png" alt="CyNotch v0.2.3 Command Hub showing General Cyno RAM card, Daily Hydration, Now Playing and Tasks Open" width="696" height="273"></div>
       <div class="hero-tabs" role="group" aria-label="Switch CyNotch view">
-        <button type="button" class="hero-tab" aria-pressed="true" data-hero-img="./assets/real/cynotch-home.png" data-hero-cap="Real render Â· Command Hub Â· v0.2.3" data-hero-alt="CyNotch v0.2.3 Command Hub showing General Cyno RAM card, Daily Hydration, Now Playing and Tasks Open">Command Hub</button>
-        <button type="button" class="hero-tab" aria-pressed="false" data-hero-img="./assets/real/cynotch-music.png" data-hero-cap="Real render Â· Music &amp; Lyrics Â· v0.2.3" data-hero-alt="CyNotch v0.2.3 Music and synced LRCLIB lyrics view">Lyrics</button>
-        <button type="button" class="hero-tab" aria-pressed="false" data-hero-img="./assets/real/cynotch-memreduct.png" data-hero-cap="Real render Â· Mem Reduct Â· v0.2.3" data-hero-alt="CyNotch v0.2.3 Mem Reduct view with clean areas and Clean Memory button">Mem Reduct</button>
-        <button type="button" class="hero-tab" aria-pressed="false" data-hero-img="./assets/real/cynotch-shelf.png" data-hero-cap="Real render Â· Quick Shelf Â· v0.2.3" data-hero-alt="CyNotch v0.2.3 Quick Shelf with pinned URLs, commands and files">Quick Shelf</button>
-        <button type="button" class="hero-tab" aria-pressed="false" data-hero-img="./assets/real/cynotch-capture.png" data-hero-cap="Real render Â· Quick Capture Â· v0.2.3" data-hero-alt="CyNotch v0.2.3 Quick Capture with Full Screen and Active Window actions">Quick Capture</button>
+        <button type="button" class="hero-tab" aria-pressed="true" data-hero-img="./assets/real/cynotch-home.png" data-hero-cap="Real render · Command Hub · v0.2.3" data-hero-alt="CyNotch v0.2.3 Command Hub showing General Cyno RAM card, Daily Hydration, Now Playing and Tasks Open">Command Hub</button>
+        <button type="button" class="hero-tab" aria-pressed="false" data-hero-img="./assets/real/cynotch-music.png" data-hero-cap="Real render · Music &amp; Lyrics · v0.2.3" data-hero-alt="CyNotch v0.2.3 Music and synced LRCLIB lyrics view">Lyrics</button>
+        <button type="button" class="hero-tab" aria-pressed="false" data-hero-img="./assets/real/cynotch-memreduct.png" data-hero-cap="Real render · Mem Reduct · v0.2.3" data-hero-alt="CyNotch v0.2.3 Mem Reduct view with clean areas and Clean Memory button">Mem Reduct</button>
+        <button type="button" class="hero-tab" aria-pressed="false" data-hero-img="./assets/real/cynotch-shelf.png" data-hero-cap="Real render · Quick Shelf · v0.2.3" data-hero-alt="CyNotch v0.2.3 Quick Shelf with pinned URLs, commands and files">Quick Shelf</button>
+        <button type="button" class="hero-tab" aria-pressed="false" data-hero-img="./assets/real/cynotch-capture.png" data-hero-cap="Real render · Quick Capture · v0.2.3" data-hero-alt="CyNotch v0.2.3 Quick Capture with Full Screen and Active Window actions">Quick Capture</button>
       </div>
-      <p id="heroPreviewCap">Real render Â· Command Hub Â· v0.2.3</p>
+      <p id="heroPreviewCap">Real render · Command Hub · v0.2.3</p>
     </div>
   </div>
 
@@ -423,7 +423,7 @@ kbd{display:inline-flex;align-items:center;justify-content:center;min-width:26px
       <div class="spec"><dt>Runtime</dt><dd>None <small>portable x64</small></dd></div>
       <div class="spec"><dt>Stack</dt><dd>Rust <small>edition 2024</small></dd></div>
     </dl>
-    <p class="spec-note">Figures from the v0.2.1 optimization report. <a href="https://github.com/muhnbl/CyNotch/blob/main/OPTIMIZATION_REPORT.md" target="_blank" rel="noopener">OPTIMIZATION_REPORT.md â†—</a></p>
+    <p class="spec-note">Figures from the v0.2.1 optimization report. <a href="https://github.com/muhnbl/CyNotch/blob/main/OPTIMIZATION_REPORT.md" target="_blank" rel="noopener">OPTIMIZATION_REPORT.md ↗</a></p>
   </div>
 </section>
 
@@ -435,12 +435,12 @@ kbd{display:inline-flex;align-items:center;justify-content:center;min-width:26px
       <p class="sec-lede">Every image here came from CyNotch v0.2.3 running on Windows. Built from the repo's own source, launched, clicked, captured. The notch sits at the top centre, opens in place and gets out of the way. Click a shot to see it bigger.</p>
     </div>
     <div class="gallery">
-      <figure class="shot reveal"><button type="button" data-shot="Command Hub" data-img="./assets/real/cynotch-home.png" aria-label="Open full screenshot: Command Hub"><span class="shot-frame"><img src="./assets/real/cynotch-home.png" alt="Command Hub view with RAM, hydration, media and tasks" width="696" height="273" loading="lazy"></span></button><figcaption><strong>Command Hub</strong><span>Real Â· v0.2.3 â†—</span></figcaption><p>Home base. Mascot, RAM gauge, hydration tracker, now playing and open tasks in one clean strip.</p></figure>
-      <figure class="shot reveal"><button type="button" data-shot="Mem Reduce" data-img="./assets/real/cynotch-memreduct.png" aria-label="Open full screenshot: Mem Reduce"><span class="shot-frame"><img src="./assets/real/cynotch-memreduct.png" alt="Mem Reduce view with clean areas and Clean Above setting" width="696" height="273" loading="lazy"></span></button><figcaption><strong>Mem Reduce</strong><span>Real Â· v0.2.3 â†—</span></figcaption><p>The judgment desk. Clean areas you can toggle, a threshold, and a receipt of what got freed.</p></figure>
-      <figure class="shot reveal"><button type="button" data-shot="Quick Shelf" data-img="./assets/real/cynotch-shelf.png" aria-label="Open full screenshot: Quick Shelf"><span class="shot-frame"><img src="./assets/real/cynotch-shelf.png" alt="Quick Shelf view with pinned URLs, shell commands and files" width="696" height="273" loading="lazy"></span></button><figcaption><strong>Quick Shelf</strong><span>Real Â· v0.2.3 â†—</span></figcaption><p>A clipboard with a roof. Pin links, commands, or files, then click to copy or open in one tap.</p></figure>
-      <figure class="shot reveal"><button type="button" data-shot="Quick Capture" data-img="./assets/real/cynotch-capture.png" aria-label="Open full screenshot: Quick Capture"><span class="shot-frame"><img src="./assets/real/cynotch-capture.png" alt="Quick Capture view with full screen and active window buttons" width="696" height="273" loading="lazy"></span></button><figcaption><strong>Quick Capture</strong><span>Real Â· v0.2.3 â†—</span></figcaption><p>Full screen or active window, saved as PNG. There is a hotkey for the chronically lazy.</p></figure>
+      <figure class="shot reveal"><button type="button" data-shot="Command Hub" data-img="./assets/real/cynotch-home.png" aria-label="Open full screenshot: Command Hub"><span class="shot-frame"><img src="./assets/real/cynotch-home.png" alt="Command Hub view with RAM, hydration, media and tasks" width="696" height="273" loading="lazy"></span></button><figcaption><strong>Command Hub</strong><span>Real · v0.2.3 ↗</span></figcaption><p>Home base. Mascot, RAM gauge, hydration tracker, now playing and open tasks in one clean strip.</p></figure>
+      <figure class="shot reveal"><button type="button" data-shot="Mem Reduce" data-img="./assets/real/cynotch-memreduct.png" aria-label="Open full screenshot: Mem Reduce"><span class="shot-frame"><img src="./assets/real/cynotch-memreduct.png" alt="Mem Reduce view with clean areas and Clean Above setting" width="696" height="273" loading="lazy"></span></button><figcaption><strong>Mem Reduce</strong><span>Real · v0.2.3 ↗</span></figcaption><p>The judgment desk. Clean areas you can toggle, a threshold, and a receipt of what got freed.</p></figure>
+      <figure class="shot reveal"><button type="button" data-shot="Quick Shelf" data-img="./assets/real/cynotch-shelf.png" aria-label="Open full screenshot: Quick Shelf"><span class="shot-frame"><img src="./assets/real/cynotch-shelf.png" alt="Quick Shelf view with pinned URLs, shell commands and files" width="696" height="273" loading="lazy"></span></button><figcaption><strong>Quick Shelf</strong><span>Real · v0.2.3 ↗</span></figcaption><p>A clipboard with a roof. Pin links, commands, or files, then click to copy or open in one tap.</p></figure>
+      <figure class="shot reveal"><button type="button" data-shot="Quick Capture" data-img="./assets/real/cynotch-capture.png" aria-label="Open full screenshot: Quick Capture"><span class="shot-frame"><img src="./assets/real/cynotch-capture.png" alt="Quick Capture view with full screen and active window buttons" width="696" height="273" loading="lazy"></span></button><figcaption><strong>Quick Capture</strong><span>Real · v0.2.3 ↗</span></figcaption><p>Full screen or active window, saved as PNG. There is a hotkey for the chronically lazy.</p></figure>
     </div>
-    <p class="gallery-note">Rendered directly from CyNotch's Rust UI engine with native transparent edges â€” zero desktop bleed.</p>
+    <p class="gallery-note">Rendered directly from CyNotch's Rust UI engine with native transparent edges — zero desktop bleed.</p>
   </div>
 </section>
 
@@ -456,7 +456,7 @@ kbd{display:inline-flex;align-items:center;justify-content:center;min-width:26px
         <div><dt>Standby list</dt><dd>Standby is cache, not trash. Reordering it makes memory give way sooner under pressure.</dd></div>
         <div><dt>Triggers</dt><dd>Threshold at 70, 80 or 90 percent, or every 5, 15 and 30 minutes. The shot above shows a threshold of 80 percent with the interval disabled.</dd></div>
       </dl>
-      <p class="mem-quote">â€œJudgment is passed! Excess RAM purged.â€<small>Cyno, after a successful purge</small></p>
+      <p class="mem-quote">“Judgment is passed! Excess RAM purged.”<small>Cyno, after a successful purge</small></p>
     </div>
     <div class="reveal cyno-stage">
       <div class="cyno-wish-wrap" aria-hidden="true">
@@ -475,7 +475,7 @@ kbd{display:inline-flex;align-items:center;justify-content:center;min-width:26px
       <div class="mascot-card">
         <img class="cyno-portrait" src="./assets/cyno/cyno-icon.webp" alt="Official Genshin Impact Cyno character icon" width="64" height="64" loading="lazy">
         <img src="./assets/cynotch-icon-192.png" alt="CyNotch mascot" width="86" height="86">
-        <div><p>â€œThrough me, the law is made manifest.â€<small>General Cyno Â· Official Genshin Impact</small></p></div>
+        <div><p>“Through me, the law is made manifest.”<small>General Cyno · Official Genshin Impact</small></p></div>
       </div>
     </div>
     <div class="reveal">
@@ -500,8 +500,8 @@ kbd{display:inline-flex;align-items:center;justify-content:center;min-width:26px
       <p class="sec-lede">The same notch also holds a quick shelf, screen capture, live CPU and network readings, a notification drawer, a focus timer, tasks and system volume. You open one, use it, close it. Nothing multiplies.</p>
     </div>
     <div class="hub-shots">
-      <figure class="shot reveal"><button type="button" data-shot="Quick Shelf" data-img="./assets/real/cynotch-shelf.png" aria-label="Open full screenshot: Quick Shelf"><span class="shot-frame"><img src="./assets/real/cynotch-shelf.png" alt="Real screenshot of CyNotch Quick Shelf" width="696" height="273" loading="lazy"></span></button><figcaption><strong>Quick Shelf</strong><span>Real Â· v0.2.3 â†—</span></figcaption><p>Pinned URLs, shell snippets and files, one layer down. Click to copy or open.</p></figure>
-      <figure class="shot reveal"><button type="button" data-shot="Quick Capture" data-img="./assets/real/cynotch-capture.png" aria-label="Open full screenshot: Quick Capture"><span class="shot-frame"><img src="./assets/real/cynotch-capture.png" alt="Real screenshot of CyNotch Quick Capture" width="696" height="273" loading="lazy"></span></button><figcaption><strong>Quick Capture</strong><span>Real Â· v0.2.3 â†—</span></figcaption><p>Full screen or active window. PNG on disk, link to the folder.</p></figure>
+      <figure class="shot reveal"><button type="button" data-shot="Quick Shelf" data-img="./assets/real/cynotch-shelf.png" aria-label="Open full screenshot: Quick Shelf"><span class="shot-frame"><img src="./assets/real/cynotch-shelf.png" alt="Real screenshot of CyNotch Quick Shelf" width="696" height="273" loading="lazy"></span></button><figcaption><strong>Quick Shelf</strong><span>Real · v0.2.3 ↗</span></figcaption><p>Pinned URLs, shell snippets and files, one layer down. Click to copy or open.</p></figure>
+      <figure class="shot reveal"><button type="button" data-shot="Quick Capture" data-img="./assets/real/cynotch-capture.png" aria-label="Open full screenshot: Quick Capture"><span class="shot-frame"><img src="./assets/real/cynotch-capture.png" alt="Real screenshot of CyNotch Quick Capture" width="696" height="273" loading="lazy"></span></button><figcaption><strong>Quick Capture</strong><span>Real · v0.2.3 ↗</span></figcaption><p>Full screen or active window. PNG on disk, link to the folder.</p></figure>
     </div>
     <div class="feature-strip reveal" aria-label="More real features">
       <span>Live network</span><span>Screen Time</span><span>Tasks &amp; Todos</span><span>Notifications drawer</span><span>System volume</span><span>Focus timer</span><span>Notch placement</span><span>Fullscreen rules</span><span>Autostart</span><span>Horizontal &amp; vertical layouts</span>
@@ -517,16 +517,16 @@ kbd{display:inline-flex;align-items:center;justify-content:center;min-width:26px
       <p class="sec-lede">A Win32 layered window painted with DirectComposition and D3D11. tiny-skia rasterises the vectors, fontdue and GDI set the type, WinRT talks to your media session and notification centre. It compiles into one portable executable.</p>
       <p class="paper-statement">One .exe. Rust and Win32 handle the boring part.</p>
       <div class="dossier-links">
-        <a href="https://github.com/muhnbl/CyNotch/blob/main/OPTIMIZATION_REPORT.md" target="_blank" rel="noopener">Optimization report â†—</a>
-        <a href="https://github.com/muhnbl/CyNotch/releases/tag/v0.2.3" target="_blank" rel="noopener">Release notes â†—</a>
+        <a href="https://github.com/muhnbl/CyNotch/blob/main/OPTIMIZATION_REPORT.md" target="_blank" rel="noopener">Optimization report ↗</a>
+        <a href="https://github.com/muhnbl/CyNotch/releases/tag/v0.2.3" target="_blank" rel="noopener">Release notes ↗</a>
       </div>
     </div>
     <div class="reveal">
       <dl class="dtable">
         <div class="drow"><dt>Language</dt><dd>Rust, edition 2024, MSVC toolchain</dd></div>
-        <div class="drow"><dt>Binary</dt><dd>â‰ˆ 3.8 MB, stripped release build</dd></div>
-        <div class="drow"><dt>Idle CPU</dt><dd>â‰ˆ 2.6% of one core (v0.2.1)</dd></div>
-        <div class="drow"><dt>Working set</dt><dd>â‰ˆ 11.5 MB after Windows trim</dd></div>
+        <div class="drow"><dt>Binary</dt><dd>≈ 3.8 MB, stripped release build</dd></div>
+        <div class="drow"><dt>Idle CPU</dt><dd>≈ 2.6% of one core (v0.2.1)</dd></div>
+        <div class="drow"><dt>Working set</dt><dd>≈ 11.5 MB after Windows trim</dd></div>
         <div class="drow"><dt>Compositor</dt><dd>Win32 layered window, DirectComposition, D3D11 frosted glass</dd></div>
         <div class="drow"><dt>Vectors &amp; type</dt><dd><code>tiny-skia</code>, <code>fontdue</code>, Windows GDI</dd></div>
         <div class="drow"><dt>Media</dt><dd>WinRT GSMTC, CoreAudio</dd></div>
@@ -535,11 +535,11 @@ kbd{display:inline-flex;align-items:center;justify-content:center;min-width:26px
         <div class="drow"><dt>Release</dt><dd>v0.2.3, 17 November 2026</dd></div>
       </dl>
       <div class="quote-card">
-        <blockquote>â€œAdd Windows Direct2D + DirectWrite + WIC color-emoji rasterizer with cluster segmentation, plus Segoe UI Symbol &amp; Historic fallbacks. Verified 53/53 tests passing and clean --release build.â€</blockquote>
+        <blockquote>“Add Windows Direct2D + DirectWrite + WIC color-emoji rasterizer with cluster segmentation, plus Segoe UI Symbol &amp; Historic fallbacks. Verified 53/53 tests passing and clean --release build.”</blockquote>
         <cite>CyNotch v0.2.3 release notes</cite>
       </div>
       <div class="terminal">
-        <div class="terminal-bar"><span>Powershell Â· build from source</span><button class="copy-btn" type="button" data-copy="buildCmdRaw">Copy</button></div>
+        <div class="terminal-bar"><span>Powershell · build from source</span><button class="copy-btn" type="button" data-copy="buildCmdRaw">Copy</button></div>
 <pre id="buildCmd"><span class="prompt">PS&gt;</span> git clone https://github.com/muhnbl/CyNotch.git
 <span class="prompt">PS&gt;</span> cd CyNotch
 <span class="prompt">PS&gt;</span> cargo build --release
@@ -548,7 +548,7 @@ kbd{display:inline-flex;align-items:center;justify-content:center;min-width:26px
 cd CyNotch
 cargo build --release
 .\target\release\cynotch.exe</code>
-        <p class="terminal-note">Tests: <code>cargo test --release</code> Â· benchmarks: <code>cargo run --release --example bench_render -- 150</code></p>
+        <p class="terminal-note">Tests: <code>cargo test --release</code> · benchmarks: <code>cargo run --release --example bench_render -- 150</code></p>
       </div>
       <p class="dossier-fine">Performance figures are self-reported in the project's README, optimization report and release notes. This page did not benchmark them.</p>
     </div>
@@ -572,21 +572,21 @@ cargo build --release
         <div class="key-row"><span>Capture screen</span><kbd>Ctrl</kbd><kbd>Shift</kbd><kbd>S</kbd></div>
       </div>
       <p class="req">Windows 10 or 11, x64. No Rust toolchain, no runtime, no installer. The helper scripts in the ZIP only run when you call them.</p>
-      <p class="star-line">If it survives your RAM habits, <a href="https://github.com/muhnbl/CyNotch" target="_blank" rel="noopener">star the repo â†—</a>.</p>
+      <p class="star-line">If it survives your RAM habits, <a href="https://github.com/muhnbl/CyNotch" target="_blank" rel="noopener">star the repo ↗</a>.</p>
     </div>
     <div class="reveal">
       <div class="get">
         <div class="get-top"><span>Latest release</span><span class="get-ver">v0.2.3</span><span>17 Nov 2026</span></div>
-        <div class="get-size"><strong>3.9</strong><span>MB Â· portable Â· win64 x64</span></div>
+        <div class="get-size"><strong>3.9</strong><span>MB · portable · win64 x64</span></div>
         <a class="btn btn-primary btn-lg btn-block" href="https://github.com/muhnbl/CyNotch/releases/download/v0.2.3/CyNotch-v0.2.3-portable.exe">Download portable.exe <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><path d="M12 4v12m0 0 4-4m-4 4-4-4M5 20h14"/></svg></a>
-        <a class="btn btn-ghost btn-block" href="https://github.com/muhnbl/CyNotch/releases/download/v0.2.3/CyNotch-v0.2.3-portable-win64.zip">Get the win64 .zip Â· 1.9 MB</a>
+        <a class="btn btn-ghost btn-block" href="https://github.com/muhnbl/CyNotch/releases/download/v0.2.3/CyNotch-v0.2.3-portable-win64.zip">Get the win64 .zip · 1.9 MB</a>
         <div class="get-links">
-          <a href="https://github.com/muhnbl/CyNotch/releases" target="_blank" rel="noopener">All releases â†—</a>
-          <a href="https://github.com/muhnbl/CyNotch/releases/tag/v0.2.3" target="_blank" rel="noopener">Release notes â†—</a>
-          <a href="https://github.com/muhnbl/CyNotch" target="_blank" rel="noopener">Source â†—</a>
+          <a href="https://github.com/muhnbl/CyNotch/releases" target="_blank" rel="noopener">All releases ↗</a>
+          <a href="https://github.com/muhnbl/CyNotch/releases/tag/v0.2.3" target="_blank" rel="noopener">Release notes ↗</a>
+          <a href="https://github.com/muhnbl/CyNotch" target="_blank" rel="noopener">Source ↗</a>
         </div>
         <div class="hash">
-          <div class="hash-head"><span>SHA-256 Â· portable.exe</span><button class="copy-btn" type="button" data-copy="exeHash">Copy</button></div>
+          <div class="hash-head"><span>SHA-256 · portable.exe</span><button class="copy-btn" type="button" data-copy="exeHash">Copy</button></div>
           <code id="exeHash">ce08744841abe00ebe1538983cd4c77ca09bca6c41e13d9a3d8b478889181a60</code>
         </div>
         <p class="get-note">Verify the checksum before running. ZIP digest: 46a1ccccc0fbf0b6b366822f2f43517aa614e88ef43a12d3c80c1594af9b5443</p>
@@ -600,18 +600,18 @@ cargo build --release
   <div class="wrap">
     <div class="foot-sign">
       <img src="./assets/cynotch-icon-192.png" alt="CyNotch mascot" width="54" height="54">
-      <p>â€œThrough me, the law is made manifest.â€</p>
-      <div class="foot-cta"><a class="btn btn-primary" href="#install">Get CyNotch</a><a class="btn btn-ghost" href="https://github.com/muhnbl/CyNotch" target="_blank" rel="noopener">GitHub â†—</a></div>
+      <p>“Through me, the law is made manifest.”</p>
+      <div class="foot-cta"><a class="btn btn-primary" href="#install">Get CyNotch</a><a class="btn btn-ghost" href="https://github.com/muhnbl/CyNotch" target="_blank" rel="noopener">GitHub ↗</a></div>
     </div>
     <div class="foot-grid">
       <div class="foot-brand"><span class="brand-name">CyNotch</span><p>A Dynamic Island for Windows, built in Rust and themed after Cyno. Unofficial fan project.</p></div>
       <nav class="foot-col" aria-label="Product links"><h3>Product</h3><a href="#install">Download</a><a href="https://github.com/muhnbl/CyNotch/releases" target="_blank" rel="noopener">Releases</a><a href="https://github.com/muhnbl/CyNotch/issues" target="_blank" rel="noopener">Issues</a><a href="#build">Build from source</a></nav>
       <nav class="foot-col" aria-label="Project links"><h3>Project</h3><a href="https://github.com/muhnbl/CyNotch/blob/main/OPTIMIZATION_REPORT.md" target="_blank" rel="noopener">Optimization report</a><a href="https://github.com/muhnbl/CyNotch/tree/main/src" target="_blank" rel="noopener">Source tree</a><a href="https://github.com/muhnbl/CyNotch/tree/main/tests" target="_blank" rel="noopener">Tests &amp; benchmarks</a></nav>
-      <div class="foot-col"><h3>Credits</h3><span>Inspired by Nusa &amp; Layzee</span><a href="https://lrclib.net" target="_blank" rel="noopener">Lyrics by LRCLIB â†—</a><a href="https://www.hoyoverse.com" target="_blank" rel="noopener">Cyno Â· Genshin Impact â†—</a></div>
+      <div class="foot-col"><h3>Credits</h3><span>Inspired by Nusa &amp; Layzee</span><a href="https://lrclib.net" target="_blank" rel="noopener">Lyrics by LRCLIB ↗</a><a href="https://www.hoyoverse.com" target="_blank" rel="noopener">Cyno · Genshin Impact ↗</a></div>
     </div>
     <div class="foot-legal">
-      <p>Cyno is a character from Genshin Impact, Â© HoYoverse. CyNotch is an unofficial fan project and is not affiliated with, endorsed by, or sponsored by HoYoverse. Lyrics data comes from LRCLIB. All UI captures on this page are rendered directly from CyNotch's Rust UI engine with transparent edges.</p>
-      <div class="foot-bottom"><span>Â© 2026 muhnbl</span><span>Version 0.2.3 Â· built with Rust 2024</span><span>Made at the top of the screen</span></div>
+      <p>Cyno is a character from Genshin Impact, © HoYoverse. CyNotch is an unofficial fan project and is not affiliated with, endorsed by, or sponsored by HoYoverse. Lyrics data comes from LRCLIB. All UI captures on this page are rendered directly from CyNotch's Rust UI engine with transparent edges.</p>
+      <div class="foot-bottom"><span>© 2026 muhnbl</span><span>Version 0.2.3 · built with Rust 2024</span><span>Made at the top of the screen</span></div>
     </div>
   </div>
   <div class="foot-word" aria-hidden="true">CyNotch</div>
@@ -692,7 +692,7 @@ cargo build --release
       lastFocus = btn;
       lightboxImg.src = btn.getAttribute("data-img");
       lightboxImg.alt = "Real CyNotch screenshot: " + btn.getAttribute("data-shot");
-      lightboxTitle.textContent = btn.getAttribute("data-shot") + " Â· real screenshot Â· v0.2.3";
+      lightboxTitle.textContent = btn.getAttribute("data-shot") + " · real screenshot · v0.2.3";
       lightbox.hidden = false;
       document.body.style.overflow = "hidden";
       lightboxClose.focus();
