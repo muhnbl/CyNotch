@@ -1,0 +1,3 @@
+User-agent: *
+Allow: /
+Sitemap: https://muhnbl.github.io/CyNotch/sitemap.xml
