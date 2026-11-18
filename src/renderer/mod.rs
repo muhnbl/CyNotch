@@ -256,7 +256,7 @@ impl Renderer {
             r_bl_bits: r_bl.to_bits(),
             expand_milli: (t * 1000.0).round() as u32,
             frosted,
-            frosted_opacity_pct: state.frosted_opacity_pct,
+            frosted_opacity_pct: state.frosted_alpha_pct(),
             placement: state.placement as u8,
         };
         let can_cache_expanded = settled_expanded
@@ -336,7 +336,7 @@ impl Renderer {
                 hover_slots: state.hover_slots,
                 micro_interactions: state.micro_interactions,
                 frosted,
-                frosted_opacity_pct: state.frosted_opacity_pct,
+                frosted_opacity_pct: state.frosted_alpha_pct(),
                 type_scale: state.type_scale,
                 clip_bounds: None,
             };
@@ -388,7 +388,7 @@ impl Renderer {
                 hover_slots: state.hover_slots,
                 micro_interactions: state.micro_interactions,
                 frosted,
-                frosted_opacity_pct: state.frosted_opacity_pct,
+                frosted_opacity_pct: state.frosted_alpha_pct(),
                 type_scale: state.type_scale,
                 clip_bounds: None,
             };
@@ -399,9 +399,9 @@ impl Renderer {
                     (
                         tok::scale_frosted(
                             tok::obsidian_shell_frosted(),
-                            state.frosted_opacity_pct,
+                            state.frosted_alpha_pct(),
                         ),
-                        tok::scale_frosted(tok::obsidian_deep_frosted(), state.frosted_opacity_pct),
+                        tok::scale_frosted(tok::obsidian_deep_frosted(), state.frosted_alpha_pct()),
                     )
                 } else {
                     (tok::obsidian_shell(), tok::obsidian_deep())
@@ -412,7 +412,7 @@ impl Renderer {
 
                 // 2. Clipped Internal Atmospheric Aurora Glows (Photo-matched bottom purple bloom)
                 let glow_scale = if frosted {
-                    (state.frosted_opacity_pct as f32 / 68.0).clamp(0.25, 1.0)
+                    (state.frosted_alpha_pct() as f32 / 68.0).clamp(0.25, 1.0)
                 } else {
                     1.0
                 };
@@ -1196,7 +1196,7 @@ impl Renderer {
         let (dock_w, item_w) = AppState::dock_metrics(dock_modes.len());
 
         let well_col = if state.is_frosted_active() {
-            tok::scale_frosted(tok::surface_well_frosted(), state.frosted_opacity_pct)
+            tok::scale_frosted(tok::surface_well_frosted(), state.frosted_alpha_pct())
         } else {
             tok::surface_well()
         };

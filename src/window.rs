@@ -1,6 +1,8 @@
 #![allow(unsafe_op_in_unsafe_fn)]
 
 use crate::audio::set_master_volume;
+use crate::backdrop::{self, Backdrop};
+use crate::backdrop_geom::{self, ShellGeom};
 use crate::capture::{
     capture_foreground_window_rect, copy_text_to_clipboard, grab_full_desktop_frame,
     grab_rect_frame, pictures_capture_dir, read_clipboard_text, save_frame, shell_open_path,
@@ -14,7 +16,7 @@ use crate::models::{
 };
 use crate::notifications;
 use crate::renderer::Renderer;
-use std::cell::RefCell;
+use std::cell::{Cell, RefCell};
 use std::sync::atomic::{AtomicBool, AtomicI32, AtomicIsize, AtomicU32, Ordering};
 use std::sync::{Arc, Mutex};
 use windows::Win32::Foundation::*;
@@ -798,6 +800,15 @@ struct NotchUi {
     last_rgn: Option<(i32, i32, i32, i32, i32, u8, u8, u8)>,
     idle_since: Option<std::time::Instant>,
     idle_caches_trimmed: bool,
+    /// Paired frosted-blur window (see `backdrop.rs`). `None` until first needed.
+    backdrop: Option<Backdrop>,
+    backdrop_wanted: bool,
+    backdrop_geom: Option<ShellGeom>,
+    backdrop_inset: i32,
+}
+
+thread_local! {
+    static BACKDROP_SYNCING: Cell<bool> = const { Cell::new(false) };
 }
 
 thread_local! {
@@ -933,6 +944,113 @@ unsafe fn sync_notch_window_region(hwnd: HWND, state: &AppState, cw: i32, ch: i3
         });
     } else {
         let _ = DeleteObject(HGDIOBJ(hrgn.0));
+    }
+}
+
+/// Visible-shell silhouette in content-window client coordinates, derived from
+/// the same state snapshot (and canvas size) the renderer draws with, and clipped
+/// to `[0, cw] x [0, ch]` so sliding banners never bleed onto adjacent monitors.
+pub fn notch_backdrop_geom(state: &AppState, cw: i32, ch: i32) -> Option<ShellGeom> {
+    let cw = cw.max(1);
+    let ch = ch.max(1);
+    let (ox, oy) = Renderer::compute_origin(state, cw as f32, ch as f32);
+    let (r_tl, r_tr, r_br, r_bl) = state.corner_radii();
+    let max_r = r_tl.max(r_tr).max(r_br).max(r_bl);
+    let mut sharp_mask = 0u8;
+    if r_tl < 1.0 {
+        sharp_mask |= 1;
+    }
+    if r_tr < 1.0 {
+        sharp_mask |= 2;
+    }
+    if r_br < 1.0 {
+        sharp_mask |= 4;
+    }
+    if r_bl < 1.0 {
+        sharp_mask |= 8;
+    }
+    let flush = matches!(state.notch_style, NotchStyle::EdgeFlush);
+    let place = match state.placement {
+        NotchPlacement::Top => 0,
+        NotchPlacement::Left => 1,
+        NotchPlacement::Right => 2,
+    };
+    ShellGeom::from_shell_clipped(
+        ox,
+        oy,
+        state.current_width.max(1.0),
+        state.current_height.max(1.0),
+        cw,
+        ch,
+        max_r,
+        flush,
+        place,
+        sharp_mask,
+    )
+}
+
+/// Keeps the paired blur window glued under the notch using the geometry cached
+/// by the last `redraw_window`. Safe to call from any window message: it never
+/// locks `AppState`, skips quietly if `NOTCH_UI` is mid-borrow, and ignores
+/// re-entrant calls.
+unsafe fn sync_notch_backdrop(hwnd: HWND, visible_override: Option<bool>) {
+    if BACKDROP_SYNCING.get() {
+        return;
+    }
+    BACKDROP_SYNCING.set(true);
+    sync_notch_backdrop_inner(hwnd, visible_override);
+    BACKDROP_SYNCING.set(false);
+}
+
+unsafe fn sync_notch_backdrop_inner(hwnd: HWND, visible_override: Option<bool>) {
+    let snap = NOTCH_UI
+        .try_with(|c| {
+            c.try_borrow()
+                .ok()
+                .map(|ui| (ui.backdrop_wanted, ui.backdrop_geom, ui.backdrop_inset))
+        })
+        .ok()
+        .flatten();
+    let Some((wanted, geom, inset)) = snap else {
+        return;
+    };
+    let visible = visible_override.unwrap_or_else(|| IsWindowVisible(hwnd).as_bool());
+    let placement = if wanted && visible {
+        geom.and_then(|g| {
+            let mut rc = RECT::default();
+            if GetWindowRect(hwnd, &mut rc).is_ok() {
+                backdrop_geom::placement(rc.left, rc.top, &g, inset)
+            } else {
+                None
+            }
+        })
+    } else {
+        None
+    };
+    if placement.is_none() && !wanted {
+        // Nothing to show: avoid creating a window just to hide it.
+        let has = NOTCH_UI
+            .try_with(|c| c.try_borrow().map(|ui| ui.backdrop.is_some()).unwrap_or(false))
+            .unwrap_or(false);
+        if !has {
+            return;
+        }
+    }
+    let taken = NOTCH_UI
+        .try_with(|c| c.try_borrow_mut().ok().map(|mut ui| ui.backdrop.take()))
+        .ok()
+        .flatten();
+    let Some(mut slot) = taken else {
+        return;
+    };
+    let failed = backdrop::sync_slot(&mut slot, hwnd, placement);
+    let _ = NOTCH_UI.try_with(|c| {
+        if let Ok(mut ui) = c.try_borrow_mut() {
+            ui.backdrop = slot;
+        }
+    });
+    if failed {
+        post_redraw();
     }
 }
 
@@ -1247,6 +1365,7 @@ unsafe fn ensure_topmost_zorder(hwnd: HWND) {
                                 | "XamlExplorerHostIslandWindow"
                                 | "SearchHost"
                                 | "StartMenuExperienceHost"
+                                | backdrop::CLASS_NAME_STR
                         );
                         if !transient_shell {
                             needs_promote = true;
@@ -1868,6 +1987,17 @@ unsafe extern "system" fn wnd_proc(
 unsafe fn wnd_proc_inner(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPARAM) -> LRESULT {
     match msg {
         WM_MOUSEACTIVATE => LRESULT(MA_NOACTIVATE as isize),
+        WM_WINDOWPOSCHANGED => {
+            let r = DefWindowProcW(hwnd, msg, wparam, lparam);
+            sync_notch_backdrop(hwnd, None);
+            r
+        }
+        WM_SHOWWINDOW => {
+            let r = DefWindowProcW(hwnd, msg, wparam, lparam);
+            // IsWindowVisible is not yet updated inside this message: use wparam.
+            sync_notch_backdrop(hwnd, Some(wparam.0 != 0));
+            r
+        }
         WM_WINDOWPOSCHANGING => {
             if lparam.0 != 0 {
                 let wp = &mut *(lparam.0 as *mut WINDOWPOS);
@@ -3357,6 +3487,14 @@ unsafe fn wnd_proc_inner(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPARAM) -
                         }
                     }
                     idle_collapsed = is_idle_collapsed(&state);
+                    if one_sec_elapsed {
+                        let win_trans = notifications::is_windows_transparency_enabled();
+                        if state.windows_transparency_enabled != win_trans {
+                            state.windows_transparency_enabled = win_trans;
+                            needs_redraw = true;
+                            crate::settings_window::post_redraw();
+                        }
+                    }
                 }
 
                 NOTCH_UI.with_borrow_mut(|ui| {
@@ -3455,7 +3593,11 @@ unsafe fn wnd_proc_inner(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPARAM) -
                 ui.last_rgn = None;
                 ui.idle_since = None;
                 ui.idle_caches_trimmed = false;
+                ui.backdrop = None;
+                ui.backdrop_wanted = false;
+                ui.backdrop_geom = None;
             });
+            crate::composition::release_thread_locals();
             PostQuitMessage(0);
             LRESULT(0)
         }
@@ -3558,6 +3700,31 @@ unsafe fn redraw_window(hwnd: HWND) {
     ren.resize(canvas_w as u32, canvas_h as u32);
     ren.render_centered(&state_snapshot, pointer_pos);
 
+    {
+        // Cache the shell silhouette BEFORE any SetWindowPos so the
+        // WM_WINDOWPOSCHANGED hook positions the blur from fresh numbers.
+        let animating = state_snapshot.needs_animation_timer_ms().is_some();
+        let wanted = state_snapshot.is_frosted_active()
+            && backdrop::blur_available()
+            && !(backdrop::HIDE_WHILE_ANIMATING && animating);
+        backdrop::set_blur_px(state_snapshot.frosted_blur_px);
+        let geom = notch_backdrop_geom(&state_snapshot, canvas_w, canvas_h);
+        let base_inset = geom
+            .as_ref()
+            .map(|g| backdrop::inset_for_radius(g.diam as f32 * 0.5))
+            .unwrap_or(backdrop::REST_INSET);
+        let inset = if animating {
+            base_inset + backdrop::ANIMATION_EXTRA_INSET
+        } else {
+            base_inset
+        };
+        NOTCH_UI.with_borrow_mut(|ui| {
+            ui.backdrop_wanted = wanted;
+            ui.backdrop_geom = geom;
+            ui.backdrop_inset = inset;
+        });
+    }
+
     if force_full {
         let _ = SetWindowPos(
             hwnd,
@@ -3606,4 +3773,5 @@ unsafe fn redraw_window(hwnd: HWND) {
     if ok {
         sync_notch_window_region(hwnd, &state_snapshot, canvas_w, canvas_h);
     }
+    sync_notch_backdrop(hwnd, None);
 }

@@ -1344,8 +1344,23 @@ impl AppState {
         124.0 + (cat.index() as f32) * 52.0
     }
 
+    /// True when the translucent "frosted" shell look is in use: the user has
+    /// Frosted Glass on AND Windows "Transparency effects" is on. When Windows
+    /// transparency is off the shell stays opaque, matching system behaviour.
     pub fn is_frosted_active(&self) -> bool {
-        false
+        self.frosted_glass_enabled && self.windows_transparency_enabled
+    }
+
+    /// Tint opacity actually used for the frosted shell. With a live blur
+    /// backdrop the user's value applies; without one (blur unavailable or
+    /// disabled) the glass is made denser so text stays readable.
+    pub fn frosted_alpha_pct(&self) -> u32 {
+        if crate::backdrop::blur_available() {
+            self.frosted_opacity_pct
+        } else {
+            self.frosted_opacity_pct
+                .max(crate::backdrop::GLASS_FALLBACK_OPACITY_PCT)
+        }
     }
 
     /// True when an active banner should punch through fullscreen / borderless apps (games, video).
@@ -1614,11 +1629,15 @@ impl AppState {
                 eff.sync_windows_borders = Some(self.remove_windows_borders);
                 eff.redraw_notch = false;
             }
-            Action::SetFrostedOpacity(_pct) => {
-                eff.redraw_notch = false;
+            Action::SetFrostedOpacity(pct) => {
+                self.frosted_opacity_pct = pct.clamp(25, 95);
+                self.save_config();
+                eff.sync_frosted_window = true;
             }
-            Action::SetFrostedBlur(_px) => {
-                eff.redraw_notch = false;
+            Action::SetFrostedBlur(px) => {
+                self.frosted_blur_px = px.clamp(4, 40);
+                self.save_config();
+                eff.sync_frosted_window = true;
             }
             Action::ToggleNotifListener => {
                 self.notif_listener_enabled = !self.notif_listener_enabled;

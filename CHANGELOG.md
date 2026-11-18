@@ -1,5 +1,13 @@
 # Changelog
 
+## v0.2.4 (2026-11-18)
+### Frosted Blur Backdrop & Transparency Controls (`src/backdrop.rs`, `src/backdrop_geom.rs`, `src/settings_window.rs`)
+- Added paired redirected `WS_POPUP` frosted-blur backdrop windows (`CyNotchBackdropClass`) below both the notch and Preferences windows, preserving `WS_EX_NOREDIRECTIONBITMAP` on the content windows for screenshot/OBS visibility.
+- Enabled Windows 11 `DWMWCP_ROUND` corner rounding and radius-aware inset (`inset_for_radius`) so rounded shells never show sharp 90-degree backdrop corners across all notch states and DPI scales.
+- Added `--no-frost` / `CYNOTCH_NO_FROST=1` opt-out and automatic fallback when Windows Transparency Effects are disabled.
+- Added **Frosted Blur & Transparency**, **Glass Opacity** (`35%`, `50%`, `68%`, `85%`), and **Blur Intensity** (`Soft`, `Medium`, `Deep`, `Ultra`) controls in Preferences (`General -> Interaction & Idle Visuals`).
+- Fixed DComp/DispatcherQueue thread-local teardown crash (`0x0000087a`) on exit.
+
 ## v0.2.3 (2026-11-17)
 ### Color Emoji & Unicode Fallback (`src/font.rs`)
 - Added Windows Direct2D + DirectWrite + WIC color-emoji rasterizer (`D2D1_DRAW_TEXT_OPTIONS_ENABLE_COLOR_FONT`) with cluster segmentation (`next_cluster`) for ZWJ, flag, keycap, and skin-tone sequences.

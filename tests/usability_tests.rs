@@ -1892,16 +1892,30 @@ fn test_v19_frosted_glass_alpha_and_config_roundtrip() {
     state.mode = NotchMode::Home;
     state.sync_preview_settled();
 
-    // Frosted glass feature is disabled: is_frosted_active() is always false (opaque Obsidian mode)
+    // Frosted glass active when both frosted_glass_enabled and windows_transparency_enabled are true
     state.windows_transparency_enabled = true;
     state.frosted_glass_enabled = true;
-    assert!(!state.is_frosted_active());
+    assert!(state.is_frosted_active());
 
     // Sample interior background shell pixel away from foreground text/cards
-    let mut r_opaque = Renderer::new(state.canvas_width(), state.canvas_height());
-    r_opaque.render_centered(&state, None);
     let sample_x = (state.expanded_width() * 0.48) as usize;
     let sample_y = (state.expanded_height() - 6.0) as usize;
+
+    let mut r_frosted = Renderer::new(state.canvas_width(), state.canvas_height());
+    r_frosted.render_centered(&state, None);
+    let idx_fr = (sample_y * r_frosted.pixmap.width() as usize + sample_x) * 4;
+    let frosted_alpha = r_frosted.pixmap.data()[idx_fr + 3];
+    assert!(
+        frosted_alpha < 245,
+        "Expected active frosted shell alpha < 245, got {}",
+        frosted_alpha
+    );
+
+    // Opaque fallback when Windows Transparency effects are disabled
+    state.windows_transparency_enabled = false;
+    assert!(!state.is_frosted_active());
+    let mut r_opaque = Renderer::new(state.canvas_width(), state.canvas_height());
+    r_opaque.render_centered(&state, None);
     let idx = (sample_y * r_opaque.pixmap.width() as usize + sample_x) * 4;
     let opaque_alpha = r_opaque.pixmap.data()[idx + 3];
     assert!(
@@ -2613,13 +2627,23 @@ fn test_v26_frosted_opacity_blur_exclusivity() {
     assert!(!st.is_frosted_active());
 
     st.windows_transparency_enabled = true;
-    assert!(!st.is_frosted_active());
+    assert!(st.is_frosted_active());
 
-    // Frosted opacity/blur actions are no-ops now that frosted glass is disabled.
-    st.apply_setting_action(Action::SetFrostedOpacity(52));
-    assert_eq!(st.frosted_opacity_pct, 68);
-    st.apply_setting_action(Action::SetFrostedBlur(32));
-    assert_eq!(st.frosted_blur_px, 20);
+    let eff_op = st
+        .apply_setting_action(Action::SetFrostedOpacity(52))
+        .expect("SetFrostedOpacity must return SettingEffects");
+    assert!(eff_op.sync_frosted_window);
+    assert_eq!(st.frosted_opacity_pct, 52);
+    st.apply_setting_action(Action::SetFrostedOpacity(10));
+    assert_eq!(st.frosted_opacity_pct, 25);
+
+    let eff_blur = st
+        .apply_setting_action(Action::SetFrostedBlur(32))
+        .expect("SetFrostedBlur must return SettingEffects");
+    assert!(eff_blur.sync_frosted_window);
+    assert_eq!(st.frosted_blur_px, 32);
+    st.apply_setting_action(Action::SetFrostedBlur(99));
+    assert_eq!(st.frosted_blur_px, 40);
     let low = tok::scale_frosted(tok::obsidian_shell_frosted(), 35);
     let high = tok::scale_frosted(tok::obsidian_shell_frosted(), 95);
     assert!(low.alpha() < high.alpha());
@@ -2785,7 +2809,7 @@ fn test_v27_grip_right_placement_nonblank_drag_and_frosted_glass() {
     st_fr.frosted_glass_enabled = true;
     st_fr.windows_transparency_enabled = true;
     st_fr.frosted_opacity_pct = 82;
-    assert!(!st_fr.is_frosted_active());
+    assert!(st_fr.is_frosted_active());
     let mut r_fr = Renderer::new(st_fr.canvas_width(), st_fr.canvas_height());
     r_fr.render_centered(&st_fr, None);
 
@@ -2800,7 +2824,17 @@ fn test_v27_grip_right_placement_nonblank_drag_and_frosted_glass() {
         "Expected opaque card alpha >= 235, got {}",
         opaque_a
     );
-    assert_eq!(frosted_a, opaque_a);
+    assert!(
+        frosted_a < opaque_a,
+        "Expected frosted card alpha ({}) < opaque card alpha ({})",
+        frosted_a,
+        opaque_a
+    );
+    assert!(
+        frosted_a < 235 && frosted_a >= 80,
+        "Expected translucent frosted card alpha in [80, 235), got {}",
+        frosted_a
+    );
 }
 
 #[test]
@@ -2848,7 +2882,57 @@ fn test_v28_remove_windows_borders_toggle_and_settings_hit() {
 }
 
 #[test]
+fn test_v29_frosted_blur_toggle_in_settings_window() {
+    use cynotch::font::FontRenderer;
+    use cynotch::models::{Action, AppState, SettingsCategory, ToggleId};
+    use cynotch::settings_window::render_settings_pixmap_with_meta;
+    use tiny_skia::{Mask, Pixmap};
+
+    let mut st = AppState::new_for_preview();
+    let initial = st.frosted_glass_enabled;
+    assert_eq!(st.toggle_target(ToggleId::FrostedGlass), initial);
+
+    let eff = st
+        .apply_setting_action(Action::ToggleFrostedGlass)
+        .expect("ToggleFrostedGlass must return SettingEffects");
+    assert!(eff.sync_frosted_window);
+    assert!(eff.redraw_notch);
+    assert_eq!(st.frosted_glass_enabled, !initial);
+
+    st.settings_category = SettingsCategory::General;
+    let w = AppState::SETTINGS_WIDTH as u32;
+    let h = AppState::SETTINGS_HEIGHT as u32;
+    let mut pm = Pixmap::new(w, h).unwrap();
+    let mut mask = Mask::new(w, h).unwrap();
+    let mut fonts = FontRenderer::new();
+    let (_hits, max_scroll) =
+        render_settings_pixmap_with_meta(&st, None, &mut pm, &mut mask, &mut fonts);
+    st.set_settings_scroll(SettingsCategory::General, max_scroll);
+    let (scrolled_hits, _) =
+        render_settings_pixmap_with_meta(&st, None, &mut pm, &mut mask, &mut fonts);
+    assert!(
+        scrolled_hits
+            .iter()
+            .any(|hit| hit.action == Action::ToggleFrostedGlass),
+        "Expected ToggleFrostedGlass hit target in General settings pane"
+    );
+    assert!(
+        scrolled_hits
+            .iter()
+            .any(|hit| matches!(hit.action, Action::SetFrostedOpacity(_))),
+        "Expected SetFrostedOpacity hit target in General settings pane"
+    );
+    assert!(
+        scrolled_hits
+            .iter()
+            .any(|hit| matches!(hit.action, Action::SetFrostedBlur(_))),
+        "Expected SetFrostedBlur hit target in General settings pane"
+    );
+}
+
+#[test]
 fn test_notification_banner_slides_from_placement_edge() {
+    let mut r = Renderer::new(1, 1);
     for placement in [
         NotchPlacement::Top,
         NotchPlacement::Left,
@@ -2857,6 +2941,7 @@ fn test_notification_banner_slides_from_placement_edge() {
         let mut st = AppState::new_for_preview();
         st.placement = placement;
         st.minimized_island = true;
+        st.notification_secs = 30;
         st.set_hovered(false);
         st.sync_preview_settled();
 
@@ -2894,7 +2979,7 @@ fn test_notification_banner_slides_from_placement_edge() {
             ),
         }
 
-        let mut r = Renderer::new(cw as u32, ch as u32);
+        r.resize(cw as u32, ch as u32);
         r.render_centered(&st, None);
 
         for _ in 0..120 {
@@ -3032,6 +3117,68 @@ fn test_multi_notification_coalescing_queue_and_history() {
             rh.hits
                 .iter()
                 .any(|h| h.action == Action::DismissHistoryItem(0))
+        );
+    }
+}
+
+#[test]
+fn test_notch_backdrop_geom_clips_slide_in_and_corner_dock_sharp_mask() {
+    use cynotch::models::{AppState, NotchPlacement, NotchStyle};
+    use cynotch::window::notch_backdrop_geom;
+
+    // 1. Corner-docked Floating top-left notch carries sharp_mask != 0 while flush == false
+    let mut st_corner = AppState::new_for_preview();
+    st_corner.placement = NotchPlacement::Top;
+    st_corner.notch_style = NotchStyle::Floating;
+    st_corner.target_anchor_x = 0.0;
+    st_corner.target_anchor_y = 0.0;
+    st_corner.sync_preview_settled();
+    assert!(st_corner.is_corner_docked());
+    let g_corner = notch_backdrop_geom(
+        &st_corner,
+        st_corner.canvas_width() as i32,
+        st_corner.canvas_height() as i32,
+    )
+    .expect("settled corner-docked Floating notch should produce backdrop geom");
+    assert!(!g_corner.flush);
+    assert_ne!(
+        g_corner.sharp_mask, 0,
+        "corner-docked Floating notch should propagate sharp_mask to backdrop"
+    );
+
+    // 2. Sliding notification banners must be clipped to [0, cw] x [0, ch]
+    for placement in [
+        NotchPlacement::Top,
+        NotchPlacement::Left,
+        NotchPlacement::Right,
+    ] {
+        let mut st = AppState::new_for_preview();
+        st.placement = placement;
+        st.notch_style = NotchStyle::Floating;
+        st.set_hovered(false);
+        st.push_system_toast(
+            "CyNotch".to_string(),
+            "Clip Check".to_string(),
+            "Sliding banner".to_string(),
+            None,
+        );
+        st.current_width = 320.0;
+        st.current_height = 68.0;
+        st.anim_notif_t = 0.45; // mid-slide: extends outside canvas outer edge
+        let cw = st.canvas_width() as i32;
+        let ch = st.canvas_height() as i32;
+        let g = notch_backdrop_geom(&st, cw, ch)
+            .expect("mid-slide notification (>8px visible) should produce clipped geom");
+        assert!(g.ox >= 0 && g.oy >= 0);
+        assert!(g.ox + g.w <= cw && g.oy + g.h <= ch);
+        assert!(g.flush, "clipped outer edge should be marked flush");
+
+        // Early sliver (< MIN_SIDE) returns None instead of bleeding or creating tiny region
+        st.anim_notif_t = 0.02;
+        assert!(
+            notch_backdrop_geom(&st, cw, ch).is_none(),
+            "tiny < 8px notification sliver should suppress backdrop for {:?}",
+            placement
         );
     }
 }

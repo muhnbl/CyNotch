@@ -1,5 +1,7 @@
 #![allow(unsafe_op_in_unsafe_fn, clippy::too_many_arguments)]
 
+use crate::backdrop::{self, Backdrop};
+use crate::backdrop_geom::{self, ShellGeom};
 use crate::composition::DCompHost;
 use crate::font::{FontRenderer, Weight};
 use crate::icons::{self, Icon};
@@ -59,6 +61,14 @@ struct SettingsUi {
     drag_origin: Option<(POINT, POINT)>,
     timer_ms: u32,
     last_anim: Option<std::time::Instant>,
+    /// Paired frosted-blur window (see `backdrop.rs`).
+    backdrop: Option<Backdrop>,
+    backdrop_wanted: bool,
+    backdrop_geom: Option<ShellGeom>,
+}
+
+thread_local! {
+    static SETTINGS_BACKDROP_SYNCING: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
 }
 
 thread_local! {
@@ -360,6 +370,65 @@ unsafe fn sync_settings_timer(hwnd: HWND, desired_ms: Option<u32>) {
     }
 }
 
+/// Keeps the paired blur window under the Preferences window. Same contract as
+/// `window::sync_notch_backdrop`: no `AppState` lock, skips if `SETTINGS_UI`
+/// is mid-borrow, ignores re-entrancy.
+unsafe fn sync_settings_backdrop(hwnd: HWND, visible_override: Option<bool>) {
+    if SETTINGS_BACKDROP_SYNCING.get() {
+        return;
+    }
+    SETTINGS_BACKDROP_SYNCING.set(true);
+    sync_settings_backdrop_inner(hwnd, visible_override);
+    SETTINGS_BACKDROP_SYNCING.set(false);
+}
+
+unsafe fn sync_settings_backdrop_inner(hwnd: HWND, visible_override: Option<bool>) {
+    let snap = SETTINGS_UI
+        .try_with(|c| {
+            c.try_borrow()
+                .ok()
+                .map(|ui| (ui.backdrop_wanted, ui.backdrop_geom, ui.backdrop.is_some()))
+        })
+        .ok()
+        .flatten();
+    let Some((wanted, geom, has)) = snap else {
+        return;
+    };
+    if !wanted && !has {
+        return;
+    }
+    let visible = visible_override.unwrap_or_else(|| IsWindowVisible(hwnd).as_bool());
+    let placement = if wanted && visible {
+        geom.and_then(|g| {
+            let mut rc = RECT::default();
+            if GetWindowRect(hwnd, &mut rc).is_ok() {
+                backdrop_geom::placement(rc.left, rc.top, &g, backdrop::REST_INSET + 1)
+            } else {
+                None
+            }
+        })
+    } else {
+        None
+    };
+    let taken = SETTINGS_UI
+        .try_with(|c| c.try_borrow_mut().ok().map(|mut ui| ui.backdrop.take()))
+        .ok()
+        .flatten();
+    let Some(mut slot) = taken else {
+        return;
+    };
+    let failed = backdrop::sync_slot(&mut slot, hwnd, placement);
+    let _ = SETTINGS_UI.try_with(|c| {
+        if let Ok(mut ui) = c.try_borrow_mut() {
+            ui.backdrop = slot;
+        }
+    });
+    if failed {
+        crate::window::post_redraw();
+        post_redraw();
+    }
+}
+
 unsafe fn redraw_settings(hwnd: HWND) {
     redraw_settings_with_cache(hwnd, false);
 }
@@ -384,6 +453,18 @@ unsafe fn redraw_settings_with_cache(hwnd: HWND, allow_pane_cache: bool) {
     let pane_w_px = ((PANE_W * s).round() + (PANE_BLEED * s).round() * 2.0).max(1.0) as u32;
     let full_pane_h = (pane_content_height(snapshot.settings_category) + 10.0).max(PANE_H);
     let pane_h_px = (full_pane_h * s).round().max(1.0) as u32;
+
+    {
+        // Cache the window silhouette before any SetWindowPos below so the
+        // WM_WINDOWPOSCHANGED hook positions the blur from fresh numbers.
+        backdrop::set_blur_px(snapshot.frosted_blur_px);
+        let wanted = snapshot.is_frosted_active() && backdrop::blur_available();
+        let geom = ShellGeom::whole_window(int_w, int_h, 12.0 * s);
+        SETTINGS_UI.with_borrow_mut(|ui| {
+            ui.backdrop_wanted = wanted;
+            ui.backdrop_geom = Some(geom);
+        });
+    }
 
     let mut cur_rc = RECT::default();
     if GetWindowRect(hwnd, &mut cur_rc).is_ok() {
@@ -453,6 +534,7 @@ unsafe fn redraw_settings_with_cache(hwnd: HWND, allow_pane_cache: bool) {
             let _ = host.present_rgba_premultiplied(pm.data(), int_w as u32, int_h as u32);
         }
     });
+    sync_settings_backdrop(hwnd, None);
 }
 
 unsafe fn refresh_hover_after_redraw(hwnd: HWND) {
@@ -512,6 +594,17 @@ unsafe fn hide_settings_window(hwnd: HWND) {
 
 unsafe fn settings_wnd_proc_inner(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPARAM) -> LRESULT {
     match msg {
+        WM_WINDOWPOSCHANGED => {
+            let r = DefWindowProcW(hwnd, msg, wparam, lparam);
+            sync_settings_backdrop(hwnd, None);
+            r
+        }
+        WM_SHOWWINDOW => {
+            let r = DefWindowProcW(hwnd, msg, wparam, lparam);
+            // IsWindowVisible is not yet updated inside this message: use wparam.
+            sync_settings_backdrop(hwnd, Some(wparam.0 != 0));
+            r
+        }
         WM_APP_SETTINGS_REDRAW => {
             redraw_settings_with_cache(hwnd, true);
             LRESULT(0)
@@ -752,6 +845,13 @@ unsafe fn settings_wnd_proc_inner(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: 
                     if let Some(rm_borders) = eff.sync_windows_borders {
                         crate::borders::set_enabled(rm_borders);
                     }
+                    if eff.sync_frosted_window
+                        && let Some(st_arc) = get_settings_state()
+                        && let Ok(mut st) = st_arc.lock()
+                    {
+                        st.windows_transparency_enabled =
+                            notifications::is_windows_transparency_enabled();
+                    }
                     if eff.redraw_notch {
                         crate::window::post_redraw();
                     }
@@ -833,7 +933,7 @@ const CTRL_X_OFF: f32 = 188.0;
 
 fn pane_content_height(cat: SettingsCategory) -> f32 {
     match cat {
-        SettingsCategory::General => 274.0 + CARD_GAP + 448.0,
+        SettingsCategory::General => 274.0 + CARD_GAP + 580.0,
         SettingsCategory::Motion => 212.0 + CARD_GAP + 172.0,
         SettingsCategory::Modules => 270.0 + CARD_GAP + 158.0 + CARD_GAP + 214.0,
         SettingsCategory::Notifications => 228.0 + CARD_GAP + 250.0,
@@ -916,7 +1016,7 @@ fn compute_pane_state_sig(state: &AppState) -> u64 {
         state.idle_metric as u8,
         state.type_scale as u8,
         state.windows_transparency_enabled,
-        state.frosted_opacity_pct,
+        state.frosted_alpha_pct(),
         state.remove_windows_borders,
     )
         .hash(&mut h);
@@ -1079,7 +1179,7 @@ fn render_settings_pixmap_into(
         .max(0.5);
     let w = AppState::SETTINGS_WIDTH;
     let h = AppState::SETTINGS_HEIGHT;
-    let r = 22.0;
+    let r = 12.0;
     let frosted = state.is_frosted_active();
 
     let pane_top_pad = 4.0;
@@ -1110,7 +1210,7 @@ fn render_settings_pixmap_into(
         state.type_scale as u8,
         state.settings_category as u8,
         frosted,
-        state.frosted_opacity_pct,
+        state.frosted_alpha_pct(),
         sidebar_hover_bits,
     );
     let chrome_hit = SETTINGS_CHROME.with_borrow(|slot| {
@@ -1141,13 +1241,13 @@ fn render_settings_pixmap_into(
             hover_slots: state.settings_hover_slots,
             micro_interactions: state.micro_interactions,
             frosted,
-            frosted_opacity_pct: state.frosted_opacity_pct,
+            frosted_opacity_pct: state.frosted_alpha_pct(),
             type_scale: state.type_scale,
             clip_bounds: None,
         };
 
         let well_col = if frosted {
-            tok::scale_frosted(tok::surface_well_frosted(), state.frosted_opacity_pct)
+            tok::scale_frosted(tok::surface_well_frosted(), state.frosted_alpha_pct())
         } else {
             tok::surface_well()
         };
@@ -1160,15 +1260,15 @@ fn render_settings_pixmap_into(
         if !chrome_hit {
             let (shell_top, shell_bot) = if frosted {
                 (
-                    tok::scale_frosted(tok::obsidian_shell_frosted(), state.frosted_opacity_pct),
-                    tok::scale_frosted(tok::obsidian_deep_frosted(), state.frosted_opacity_pct),
+                    tok::scale_frosted(tok::obsidian_shell_frosted(), state.frosted_alpha_pct()),
+                    tok::scale_frosted(tok::obsidian_deep_frosted(), state.frosted_alpha_pct()),
                 )
             } else {
                 (tok::obsidian_shell(), tok::obsidian_deep())
             };
             p.rrect_vertical_gradient(0.0, 0.0, w, h, r, shell_top, shell_bot);
             let glow_scale = if frosted {
-                (state.frosted_opacity_pct as f32 / 68.0).clamp(0.25, 1.0)
+                (state.frosted_alpha_pct() as f32 / 68.0).clamp(0.25, 1.0)
             } else {
                 1.0
             };
@@ -1493,7 +1593,7 @@ fn render_settings_pixmap_into(
             hover_slots: pane_hover_slots,
             micro_interactions: state.micro_interactions,
             frosted,
-            frosted_opacity_pct: state.frosted_opacity_pct,
+            frosted_opacity_pct: state.frosted_alpha_pct(),
             type_scale: state.type_scale,
             clip_bounds: None,
         };
@@ -1575,7 +1675,7 @@ fn render_settings_pixmap_into(
             hover_slots: [0.0; 48],
             micro_interactions: false,
             frosted,
-            frosted_opacity_pct: state.frosted_opacity_pct,
+            frosted_opacity_pct: state.frosted_alpha_pct(),
             type_scale: state.type_scale,
             clip_bounds: None,
         };
@@ -1910,7 +2010,7 @@ fn draw_general_pane(p: &mut Painter, state: &AppState, px: f32, py: f32, pw: f3
 
     // Card 2: Interaction, Type Scale & Idle Visuals (h = 448)
     let c2_y = py + c1_h + CARD_GAP;
-    let c2_h = 448.0;
+    let c2_h = 580.0;
     p.elevated_card(
         px,
         c2_y,
@@ -2071,6 +2171,62 @@ fn draw_general_pane(p: &mut Painter, state: &AppState, px: f32, py: f32, pw: f3
         ToggleId::RemoveWindowsBorders,
         Action::ToggleRemoveWindowsBorders,
     );
+    let frost_sub = if state.windows_transparency_enabled {
+        "Translucent acrylic blur backdrop behind notch & settings"
+    } else {
+        "Requires Windows Transparency Effects (currently Off in Windows)"
+    };
+    draw_toggle_row(
+        p,
+        state,
+        ix,
+        t_base + TOGGLE_PITCH * 6.0,
+        inner_w,
+        "Frosted Blur & Transparency",
+        frost_sub,
+        ToggleId::FrostedGlass,
+        Action::ToggleFrostedGlass,
+    );
+    let op_presets = [35u32, 50, 68, 85];
+    let nearest_op = *op_presets
+        .iter()
+        .min_by_key(|&&v| v.abs_diff(state.frosted_opacity_pct))
+        .unwrap_or(&68);
+    draw_segmented_row(
+        p,
+        "Glass Opacity",
+        ix,
+        t_base + TOGGLE_PITCH * 7.0,
+        ctrl_x,
+        ctrl_w,
+        nearest_op,
+        &[
+            ("35%", 35u32, Action::SetFrostedOpacity(35)),
+            ("50%", 50u32, Action::SetFrostedOpacity(50)),
+            ("68%", 68u32, Action::SetFrostedOpacity(68)),
+            ("85%", 85u32, Action::SetFrostedOpacity(85)),
+        ],
+    );
+    let blur_presets = [10u32, 20, 30, 40];
+    let nearest_blur = *blur_presets
+        .iter()
+        .min_by_key(|&&v| v.abs_diff(state.frosted_blur_px))
+        .unwrap_or(&20);
+    draw_segmented_row(
+        p,
+        "Blur Intensity",
+        ix,
+        t_base + TOGGLE_PITCH * 7.0 + SEG_PITCH,
+        ctrl_x,
+        ctrl_w,
+        nearest_blur,
+        &[
+            ("Soft", 10u32, Action::SetFrostedBlur(10)),
+            ("Medium", 20u32, Action::SetFrostedBlur(20)),
+            ("Deep", 30u32, Action::SetFrostedBlur(30)),
+            ("Ultra", 40u32, Action::SetFrostedBlur(40)),
+        ],
+    );
 }
 
 fn draw_motion_pane(p: &mut Painter, state: &AppState, px: f32, py: f32, pw: f32) {
@@ -2079,7 +2235,7 @@ fn draw_motion_pane(p: &mut Painter, state: &AppState, px: f32, py: f32, pw: f32
     let ctrl_x = px + CTRL_X_OFF;
     let ctrl_w = pw - CTRL_X_OFF - PAD;
     let well_col = if state.is_frosted_active() {
-        tok::scale_frosted(tok::surface_well_frosted(), state.frosted_opacity_pct)
+        tok::scale_frosted(tok::surface_well_frosted(), state.frosted_alpha_pct())
     } else {
         tok::surface_well()
     };
@@ -2203,7 +2359,7 @@ fn draw_notifications_pane(p: &mut Painter, state: &AppState, px: f32, py: f32, 
     let ctrl_x = px + CTRL_X_OFF;
     let ctrl_w = pw - CTRL_X_OFF - PAD;
     let well_col = if state.is_frosted_active() {
-        tok::scale_frosted(tok::surface_well_frosted(), state.frosted_opacity_pct)
+        tok::scale_frosted(tok::surface_well_frosted(), state.frosted_alpha_pct())
     } else {
         tok::surface_well()
     };
@@ -2724,7 +2880,7 @@ fn draw_system_pane(p: &mut Painter, state: &AppState, px: f32, py: f32, pw: f32
     let ix = px + PAD;
     let inner_w = pw - PAD * 2.0;
     let well_col = if state.is_frosted_active() {
-        tok::scale_frosted(tok::surface_well_frosted(), state.frosted_opacity_pct)
+        tok::scale_frosted(tok::surface_well_frosted(), state.frosted_alpha_pct())
     } else {
         tok::surface_well()
     };

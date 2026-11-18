@@ -139,7 +139,7 @@ pub mod tok {
     }
 
     pub fn scale_frosted(c: Color, opacity_pct: u32) -> Color {
-        let pct = opacity_pct.clamp(25, 95);
+        let pct = opacity_pct.clamp(25, 130);
         if pct == 68 {
             return c;
         }

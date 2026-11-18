@@ -1,5 +1,7 @@
 pub mod audio;
 pub mod autostart;
+pub mod backdrop;
+pub mod backdrop_geom;
 pub mod borders;
 pub mod capture;
 pub mod composition;

@@ -1,6 +1,6 @@
 [package]
 name = "cynotch"
-version = "0.2.3"
+version = "0.2.4"
 edition = "2024"
 
 [profile.release]
@@ -53,6 +53,7 @@ windows = { version = "0.58", features = [
     "Win32_Graphics_Direct2D_Common",
     "Win32_Graphics_DirectWrite",
     "Win32_Graphics_Imaging",
+    "Win32_UI_Controls",
 ] }
 tiny-skia = "0.11"
 fontdue = "0.9"

@@ -83,6 +83,17 @@ pub fn ensure_dispatcher_queue() -> Result<()> {
     })
 }
 
+pub fn release_thread_locals() {
+    SHARED_DCOMP.with_borrow_mut(|slot| {
+        *slot = None;
+    });
+    DISPATCHER_CONTROLLER.with_borrow_mut(|slot| {
+        if let Some(ctrl) = slot.take() {
+            let _ = ctrl.ShutdownQueueAsync();
+        }
+    });
+}
+
 fn create_d3d11_device() -> Result<(ID3D11Device, ID3D11DeviceContext)> {
     let levels = [
         D3D_FEATURE_LEVEL_11_1,

@@ -460,7 +460,7 @@ impl Renderer {
         let dock_h = 32.0;
 
         let well_col = if state.is_frosted_active() {
-            tok::scale_frosted(tok::surface_well_frosted(), state.frosted_opacity_pct)
+            tok::scale_frosted(tok::surface_well_frosted(), state.frosted_alpha_pct())
         } else {
             tok::surface_well()
         };

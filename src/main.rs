@@ -467,22 +467,28 @@ fn main() {
         return;
     }
     unsafe {
-        let mutex_name: PCWSTR = w!("CyNotch_SingleInstance_Mutex_v2");
-        let h_mutex = CreateMutexW(None, true, mutex_name);
-        if let Ok(m) = h_mutex {
-            if GetLastError() == ERROR_ALREADY_EXISTS {
-                use windows::Win32::UI::WindowsAndMessaging::{FindWindowW, PostMessageW};
-                let class_name: PCWSTR = w!("CyNotchWindowClass");
-                let win_name: PCWSTR = w!("CyNotch");
-                if let Ok(hwnd) = FindWindowW(class_name, win_name)
-                    && hwnd.0 as isize != 0
-                {
-                    let _ = PostMessageW(hwnd, 0x8000 + 1, WPARAM(0), LPARAM(0));
+        let skip_single_instance =
+            std::env::var_os("CYNOTCH_SKIP_SINGLE_INSTANCE").is_some_and(|v| v == "1");
+        if !skip_single_instance {
+            let mutex_name: PCWSTR = w!("CyNotch_SingleInstance_Mutex_v2");
+            let h_mutex = CreateMutexW(None, true, mutex_name);
+            if let Ok(m) = h_mutex {
+                if GetLastError() == ERROR_ALREADY_EXISTS {
+                    use windows::Win32::UI::WindowsAndMessaging::{FindWindowW, PostMessageW};
+                    let class_name: PCWSTR = w!("CyNotchWindowClass");
+                    let win_name: PCWSTR = w!("CyNotch");
+                    if let Ok(hwnd) = FindWindowW(class_name, win_name)
+                        && hwnd.0 as isize != 0
+                    {
+                        let _ = PostMessageW(hwnd, 0x8000 + 1, WPARAM(0), LPARAM(0));
+                    }
+                    log_info!(
+                        "[CyNotch] Active instance signaled to expand. Exiting second launcher."
+                    );
+                    return;
                 }
-                log_info!("[CyNotch] Active instance signaled to expand. Exiting second launcher.");
-                return;
+                let _ = m;
             }
-            let _ = m;
         }
 
         let _ = SetProcessDpiAwarenessContext(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2);
@@ -499,7 +505,7 @@ fn main() {
     let state = Arc::new(Mutex::new(init_state));
 
     let poll_state = state.clone();
-    thread::spawn(move || {
+    let poll_handle = thread::spawn(move || {
         unsafe {
             let _ = CoInitializeEx(None, COINIT_MULTITHREADED);
         }
@@ -886,6 +892,8 @@ fn main() {
         Ok(window) => {
             log_info!("CyNotch initialized successfully at screen top-center!");
             window.run_loop();
+            cynotch::window::SHUTDOWN_REQUESTED.store(true, Ordering::Release);
+            let _ = poll_handle.join();
         }
         Err(e) => {
             let path = cynotch::models::crash_log_path("err.txt");
