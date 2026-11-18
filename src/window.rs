@@ -874,7 +874,6 @@ pub fn compute_window_region_spec(state: &AppState) -> (i32, i32, i32, i32, i32,
     (s.0, s.1, s.2, s.3, s.4, s.5, s.6)
 }
 
-#[allow(dead_code)]
 unsafe fn sync_notch_window_region(hwnd: HWND, state: &AppState, cw: i32, ch: i32) {
     let cw = cw.max(1);
     let ch = ch.max(1);
@@ -895,16 +894,17 @@ unsafe fn sync_notch_window_region(hwnd: HWND, state: &AppState, cw: i32, ch: i3
     let y0 = (y0 - 2).max(0);
     let x1 = (x1 + 2).min(cw);
     let y1 = (y1 + 2).min(ch);
+    let rgn_diam = (diam + 4).clamp(2, (x1 - x0).min(y1 - y0).max(2));
     let hrgn = if style_key == 0 {
-        CreateRoundRectRgn(x0, y0, x1, y1, diam, diam)
+        CreateRoundRectRgn(x0, y0, x1, y1, rgn_diam, rgn_diam)
     } else {
-        let ext = (diam / 2).max(4);
+        let ext = (rgn_diam / 2).max(4);
         let (rx0, ry0, rx1, ry1) = match place_key {
             0 => (x0, y0 - ext, x1, y1),
             1 => (x0 - ext, y0, x1, y1),
             _ => (x0, y0, x1 + ext, y1),
         };
-        let r_round = CreateRoundRectRgn(rx0, ry0, rx1, ry1, diam, diam);
+        let r_round = CreateRoundRectRgn(rx0, ry0, rx1, ry1, rgn_diam, rgn_diam);
         if !r_round.is_invalid() {
             let r_box = CreateRectRgn(x0, y0, x1, y1);
             if !r_box.is_invalid() {
@@ -3770,9 +3770,14 @@ unsafe fn redraw_window(hwnd: HWND) {
             ui.last_win_y = win_y;
         }
     });
-    // Do not clip the layered/DComp content HWND with 1-bit GDI SetWindowRgn:
-    // tiny-skia provides smooth per-pixel anti-aliased corners and WM_NCHITTEST
-    // already returns HTTRANSPARENT outside the capsule.
     let _ = ok;
+    // Clip the DComp HWND input region to capsule + 2px outward margin:
+    // WM_NCHITTEST's HTTRANSPARENT only passes through to same-thread windows,
+    // so without SetWindowRgn the full expanded canvas blocks clicks to other
+    // apps when minimized. The +2px margin keeps tiny-skia's anti-aliased
+    // corners unclipped while WM_NCHITTEST enforces sub-pixel precision inside it.
+    unsafe {
+        sync_notch_window_region(hwnd, &state_snapshot, canvas_w, canvas_h);
+    }
     sync_notch_backdrop(hwnd, None);
 }
