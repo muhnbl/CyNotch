@@ -3770,8 +3770,9 @@ unsafe fn redraw_window(hwnd: HWND) {
             ui.last_win_y = win_y;
         }
     });
-    if ok {
-        sync_notch_window_region(hwnd, &state_snapshot, canvas_w, canvas_h);
-    }
+    // Do not clip the layered/DComp content HWND with 1-bit GDI SetWindowRgn:
+    // tiny-skia provides smooth per-pixel anti-aliased corners and WM_NCHITTEST
+    // already returns HTTRANSPARENT outside the capsule.
+    let _ = ok;
     sync_notch_backdrop(hwnd, None);
 }

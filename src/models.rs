@@ -1272,7 +1272,12 @@ impl AppState {
             ExpandedSizePreset::Standard => 26.0,
             ExpandedSizePreset::Large => 28.5,
         } * self.type_scale.ui_scale();
-        idle_r + (exp_r - idle_r) * t
+        let r = idle_r + (exp_r - idle_r) * t;
+        if self.is_frosted_active() {
+            r.min(10.0)
+        } else {
+            r
+        }
     }
 
     pub fn default_anchor_for_placement(_placement: NotchPlacement) -> (f32, f32) {

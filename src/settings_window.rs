@@ -402,7 +402,7 @@ unsafe fn sync_settings_backdrop_inner(hwnd: HWND, visible_override: Option<bool
         geom.and_then(|g| {
             let mut rc = RECT::default();
             if GetWindowRect(hwnd, &mut rc).is_ok() {
-                backdrop_geom::placement(rc.left, rc.top, &g, backdrop::REST_INSET + 1)
+                backdrop_geom::placement(rc.left, rc.top, &g, backdrop::REST_INSET)
             } else {
                 None
             }
@@ -459,7 +459,7 @@ unsafe fn redraw_settings_with_cache(hwnd: HWND, allow_pane_cache: bool) {
         // WM_WINDOWPOSCHANGED hook positions the blur from fresh numbers.
         backdrop::set_blur_px(snapshot.frosted_blur_px);
         let wanted = snapshot.is_frosted_active() && backdrop::blur_available();
-        let geom = ShellGeom::whole_window(int_w, int_h, 12.0 * s);
+        let geom = ShellGeom::whole_window(int_w, int_h, 10.0 * s);
         SETTINGS_UI.with_borrow_mut(|ui| {
             ui.backdrop_wanted = wanted;
             ui.backdrop_geom = Some(geom);
@@ -1179,7 +1179,7 @@ fn render_settings_pixmap_into(
         .max(0.5);
     let w = AppState::SETTINGS_WIDTH;
     let h = AppState::SETTINGS_HEIGHT;
-    let r = 12.0;
+    let r = 10.0;
     let frosted = state.is_frosted_active();
 
     let pane_top_pad = 4.0;

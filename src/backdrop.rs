@@ -54,10 +54,10 @@ pub const REST_INSET: i32 = 1;
 /// Resting inset (px) sized so an ~8px Windows 11 `DWMWCP_ROUND` backdrop
 /// corner never pokes outside a shell corner of radius `max_r`.
 pub fn inset_for_radius(max_r: f32) -> i32 {
-    if max_r <= 10.0 {
+    if max_r <= 11.0 {
         REST_INSET
     } else {
-        1 + ((max_r - 10.0) * 0.25).ceil() as i32
+        1 + ((max_r - 11.0) * 0.25).ceil() as i32
     }
 }
 
@@ -428,16 +428,21 @@ impl Backdrop {
                 } else {
                     DWMWCP_DONOTROUND
                 };
-                let _ = DwmSetWindowAttribute(
+                let dwm_ok = DwmSetWindowAttribute(
                     self.hwnd,
                     DWMWA_WINDOW_CORNER_PREFERENCE,
                     &corner as *const _ as *const c_void,
                     size_of_val(&corner) as u32,
-                );
-                let hrgn = build_region(&p);
-                if !hrgn.is_invalid() && SetWindowRgn(self.hwnd, hrgn, false) == 0 {
-                    // On success the system owns the region; on failure we must free it.
-                    let _ = DeleteObject(HGDIOBJ(hrgn.0));
+                )
+                .is_ok();
+                if dwm_ok && corner == DWMWCP_ROUND && p.sharp_mask == 0 {
+                    let _ = SetWindowRgn(self.hwnd, HRGN::default(), false);
+                } else {
+                    let hrgn = build_region(&p);
+                    if !hrgn.is_invalid() && SetWindowRgn(self.hwnd, hrgn, false) == 0 {
+                        // On success the system owns the region; on failure we must free it.
+                        let _ = DeleteObject(HGDIOBJ(hrgn.0));
+                    }
                 }
             }
             let _ = SetWindowPos(
@@ -462,15 +467,20 @@ impl Backdrop {
             } else {
                 DWMWCP_DONOTROUND
             };
-            let _ = DwmSetWindowAttribute(
+            let dwm_ok = DwmSetWindowAttribute(
                 self.hwnd,
                 DWMWA_WINDOW_CORNER_PREFERENCE,
                 &corner as *const _ as *const c_void,
                 size_of_val(&corner) as u32,
-            );
-            let hrgn = build_region(&p);
-            if !hrgn.is_invalid() && SetWindowRgn(self.hwnd, hrgn, true) == 0 {
-                let _ = DeleteObject(HGDIOBJ(hrgn.0));
+            )
+            .is_ok();
+            if dwm_ok && corner == DWMWCP_ROUND && p.sharp_mask == 0 {
+                let _ = SetWindowRgn(self.hwnd, HRGN::default(), true);
+            } else {
+                let hrgn = build_region(&p);
+                if !hrgn.is_invalid() && SetWindowRgn(self.hwnd, hrgn, true) == 0 {
+                    let _ = DeleteObject(HGDIOBJ(hrgn.0));
+                }
             }
             self.last = Some(p);
         } else if pos_changed {

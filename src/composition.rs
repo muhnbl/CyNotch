@@ -140,6 +140,7 @@ pub struct DCompHost {
     width: u32,
     height: u32,
     bgra_scratch: Vec<u8>,
+    prev_dirty: Option<(u32, u32, u32, u32)>,
 }
 
 impl DCompHost {
@@ -210,6 +211,7 @@ impl DCompHost {
             width: w,
             height: h,
             bgra_scratch: vec![0u8; (w as usize) * (h as usize) * 4],
+            prev_dirty: None,
         })
     }
 
@@ -243,6 +245,7 @@ impl DCompHost {
                 self.bgra_scratch.shrink_to_fit();
             }
         }
+        self.prev_dirty = None;
         Ok(())
     }
 
@@ -298,12 +301,28 @@ impl DCompHost {
             swizzle_rgba_to_bgra(&mut self.bgra_scratch[..expected], &rgba_data[..expected]);
         }
 
+        let upload_box = match (clamped_box, self.prev_dirty) {
+            (Some((dx, dy, dw, dh)), Some((px, py, pw, ph))) => {
+                let x0 = dx.min(px);
+                let y0 = dy.min(py);
+                let x1 = dx.saturating_add(dw).max(px.saturating_add(pw)).min(self.width);
+                let y1 = dy.saturating_add(dh).max(py.saturating_add(ph)).min(self.height);
+                Some((x0, y0, x1.saturating_sub(x0), y1.saturating_sub(y0)))
+            }
+            (Some(cur), None) => Some(cur),
+            (None, _) => None,
+        };
+        self.prev_dirty = clamped_box;
+
         unsafe {
             let back_buf: ID3D11Texture2D = self.swap_chain.GetBuffer(0)?;
             let resource: ID3D11Resource = back_buf.cast()?;
             let row_pitch = self.width * 4;
             let depth_pitch = expected as u32;
-            if let Some((dx, dy, dw, dh)) = clamped_box {
+            if let Some((dx, dy, dw, dh)) = upload_box
+                && dw > 0
+                && dh > 0
+            {
                 let d3d_box = D3D11_BOX {
                     left: dx,
                     top: dy,
