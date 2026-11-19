@@ -410,6 +410,11 @@ impl Renderer {
                     0.0, 0.0, w, h, r_tl, r_tr, r_br, r_bl, shell_top, shell_bot,
                 );
 
+                if state.is_hover_pending && !state.is_hovered {
+                    let max_r = r_tl.max(r_tr).max(r_br).max(r_bl);
+                    p.rrect_stroke(0.0, 0.0, w, h, max_r, 0.8, rgba(200, 180, 255, 60));
+                }
+
                 // 2. Clipped Internal Atmospheric Aurora Glows (Photo-matched bottom purple bloom)
                 let glow_scale = if frosted {
                     (state.frosted_alpha_pct() as f32 / 68.0).clamp(0.25, 1.0)

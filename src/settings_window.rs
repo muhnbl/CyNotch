@@ -1316,7 +1316,7 @@ fn render_settings_pixmap_into(
                 tok::text1(),
             );
             p.text(
-                concat!("Mahamatra Command Center · v", env!("CARGO_PKG_VERSION")),
+                "Mahamatra Command Center · v0.2.4.1",
                 62.0,
                 45.5,
                 10.2,

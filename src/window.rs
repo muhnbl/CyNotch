@@ -60,6 +60,7 @@ const CLASS_NAME: PCWSTR = w!("CyNotchWindowClass");
 const WINDOW_NAME: PCWSTR = w!("CyNotch");
 const TIMER_ANIMATION_ID: usize = 1;
 const TIMER_POLL_ID: usize = 2;
+const TIMER_HOVER_OPEN_ID: usize = 3;
 const WM_MOUSELEAVE_CODE: u32 = 0x02A3;
 const WM_CLIPBOARDUPDATE: u32 = 0x031D;
 const WM_DROPFILES_CODE: u32 = 0x0233;
@@ -2781,9 +2782,12 @@ unsafe fn wnd_proc_inner(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPARAM) -
                     && let Ok(mut state) = state_mutex.lock()
                     && !state.click_to_open
                     && state.notification.is_none()
+                    && !state.is_hovered
+                    && !state.is_hover_pending
                 {
                     // Keep notification banners unexpanded on hover so the user can reach the dismiss/action buttons.
-                    state.set_hovered(true);
+                    state.is_hover_pending = true;
+                    let _ = SetTimer(hwnd, TIMER_HOVER_OPEN_ID, 240, None);
                 }
             }
 
@@ -2820,6 +2824,7 @@ unsafe fn wnd_proc_inner(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPARAM) -
             LRESULT(0)
         }
         WM_MOUSELEAVE_CODE => {
+            let _ = KillTimer(hwnd, TIMER_HOVER_OPEN_ID);
             let is_idle_drag = NOTCH_UI.with_borrow_mut(|ui| {
                 ui.is_tracking_mouse = false;
                 ui.pointer_pos = None;
@@ -2827,15 +2832,19 @@ unsafe fn wnd_proc_inner(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPARAM) -
                 matches!(ui.drag_mode, DragMode::None)
             });
             let mut should_redraw = true;
-            if is_idle_drag
-                && let Some(state_mutex) = get_global_state()
+            if let Some(state_mutex) = get_global_state()
                 && let Ok(mut state) = state_mutex.lock()
             {
                 state.hover_target_idx = None;
-                if !state.is_pinned {
-                    state.set_hovered(false);
-                } else if !state.is_hovered {
-                    should_redraw = false;
+                if state.is_hover_pending {
+                    state.is_hover_pending = false;
+                }
+                if is_idle_drag {
+                    if !state.is_pinned {
+                        state.set_hovered(false);
+                    } else if !state.is_hovered {
+                        should_redraw = false;
+                    }
                 }
             }
             if should_redraw {
@@ -2946,6 +2955,13 @@ unsafe fn wnd_proc_inner(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPARAM) -
             LRESULT(0)
         }
         WM_LBUTTONDOWN => {
+            let _ = KillTimer(hwnd, TIMER_HOVER_OPEN_ID);
+            if let Some(state_mutex) = get_global_state()
+                && let Ok(mut state) = state_mutex.lock()
+                && state.is_hover_pending
+            {
+                state.is_hover_pending = false;
+            }
             let x = (lparam.0 & 0xffff) as i16 as f32;
             let y = ((lparam.0 >> 16) & 0xffff) as i16 as f32;
 
@@ -3445,6 +3461,22 @@ unsafe fn wnd_proc_inner(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPARAM) -
         WM_TIMER => {
             if wparam.0 == TIMER_ANIMATION_ID {
                 tick_notch_animation(hwnd);
+            } else if wparam.0 == TIMER_HOVER_OPEN_ID {
+                let _ = KillTimer(hwnd, TIMER_HOVER_OPEN_ID);
+                let mut should_redraw = false;
+                if let Some(state_mutex) = get_global_state()
+                    && let Ok(mut state) = state_mutex.lock()
+                    && state.is_hover_pending
+                {
+                    state.is_hover_pending = false;
+                    if !state.click_to_open && state.notification.is_none() && !state.is_hovered {
+                        state.set_hovered(true);
+                        should_redraw = true;
+                    }
+                }
+                if should_redraw {
+                    redraw_window(hwnd);
+                }
             } else if wparam.0 == TIMER_POLL_ID {
                 let now = std::time::Instant::now();
                 let one_sec_elapsed = NOTCH_UI.with_borrow_mut(|ui| match ui.last_second_tick {

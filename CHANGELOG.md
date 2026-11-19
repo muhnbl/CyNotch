@@ -1,5 +1,11 @@
 # Changelog
 
+## v0.2.4.1 (2026-11-19)
+### Hover Dwell Delay & Deadlock Fix (`src/window.rs`, `src/renderer/mod.rs`)
+- Added a 240ms hover dwell timer (`TIMER_HOVER_OPEN_ID = 3`) before expanding the collapsed notch on mouse hover, preventing accidental opens when moving the cursor near the top edge.
+- Added a subtle pending-hover border cue during the 240ms dwell window.
+- Fixed UI-thread `Mutex` deadlock by moving `redraw_window(hwnd)` outside all `state_mutex.lock()` scopes, and preserved immediate click/drag (`IdlePressOrDrag`) responsiveness on `WM_LBUTTONDOWN`.
+
 ## v0.2.4 (2026-11-18)
 ### Frosted Blur Backdrop & Transparency Controls (`src/backdrop.rs`, `src/backdrop_geom.rs`, `src/settings_window.rs`)
 - Added paired redirected `WS_POPUP` frosted-blur backdrop windows (`CyNotchBackdropClass`) below both the notch and Preferences windows, preserving `WS_EX_NOREDIRECTIONBITMAP` on the content windows for screenshot/OBS visibility.

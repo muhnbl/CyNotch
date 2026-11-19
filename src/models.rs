@@ -845,6 +845,7 @@ impl MemReductConfig {
 pub struct AppState {
     pub mode: NotchMode,
     pub is_hovered: bool,
+    pub is_hover_pending: bool,
     pub is_pinned: bool,
     pub x_offset: i32,
     pub y_offset: i32,
@@ -2264,9 +2265,10 @@ impl AppState {
         let target_anchor_y = loaded_anchor_y.unwrap_or(def_ay).clamp(0.0, 1.0);
 
         let mut st = Self {
-            mode: NotchMode::Home,
-            is_hovered: is_pinned,
-            is_pinned,
+                    mode: NotchMode::Home,
+                    is_hovered: is_pinned,
+                    is_hover_pending: false,
+                    is_pinned,
             x_offset,
             y_offset,
             show_lyrics: false,
@@ -2371,6 +2373,7 @@ impl AppState {
         let mut st = Self {
             mode: NotchMode::Home,
             is_hovered: false,
+            is_hover_pending: false,
             is_pinned: false,
             x_offset: 0,
             y_offset: 0,
@@ -2496,6 +2499,12 @@ impl AppState {
     }
 
     pub fn set_hovered(&mut self, hovered: bool) {
+        if hovered {
+            self.is_hover_pending = false;
+        }
+        if self.is_hovered == hovered {
+            return;
+        }
         self.is_hovered = hovered;
         if hovered {
             self.target_width = self.expanded_width();
@@ -3243,10 +3252,38 @@ impl AppState {
             );
         }
     }
-}
-
-impl Default for AppState {
-    fn default() -> Self {
-        Self::new()
     }
-}
+
+    impl Default for AppState {
+        fn default() -> Self {
+            Self::new()
+        }
+    }
+
+    #[cfg(test)]
+    mod tests {
+        use super::*;
+
+        #[test]
+        fn test_hover_pending_cleared_on_set_hovered_true() {
+            let mut state = AppState::default();
+            state.is_hover_pending = true;
+            assert!(state.is_hover_pending);
+        
+            state.set_hovered(true);
+        
+            assert!(state.is_hovered);
+            assert!(!state.is_hover_pending, "is_hover_pending should be cleared when set_hovered(true) is called");
+        }
+
+        #[test]
+        fn test_hover_pending_not_cleared_on_set_hovered_false() {
+            let mut state = AppState::default();
+            state.is_hover_pending = true;
+        
+            state.set_hovered(false);
+        
+            assert!(!state.is_hovered);
+            assert!(state.is_hover_pending, "is_hover_pending should remain true when set_hovered(false) is called");
+        }
+    }
