@@ -1497,7 +1497,7 @@ impl NotchWindow {
         let win_trans = notifications::is_windows_transparency_enabled();
         let win_anim = notifications::is_windows_animations_enabled();
         let snap = {
-            let mut s = state.lock().unwrap();
+            let mut s = state.lock().unwrap_or_else(|e| e.into_inner());
             s.windows_transparency_enabled = win_trans;
             s.windows_animations_enabled = win_anim;
             s.clone()

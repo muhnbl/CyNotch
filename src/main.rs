@@ -73,6 +73,7 @@ fn main() {
                     log_info!(
                         "[CyNotch] Active instance signaled to expand. Exiting second launcher."
                     );
+                    let _ = CloseHandle(m);
                     return;
                 }
                 let _ = m;
@@ -477,22 +478,9 @@ fn main() {
             }
 
             if let Some((title, artist)) = song_to_fetch {
-                let fetch_state = poll_state.clone();
-                thread::spawn(move || {
-                    let lines = lyrics::fetch_lyrics(&title, &artist);
-                    if !lines.is_empty() {
-                        let mut updated = false;
-                        if let Ok(mut s) = fetch_state.lock()
-                            && s.media.title == title
-                        {
-                            s.lyrics = lines;
-                            updated = true;
-                        }
-                        if updated {
-                            cynotch::window::post_redraw();
-                        }
-                    }
-                });
+                // BH-30: Coalescing single lyrics worker prevents unbounded thread/WinHTTP
+                // spawning when the user rapidly skips tracks.
+                enqueue_lyrics_fetch(poll_state.clone(), title, artist);
             }
         }
     });
@@ -527,4 +515,53 @@ fn main() {
     if !is_smoke {
         notifications::sync_windows_notification_sound_mute(false);
     }
+}
+
+/// Coalescing single background worker for lyrics fetching (BH-30).
+fn enqueue_lyrics_fetch(state: Arc<Mutex<AppState>>, title: String, artist: String) {
+    use std::sync::{Condvar, OnceLock};
+    struct LyricsWorker {
+        pending: Mutex<Option<(Arc<Mutex<AppState>>, String, String)>>,
+        cvar: Condvar,
+    }
+    static WORKER: OnceLock<Arc<LyricsWorker>> = OnceLock::new();
+
+    let worker = WORKER.get_or_init(|| {
+        let w = Arc::new(LyricsWorker {
+            pending: Mutex::new(None),
+            cvar: Condvar::new(),
+        });
+        let bg = Arc::clone(&w);
+        let _ = thread::Builder::new()
+            .name("cynotch-lyrics".to_string())
+            .spawn(move || loop {
+                let job = {
+                    let mut guard = bg.pending.lock().unwrap_or_else(|e| e.into_inner());
+                    while guard.is_none() {
+                        guard = bg.cvar.wait(guard).unwrap_or_else(|e| e.into_inner());
+                    }
+                    guard.take()
+                };
+                if let Some((fetch_state, title, artist)) = job {
+                    let lines = lyrics::fetch_lyrics(&title, &artist);
+                    if !lines.is_empty() {
+                        let mut updated = false;
+                        if let Ok(mut s) = fetch_state.lock()
+                            && s.media.title == title
+                        {
+                            s.lyrics = lines;
+                            updated = true;
+                        }
+                        if updated {
+                            cynotch::window::post_redraw();
+                        }
+                    }
+                }
+            });
+        w
+    });
+
+    let mut guard = worker.pending.lock().unwrap_or_else(|e| e.into_inner());
+    *guard = Some((state, title, artist));
+    worker.cvar.notify_one();
 }

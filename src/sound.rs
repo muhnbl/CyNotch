@@ -2,7 +2,7 @@
 
 use serde::{Deserialize, Serialize};
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::mpsc::{channel, Sender};
+use std::sync::mpsc::{SyncSender, sync_channel};
 use std::sync::OnceLock;
 use std::time::Instant;
 use windows::core::PCWSTR;
@@ -137,42 +137,46 @@ enum AudioMessage {
     PlaySnapchat { volume: f32 },
 }
 
-static AUDIO_TX: OnceLock<Sender<AudioMessage>> = OnceLock::new();
+static AUDIO_TX: OnceLock<Option<SyncSender<AudioMessage>>> = OnceLock::new();
 
-fn audio_sender() -> &'static Sender<AudioMessage> {
-    AUDIO_TX.get_or_init(|| {
-        let (tx, rx) = channel::<AudioMessage>();
-        std::thread::Builder::new()
-            .name("cynotch-audio-worker".into())
-            .spawn(move || {
-                while let Ok(msg) = rx.recv() {
-                    // Drain any queued duplicate bursts within the same slice to prevent audio stutter
-                    let mut latest_vol = match msg {
-                        AudioMessage::PlaySnapchat { volume } => volume,
-                    };
-                    while let Ok(next) = rx.try_recv() {
-                        match next {
-                            AudioMessage::PlaySnapchat { volume } => latest_vol = volume,
+fn audio_sender() -> Option<&'static SyncSender<AudioMessage>> {
+    AUDIO_TX
+        .get_or_init(|| {
+            // BH-28: Bounded channel (8 slots) + fallible thread spawn (no panic on OS pressure).
+            let (tx, rx) = sync_channel::<AudioMessage>(8);
+            match std::thread::Builder::new()
+                .name("cynotch-audio-worker".into())
+                .spawn(move || {
+                    while let Ok(msg) = rx.recv() {
+                        // Drain any queued duplicate bursts within the same slice to prevent audio stutter
+                        let mut latest_vol = match msg {
+                            AudioMessage::PlaySnapchat { volume } => volume,
+                        };
+                        while let Ok(next) = rx.try_recv() {
+                            match next {
+                                AudioMessage::PlaySnapchat { volume } => latest_vol = volume,
+                            }
+                        }
+                        if latest_vol <= 0.002 {
+                            continue;
+                        }
+                        let wav_buf = scale_wav_volume(WAV_SNAPCHAT, latest_vol);
+                        // SAFETY: `wav_buf` remains valid on this dedicated worker thread for the entire
+                        // duration of synchronous `SND_SYNC` playback, guaranteeing zero use-after-free.
+                        unsafe {
+                            let _ = PlaySoundW(
+                                PCWSTR(wav_buf.as_ptr() as *const u16),
+                                None,
+                                SND_MEMORY | SND_SYNC | SND_NODEFAULT,
+                            );
                         }
                     }
-                    if latest_vol <= 0.002 {
-                        continue;
-                    }
-                    let wav_buf = scale_wav_volume(WAV_SNAPCHAT, latest_vol);
-                    // SAFETY: `wav_buf` remains valid on this dedicated worker thread for the entire
-                    // duration of synchronous `SND_SYNC` playback, guaranteeing zero use-after-free.
-                    unsafe {
-                        let _ = PlaySoundW(
-                            PCWSTR(wav_buf.as_ptr() as *const u16),
-                            None,
-                            SND_MEMORY | SND_SYNC | SND_NODEFAULT,
-                        );
-                    }
-                }
-            })
-            .expect("spawn cynotch audio worker thread");
-        tx
-    })
+                }) {
+                Ok(_) => Some(tx),
+                Err(_) => None,
+            }
+        })
+        .as_ref()
 }
 
 /// Plays a notification sound asynchronously at the fixed volume (25%).
@@ -182,7 +186,9 @@ pub fn play_sound(sound: NotificationSound) {
         return;
     }
     let vol = (NOTIFICATION_FIXED_VOLUME as f32) / 100.0;
-    let _ = audio_sender().send(AudioMessage::PlaySnapchat { volume: vol });
+    if let Some(tx) = audio_sender() {
+        let _ = tx.try_send(AudioMessage::PlaySnapchat { volume: vol });
+    }
 }
 
 /// Plays a notification chime only when notifications are enabled, unmuted, and not suppressed by fullscreen.

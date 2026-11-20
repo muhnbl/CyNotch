@@ -333,10 +333,30 @@ pub fn capture_rect(x: i32, y: i32, w: i32, h: i32, prefix: &str) -> Option<Capt
     grab_rect_frame(x, y, w, h, prefix).and_then(save_and_copy_frame)
 }
 
+/// Validates DIB dimensions and pixel buffer length against integer overflow
+/// and out-of-bounds reads before allocating/copying into `GlobalAlloc` memory (BH-29).
+fn validate_dib_buffer(w: i32, h: i32, bgra_len: usize) -> Option<(usize, usize, usize)> {
+    if w <= 0 || h <= 0 {
+        return None;
+    }
+    let width = w as usize;
+    let height = h as usize;
+    let row_bytes = width.checked_mul(4)?;
+    let pixel_bytes = row_bytes.checked_mul(height)?;
+    if bgra_len < pixel_bytes || pixel_bytes > u32::MAX as usize {
+        return None;
+    }
+    let total_size = std::mem::size_of::<BITMAPINFOHEADER>().checked_add(pixel_bytes)?;
+    Some((row_bytes, pixel_bytes, total_size))
+}
+
 unsafe fn copy_bgra_dib_to_clipboard(w: i32, h: i32, bgra_top_down: &[u8]) -> bool {
+    let Some((row_bytes, pixel_bytes, total_size)) = validate_dib_buffer(w, h, bgra_top_down.len())
+    else {
+        return false;
+    };
     let _clip_guard = CLIPBOARD_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     let hdr_size = std::mem::size_of::<BITMAPINFOHEADER>();
-    let total_size = hdr_size + bgra_top_down.len();
     unsafe {
         let h_mem = GlobalAlloc(0x0002, total_size);
         if h_mem.is_null() {
@@ -356,12 +376,11 @@ unsafe fn copy_bgra_dib_to_clipboard(w: i32, h: i32, bgra_top_down: &[u8]) -> bo
             biPlanes: 1,
             biBitCount: 32,
             biCompression: BI_RGB.0,
-            biSizeImage: bgra_top_down.len() as u32,
+            biSizeImage: pixel_bytes as u32,
             ..Default::default()
         };
         std::ptr::copy_nonoverlapping(&hdr as *const BITMAPINFOHEADER as *const u8, ptr, hdr_size);
 
-        let row_bytes = (w as usize) * 4;
         let dst_pixels = ptr.add(hdr_size);
         for row in 0..(h as usize) {
             let src_row = (h as usize - 1 - row) * row_bytes;
@@ -608,5 +627,18 @@ mod tests {
         );
 
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn bh29_validate_dib_buffer_rejects_negative_zero_overflow_and_short_buffers() {
+        assert!(validate_dib_buffer(0, 10, 400).is_none());
+        assert!(validate_dib_buffer(-1, 10, 400).is_none());
+        assert!(validate_dib_buffer(10, -5, 400).is_none());
+        assert!(validate_dib_buffer(i32::MAX, i32::MAX, usize::MAX).is_none());
+        assert!(validate_dib_buffer(10, 10, 399).is_none());
+        let (row_b, pix_b, total) = validate_dib_buffer(10, 10, 400).expect("valid 10x10 DIB");
+        assert_eq!(row_b, 40);
+        assert_eq!(pix_b, 400);
+        assert_eq!(total, std::mem::size_of::<BITMAPINFOHEADER>() + 400);
     }
 }

@@ -143,7 +143,7 @@ fn bench_d2d_perf() -> Result<()> {
 
             // clipped arc
             p.push_rrect_clip(550.0, 150.0, 100.0, 80.0, 10.0)?;
-            p.arc(600.0, 190.0, 40.0, 0.0, 3.14, 4.0, color_to_d2d(155, 89, 252, 255, 1.0))?;
+            p.arc(600.0, 190.0, 40.0, 0.0, std::f32::consts::PI, 4.0, color_to_d2d(155, 89, 252, 255, 1.0))?;
             p.pop_clip()?;
         }
         unsafe { d2d_context.EndDraw(None, None)? };

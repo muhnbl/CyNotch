@@ -155,12 +155,10 @@ fn create_d3d11_device() -> Result<(ID3D11Device, ID3D11DeviceContext)> {
                 None,
                 Some(&mut context),
             );
-            if res.is_ok() {
-                if device.is_some() && context.is_some() {
-                    let d = device.unwrap();
-                    let c = context.unwrap();
-                    return Ok((d, c));
-                }
+            if res.is_ok()
+                && let (Some(d), Some(c)) = (device, context)
+            {
+                return Ok((d, c));
             }
         }
     }
