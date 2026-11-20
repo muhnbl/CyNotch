@@ -631,12 +631,12 @@ kbd{display:inline-flex;align-items:center;justify-content:center;min-width:26px
             <tr>
               <td>Portable Binary (<code>cynotch.exe</code>)</td>
               <td class="v-old">3,949,056 B (3.95 MB)</td>
-              <td class="v-new">1,742,848 B (1.74 MB) <span class="bench-badge">−55.9%</span></td>
+              <td class="v-new">1,743,360 B (1.74 MB) <span class="bench-badge">−55.9%</span></td>
             </tr>
             <tr>
               <td>Portable ZIP Archive</td>
               <td class="v-old">1.82 MB</td>
-              <td class="v-new">786 KB (805,236 B) <span class="bench-badge">−57.8%</span></td>
+              <td class="v-new">779 KB (797,915 B) <span class="bench-badge">−58.1%</span></td>
             </tr>
             <tr>
               <td>HTTP / Time / PNG Stack</td>
@@ -666,7 +666,7 @@ kbd{display:inline-flex;align-items:center;justify-content:center;min-width:26px
           </div>
           <div class="visual-diff-item">
             <strong>Framer-Motion Springs &amp; Configurable Hover Delay <span>Choreography</span></strong>
-            <p>Added critically-damped spring physics (<code>spring_step</code>) for notch morphs, dock pill glides, and Preferences panes—exclusively gated by Windows Animation Effects—plus <strong>Quick (120ms)</strong>, <strong>Normal (240ms)</strong>, and <strong>Slow (450ms)</strong> hover dwell presets.</p>
+            <p>Added critically-damped spring physics (<code>spring_step</code>) for notch morphs, dock pill glides, and Preferences panes—exclusively gated by Windows Animation Effects—plus <strong>Quick (120ms)</strong>, <strong>Normal (400ms)</strong>, and <strong>Slow (700ms)</strong> hover dwell presets.</p>
           </div>
           <div class="visual-diff-item">
             <strong>Continuous Glass Sliders, 1:1 Scrubbers &amp; Snapchat Chime <span>UX &amp; Audio</span></strong>
@@ -681,7 +681,7 @@ kbd{display:inline-flex;align-items:center;justify-content:center;min-width:26px
     </div>
 
     <div class="bench-shots">
-      <figure class="shot reveal"><button type="button" data-shot="Preferences · Fluid Motion &amp; Hover Delay (v0.3.0)" data-img="./assets/real/cynotch-settings-motion.png" aria-label="Open full screenshot: Preferences Motion &amp; Perf"><span class="shot-frame"><img src="./assets/real/cynotch-settings-motion.png" alt="CyNotch v0.3.0 Preferences showing Fluid Motion Engine, FPS Target, Hover Delay (Quick, Normal, Slow) and Windows Animation Effects status" width="892" height="752" loading="lazy"></span></button><figcaption><strong>Fluid Motion &amp; Hover Delay</strong><span>v0.3.0 Preferences ↗</span></figcaption><p>Configurable Quick (120ms), Normal (240ms), and Slow (450ms) hover dwell delay, adaptive FPS target, and live Windows Animation Effects gate.</p></figure>
+      <figure class="shot reveal"><button type="button" data-shot="Preferences · Fluid Motion &amp; Hover Delay (v0.3.0)" data-img="./assets/real/cynotch-settings-motion.png" aria-label="Open full screenshot: Preferences Motion &amp; Perf"><span class="shot-frame"><img src="./assets/real/cynotch-settings-motion.png" alt="CyNotch v0.3.0 Preferences showing Fluid Motion Engine, FPS Target, Hover Delay (Quick, Normal, Slow) and Windows Animation Effects status" width="892" height="752" loading="lazy"></span></button><figcaption><strong>Fluid Motion &amp; Hover Delay</strong><span>v0.3.0 Preferences ↗</span></figcaption><p>Configurable Quick (120ms), Normal (400ms), and Slow (700ms) hover dwell delay, adaptive FPS target, and live Windows Animation Effects gate.</p></figure>
       <figure class="shot reveal"><button type="button" data-shot="Volume Master · 1:1 Sub-Pixel Scrubber (v0.3.0)" data-img="./assets/real/cynotch-volume.png" aria-label="Open full screenshot: Volume Master"><span class="shot-frame"><img src="./assets/real/cynotch-volume.png" alt="CyNotch v0.3.0 Volume Master view with 1:1 sub-pixel slider thumb and exact preset highlighting" width="660" height="272" loading="lazy"></span></button><figcaption><strong>1:1 Sub-Pixel Volume &amp; Music Scrubbers</strong><span>v0.3.0 Direct2D ↗</span></figcaption><p>Continuous sub-pixel click-and-drag sliders with glowing thumbs, exact preset highlighting, and right-click context menu directly on the notch.</p></figure>
     </div>
   </div>
@@ -702,7 +702,7 @@ kbd{display:inline-flex;align-items:center;justify-content:center;min-width:26px
     <div class="reveal">
       <dl class="dtable">
         <div class="drow"><dt>Language</dt><dd>Rust, edition 2024, MSVC toolchain</dd></div>
-        <div class="drow"><dt>Binary</dt><dd>1.74 MB (1,742,848 B), stripped LTO release build (−55.9% vs v0.2.4.1)</dd></div>
+        <div class="drow"><dt>Binary</dt><dd>1.74 MB (1,743,360 B), stripped LTO release build (−55.9% vs v0.2.4.1)</dd></div>
         <div class="drow"><dt>Frame time</dt><dd>59.3 µs idle / 0.93 ms expanded (Direct2D GPU)</dd></div>
         <div class="drow"><dt>Idle CPU</dt><dd>0.0% at rest (timers &amp; frame pacer fully hibernated)</dd></div>
         <div class="drow"><dt>Compositor</dt><dd>DirectComposition DXGI SwapChain + paired Win11 rounded frosted-blur backdrop</dd></div>
@@ -765,9 +765,9 @@ cargo build --release
         </div>
         <div class="hash">
           <div class="hash-head"><span>SHA-256 · portable.exe</span><button class="copy-btn" type="button" data-copy="exeHash">Copy</button></div>
-          <code id="exeHash">525c6e68841f2ded2d814141c49fdcdc10299ce1eebc78e8a2131ffb4276023c</code>
+          <code id="exeHash">63583ce234c0f5de0b598908633f042a906d5c99360017d439ad2d9d3dbf33bf</code>
         </div>
-        <p class="get-note">Open-source portable build (unsigned .exe). Verify the SHA-256 above before running; if Windows SmartScreen prompts on first launch, click <strong>More info → Run anyway</strong> or build from source. ZIP digest: 2c6a26660f6dd9a7bb2b4b28e88a6337f8ed3c6b3249aab309d339e730c8cded</p>
+        <p class="get-note">Open-source portable build (unsigned .exe). Verify the SHA-256 above before running; if Windows SmartScreen prompts on first launch, click <strong>More info → Run anyway</strong> or build from source. ZIP digest: abc269b95c09b3d45f7593b9c4578d1a0cd27919cdbdedfb17594d4d3a1be595</p>
       </div>
     </div>
   </div>
