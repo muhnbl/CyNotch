@@ -43,10 +43,18 @@ const NOTIF_SETTINGS_SUBKEY: PCWSTR =
 static SOUND_MUTE_LOCK: Mutex<()> = Mutex::new(());
 static BANNER_TOGGLE_LOCK: Mutex<()> = Mutex::new(());
 
+fn default_true() -> bool {
+    true
+}
+
 #[derive(Serialize, Deserialize, Default, Clone, Debug, PartialEq, Eq)]
 struct BannerBackupEntry {
     show_banner: Option<u32>,
     show_in_action_center: Option<u32>,
+    #[serde(default = "default_true")]
+    banner_pending: bool,
+    #[serde(default = "default_true")]
+    ac_pending: bool,
 }
 
 #[derive(Serialize, Deserialize, Default, Clone, Debug, PartialEq, Eq)]
@@ -96,26 +104,46 @@ trait NotifRegistry {
     fn delete_app_value(&mut self, app: &str, value_name: &str) -> Result<(), ()>;
 }
 
-struct WindowsNotifRegistry;
+/// Scoped Windows registry handle caching the `Notifications\Settings` root `HKEY`
+/// for the lifetime of one operation (eliminates `10N`/`12N` handle churn — BH-34).
+struct WindowsNotifRegistry {
+    root_read: Option<HKEY>,
+}
 
-impl NotifRegistry for WindowsNotifRegistry {
-    fn query_root_dword(&self, value_name: &str) -> Result<Option<u32>, ()> {
-        unsafe {
-            let mut root = HKEY::default();
-            if RegOpenKeyExW(
+impl WindowsNotifRegistry {
+    fn open_read_root() -> Self {
+        let mut root = HKEY::default();
+        let st = unsafe {
+            RegOpenKeyExW(
                 HKEY_CURRENT_USER,
                 NOTIF_SETTINGS_SUBKEY,
                 0,
-                KEY_READ,
+                KEY_READ | KEY_ENUMERATE_SUB_KEYS,
                 &mut root,
-            ) != ERROR_SUCCESS
-            {
-                return Err(());
+            )
+        };
+        Self {
+            root_read: if st == ERROR_SUCCESS { Some(root) } else { None },
+        }
+    }
+}
+
+impl Drop for WindowsNotifRegistry {
+    fn drop(&mut self) {
+        if let Some(h) = self.root_read.take() {
+            unsafe {
+                let _ = RegCloseKey(h);
             }
+        }
+    }
+}
+
+impl NotifRegistry for WindowsNotifRegistry {
+    fn query_root_dword(&self, value_name: &str) -> Result<Option<u32>, ()> {
+        let root = self.root_read.ok_or(())?;
+        unsafe {
             let name_h = HSTRING::from(value_name);
-            let val = query_reg_dword(root, PCWSTR(name_h.as_ptr()));
-            let _ = RegCloseKey(root);
-            Ok(val)
+            query_reg_dword(root, PCWSTR(name_h.as_ptr()))
         }
     }
 
@@ -164,19 +192,9 @@ impl NotifRegistry for WindowsNotifRegistry {
     }
 
     fn enum_app_subkeys(&self) -> Result<Vec<String>, ()> {
+        let root = self.root_read.ok_or(())?;
         unsafe {
             let mut result = Vec::new();
-            let mut root = HKEY::default();
-            if RegOpenKeyExW(
-                HKEY_CURRENT_USER,
-                NOTIF_SETTINGS_SUBKEY,
-                0,
-                KEY_READ | KEY_ENUMERATE_SUB_KEYS,
-                &mut root,
-            ) != ERROR_SUCCESS
-            {
-                return Err(());
-            }
             let mut idx = 0u32;
             let mut name_buf = [0u16; 512];
             loop {
@@ -195,124 +213,77 @@ impl NotifRegistry for WindowsNotifRegistry {
                 if st == ERROR_NO_MORE_ITEMS {
                     break;
                 }
-                if st == ERROR_SUCCESS && name_len > 0 {
+                // BH-34: Break immediately on any error other than ERROR_SUCCESS (no infinite spin).
+                if st != ERROR_SUCCESS {
+                    return Err(());
+                }
+                if name_len > 0 {
                     result.push(String::from_utf16_lossy(&name_buf[..name_len as usize]));
                 }
-                idx += 1;
+                idx = idx.checked_add(1).ok_or(())?;
             }
-            let _ = RegCloseKey(root);
             Ok(result)
         }
     }
 
     fn app_subkey_exists(&self, app: &str) -> Result<bool, ()> {
+        let root = self.root_read.ok_or(())?;
         unsafe {
-            let mut root = HKEY::default();
-            if RegOpenKeyExW(
-                HKEY_CURRENT_USER,
-                NOTIF_SETTINGS_SUBKEY,
-                0,
-                KEY_READ,
-                &mut root,
-            ) != ERROR_SUCCESS
-            {
-                return Err(());
-            }
             let sub_h = HSTRING::from(app);
             let mut app_key = HKEY::default();
             let st = RegOpenKeyExW(root, &sub_h, 0, KEY_READ, &mut app_key);
             if st == ERROR_SUCCESS {
                 let _ = RegCloseKey(app_key);
-                let _ = RegCloseKey(root);
                 Ok(true)
+            } else if st == ERROR_FILE_NOT_FOUND {
+                Ok(false)
             } else {
-                let _ = RegCloseKey(root);
-                if st == ERROR_FILE_NOT_FOUND {
-                    Ok(false)
-                } else {
-                    Err(())
-                }
+                Err(())
             }
         }
     }
 
     fn query_app_dword(&self, app: &str, value_name: &str) -> Result<Option<u32>, ()> {
+        let root = self.root_read.ok_or(())?;
         unsafe {
-            let mut root = HKEY::default();
-            if RegOpenKeyExW(
-                HKEY_CURRENT_USER,
-                NOTIF_SETTINGS_SUBKEY,
-                0,
-                KEY_READ,
-                &mut root,
-            ) != ERROR_SUCCESS
-            {
-                return Err(());
-            }
             let sub_h = HSTRING::from(app);
             let mut app_key = HKEY::default();
             if RegOpenKeyExW(root, &sub_h, 0, KEY_READ, &mut app_key) != ERROR_SUCCESS {
-                let _ = RegCloseKey(root);
                 return Err(());
             }
             let name_h = HSTRING::from(value_name);
             let val = query_reg_dword(app_key, PCWSTR(name_h.as_ptr()));
             let _ = RegCloseKey(app_key);
-            let _ = RegCloseKey(root);
-            Ok(val)
+            val
         }
     }
 
     fn set_app_dword(&mut self, app: &str, value_name: &str, value: u32) -> Result<(), ()> {
+        let root = self.root_read.ok_or(())?;
         unsafe {
-            let mut root = HKEY::default();
-            if RegOpenKeyExW(
-                HKEY_CURRENT_USER,
-                NOTIF_SETTINGS_SUBKEY,
-                0,
-                KEY_READ,
-                &mut root,
-            ) != ERROR_SUCCESS
-            {
-                return Err(());
-            }
             let sub_h = HSTRING::from(app);
             let mut app_key = HKEY::default();
             if RegOpenKeyExW(root, &sub_h, 0, KEY_READ | KEY_WRITE, &mut app_key) != ERROR_SUCCESS {
-                let _ = RegCloseKey(root);
                 return Err(());
             }
             let name_h = HSTRING::from(value_name);
             let ok = set_reg_dword(app_key, PCWSTR(name_h.as_ptr()), value);
             let _ = RegCloseKey(app_key);
-            let _ = RegCloseKey(root);
             if ok { Ok(()) } else { Err(()) }
         }
     }
 
     fn delete_app_value(&mut self, app: &str, value_name: &str) -> Result<(), ()> {
+        let root = self.root_read.ok_or(())?;
         unsafe {
-            let mut root = HKEY::default();
-            if RegOpenKeyExW(
-                HKEY_CURRENT_USER,
-                NOTIF_SETTINGS_SUBKEY,
-                0,
-                KEY_READ,
-                &mut root,
-            ) != ERROR_SUCCESS
-            {
-                return Err(());
-            }
             let sub_h = HSTRING::from(app);
             let mut app_key = HKEY::default();
             if RegOpenKeyExW(root, &sub_h, 0, KEY_READ | KEY_WRITE, &mut app_key) != ERROR_SUCCESS {
-                let _ = RegCloseKey(root);
                 return Err(());
             }
             let name_h = HSTRING::from(value_name);
             let st = RegDeleteValueW(app_key, PCWSTR(name_h.as_ptr()));
             let _ = RegCloseKey(app_key);
-            let _ = RegCloseKey(root);
             if st == ERROR_SUCCESS || st == ERROR_FILE_NOT_FOUND {
                 Ok(())
             } else {
@@ -336,8 +307,9 @@ fn sync_windows_notification_sound_mute_with(
         match crate::persistence::load_json_with_recovery::<SoundMuteBackup, _>(backup_path, |_| {
             true
         }) {
-            crate::persistence::LoadOutcome::Corrupted { .. } => {
-                // Never overwrite a corrupted backup or mutate registry without a valid backup.
+            crate::persistence::LoadOutcome::Corrupted { .. }
+            | crate::persistence::LoadOutcome::IoError => {
+                // Never overwrite a corrupted/locked backup or mutate registry without a valid backup.
                 return false;
             }
             crate::persistence::LoadOutcome::Loaded(_)
@@ -375,8 +347,9 @@ fn sync_windows_notification_sound_mute_with(
             crate::persistence::LoadOutcome::Loaded(b)
             | crate::persistence::LoadOutcome::RecoveredFromBackup(b) => b,
             crate::persistence::LoadOutcome::Missing
-            | crate::persistence::LoadOutcome::Corrupted { .. } => {
-                // Keep any corrupted backup intact for manual recovery; do not mutate registry.
+            | crate::persistence::LoadOutcome::Corrupted { .. }
+            | crate::persistence::LoadOutcome::IoError => {
+                // Keep any corrupted/locked backup intact; do not mutate registry.
                 return false;
             }
         };
@@ -408,7 +381,7 @@ fn sync_windows_notification_sound_mute_with(
 pub fn sync_windows_notification_sound_mute(mute: bool) -> bool {
     let _guard = SOUND_MUTE_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     let backup_path = sound_mute_backup_path();
-    let mut reg = WindowsNotifRegistry;
+    let mut reg = WindowsNotifRegistry::open_read_root();
     let _ = ALLOW_NOTIF_SOUND_VAL;
     sync_windows_notification_sound_mute_with(&mut reg, &backup_path, mute)
 }
@@ -438,7 +411,9 @@ pub fn is_windows_transparency_enabled() -> bool {
         {
             return false;
         }
-        let val = query_reg_dword(hkey, windows::core::w!("EnableTransparency"));
+        let val = query_reg_dword(hkey, windows::core::w!("EnableTransparency"))
+            .ok()
+            .flatten();
         let _ = RegCloseKey(hkey);
         val.map(|v| v != 0).unwrap_or(false)
     }
@@ -547,7 +522,9 @@ pub fn sanitize_notification_text(raw: &str) -> String {
     out
 }
 
-unsafe fn query_reg_dword(hkey: HKEY, name: PCWSTR) -> Option<u32> {
+/// Queries a `REG_DWORD` value strictly distinguishing missing value (`Ok(None)`)
+/// from Win32 errors or unexpected registry types (`Err(())`) — BH-34.
+unsafe fn query_reg_dword(hkey: HKEY, name: PCWSTR) -> Result<Option<u32>, ()> {
     let mut ty = REG_VALUE_TYPE(0);
     let mut val: u32 = 0;
     let mut size: u32 = std::mem::size_of::<u32>() as u32;
@@ -559,10 +536,12 @@ unsafe fn query_reg_dword(hkey: HKEY, name: PCWSTR) -> Option<u32> {
         Some(&mut val as *mut u32 as *mut u8),
         Some(&mut size),
     );
-    if status == ERROR_SUCCESS && ty == REG_DWORD && size == 4 {
-        Some(val)
+    if status == ERROR_FILE_NOT_FOUND {
+        Ok(None)
+    } else if status == ERROR_SUCCESS && ty == REG_DWORD && size == 4 {
+        Ok(Some(val))
     } else {
-        None
+        Err(())
     }
 }
 
@@ -586,7 +565,7 @@ fn count_suppressed_apps_with(reg: &dyn NotifRegistry) -> usize {
 
 /// Counts how many per-app Windows notification keys currently have native banners suppressed (`ShowBanner == 0`).
 pub fn count_suppressed_apps() -> usize {
-    let reg = WindowsNotifRegistry;
+    let reg = WindowsNotifRegistry::open_read_root();
     count_suppressed_apps_with(&reg)
 }
 
@@ -596,7 +575,7 @@ fn set_exclusive_windows_banners_with(
     enable: bool,
 ) -> usize {
     if enable {
-        // BH-10: Never interpret a corrupted backup as empty — abort without mutating registry.
+        // BH-10/BH-35: Never interpret a corrupted or locked backup as empty — abort without mutating registry.
         let mut store = match crate::persistence::load_json_with_recovery::<BannerBackupStore, _>(
             backup_path,
             BannerBackupStore::is_valid,
@@ -604,7 +583,8 @@ fn set_exclusive_windows_banners_with(
             crate::persistence::LoadOutcome::Loaded(s)
             | crate::persistence::LoadOutcome::RecoveredFromBackup(s) => s,
             crate::persistence::LoadOutcome::Missing => BannerBackupStore::default(),
-            crate::persistence::LoadOutcome::Corrupted { .. } => {
+            crate::persistence::LoadOutcome::Corrupted { .. }
+            | crate::persistence::LoadOutcome::IoError => {
                 return count_suppressed_apps_with(reg);
             }
         };
@@ -614,40 +594,57 @@ fn set_exclusive_windows_banners_with(
         };
 
         // Snapshot all original values BEFORE modifying any registry entry.
-        // Existing backup entries are preserved (idempotent re-enable).
-        let mut targets: Vec<String> = Vec::new();
+        // Skip apps already silenced by the user (ShowBanner == 0 && ShowInActionCenter == 0)
+        // so we never force ShowInActionCenter = 1 on user-silenced apps (BH-34).
+        let mut targets: Vec<(String, bool)> = Vec::new();
         for name in subkeys {
             if name.trim().is_empty() {
                 continue;
             }
-            if !store.apps.contains_key(&name) {
-                let Ok(show_banner) = reg.query_app_dword(&name, SHOW_BANNER_NAME) else {
-                    continue;
-                };
-                let Ok(show_in_ac) = reg.query_app_dword(&name, SHOW_IN_AC_NAME) else {
-                    continue;
-                };
-                store.apps.insert(
-                    name.clone(),
-                    BannerBackupEntry {
-                        show_banner,
-                        show_in_action_center: show_in_ac,
-                    },
-                );
+            if let Some(existing) = store.apps.get(&name) {
+                let touch_ac = existing.ac_pending;
+                targets.push((name, touch_ac));
+                continue;
             }
-            targets.push(name);
+            let Ok(show_banner) = reg.query_app_dword(&name, SHOW_BANNER_NAME) else {
+                continue;
+            };
+            let Ok(show_in_ac) = reg.query_app_dword(&name, SHOW_IN_AC_NAME) else {
+                continue;
+            };
+            if show_banner == Some(0) && show_in_ac == Some(0) {
+                continue;
+            }
+            let touch_ac = show_in_ac != Some(1);
+            store.apps.insert(
+                name.clone(),
+                BannerBackupEntry {
+                    show_banner,
+                    show_in_action_center: show_in_ac,
+                    banner_pending: true,
+                    ac_pending: touch_ac,
+                },
+            );
+            targets.push((name, touch_ac));
         }
 
         // Persist durable atomic backup FIRST. If backup fails, never mutate registry!
         if !store.apps.is_empty()
-            && crate::persistence::atomic_write_json(backup_path, &store, true).is_err()
+            && crate::persistence::atomic_write_json_validated(
+                backup_path,
+                &store,
+                true,
+                BannerBackupStore::is_valid,
+            )
+            .is_err()
         {
             return count_suppressed_apps_with(reg);
         }
 
-        for name in &targets {
-            let _ = reg.set_app_dword(name, SHOW_BANNER_NAME, 0);
-            let _ = reg.set_app_dword(name, SHOW_IN_AC_NAME, 1);
+        for (name, touch_ac) in &targets {
+            if reg.set_app_dword(name, SHOW_BANNER_NAME, 0).is_ok() && *touch_ac {
+                let _ = reg.set_app_dword(name, SHOW_IN_AC_NAME, 1);
+            }
         }
 
         count_suppressed_apps_with(reg)
@@ -659,17 +656,16 @@ fn set_exclusive_windows_banners_with(
             crate::persistence::LoadOutcome::Loaded(s)
             | crate::persistence::LoadOutcome::RecoveredFromBackup(s) => s,
             crate::persistence::LoadOutcome::Missing
-            | crate::persistence::LoadOutcome::Corrupted { .. } => {
-                // Keep corrupted backup intact; report actual suppressed count.
+            | crate::persistence::LoadOutcome::Corrupted { .. }
+            | crate::persistence::LoadOutcome::IoError => {
                 return count_suppressed_apps_with(reg);
             }
         };
 
         let mut remaining = BannerBackupStore::default();
-        for (name, entry) in store.apps {
+        for (name, mut entry) in store.apps {
             match reg.app_subkey_exists(&name) {
                 Ok(false) => {
-                    // App was uninstalled; nothing to restore.
                     continue;
                 }
                 Err(()) => {
@@ -679,39 +675,44 @@ fn set_exclusive_windows_banners_with(
                 Ok(true) => {}
             }
 
-            let mut app_ok = true;
-
-            // Only restore values still owned by CyNotch (ShowBanner == 0, ShowInActionCenter == 1)
-            // so unrelated changes made by the user or other applications are never overwritten.
-            match reg.query_app_dword(&name, SHOW_BANNER_NAME) {
-                Ok(Some(0)) => {
-                    let res = match entry.show_banner {
-                        Some(prev) => reg.set_app_dword(&name, SHOW_BANNER_NAME, prev),
-                        None => reg.delete_app_value(&name, SHOW_BANNER_NAME),
-                    };
-                    if res.is_err() {
-                        app_ok = false;
+            if entry.banner_pending {
+                match reg.query_app_dword(&name, SHOW_BANNER_NAME) {
+                    Ok(Some(0)) => {
+                        let res = match entry.show_banner {
+                            Some(prev) => reg.set_app_dword(&name, SHOW_BANNER_NAME, prev),
+                            None => reg.delete_app_value(&name, SHOW_BANNER_NAME),
+                        };
+                        if res.is_ok() {
+                            entry.banner_pending = false;
+                        }
                     }
+                    Ok(_) => {
+                        // External app/user changed ShowBanner away from 0 — do not clobber.
+                        entry.banner_pending = false;
+                    }
+                    Err(()) => {}
                 }
-                Ok(_) => {}
-                Err(()) => app_ok = false,
             }
 
-            match reg.query_app_dword(&name, SHOW_IN_AC_NAME) {
-                Ok(Some(1)) => {
-                    let res = match entry.show_in_action_center {
-                        Some(prev) => reg.set_app_dword(&name, SHOW_IN_AC_NAME, prev),
-                        None => reg.delete_app_value(&name, SHOW_IN_AC_NAME),
-                    };
-                    if res.is_err() {
-                        app_ok = false;
+            if entry.ac_pending {
+                match reg.query_app_dword(&name, SHOW_IN_AC_NAME) {
+                    Ok(Some(1)) => {
+                        let res = match entry.show_in_action_center {
+                            Some(prev) => reg.set_app_dword(&name, SHOW_IN_AC_NAME, prev),
+                            None => reg.delete_app_value(&name, SHOW_IN_AC_NAME),
+                        };
+                        if res.is_ok() {
+                            entry.ac_pending = false;
+                        }
                     }
+                    Ok(_) => {
+                        entry.ac_pending = false;
+                    }
+                    Err(()) => {}
                 }
-                Ok(_) => {}
-                Err(()) => app_ok = false,
             }
 
-            if !app_ok {
+            if entry.banner_pending || entry.ac_pending {
                 remaining.apps.insert(name, entry);
             }
         }
@@ -719,8 +720,12 @@ fn set_exclusive_windows_banners_with(
         if remaining.apps.is_empty() {
             let _ = crate::persistence::remove_with_backup(backup_path);
         } else {
-            // Preserve un-restored apps for safe retry on next disable/recovery.
-            let _ = crate::persistence::atomic_write_json(backup_path, &remaining, true);
+            let _ = crate::persistence::atomic_write_json_validated(
+                backup_path,
+                &remaining,
+                true,
+                BannerBackupStore::is_valid,
+            );
         }
 
         count_suppressed_apps_with(reg)
@@ -735,63 +740,87 @@ fn set_exclusive_windows_banners_with(
 pub fn set_exclusive_windows_banners(enable: bool) -> usize {
     let _guard = BANNER_TOGGLE_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     let backup_path = backup_file_path();
-    let mut reg = WindowsNotifRegistry;
+    let mut reg = WindowsNotifRegistry::open_read_root();
     set_exclusive_windows_banners_with(&mut reg, &backup_path, enable)
 }
 
 /// Serialized, coalescing background worker for exclusive Windows banner toggling
 /// so rapid UI clicks never spawn competing threads or race on registry/backup state.
+/// Retryable on transient OS spawn failure and panic-isolated via `catch_unwind` (BH-34).
 pub fn enqueue_exclusive_windows_banners(
     enable: bool,
     on_complete: Box<dyn FnOnce(usize) + Send + 'static>,
 ) {
-    use std::sync::{Arc, Condvar, OnceLock};
+    use std::sync::{Arc, Condvar};
     struct PendingJob {
         enable: bool,
-        callbacks: Vec<Box<dyn FnOnce(usize) + Send + 'static>>,
+        callbacks: Vec<(bool, Box<dyn FnOnce(usize) + Send + 'static>)>,
     }
     struct BannerWorker {
         pending: Mutex<Option<PendingJob>>,
         cvar: Condvar,
     }
-    static WORKER: OnceLock<Arc<BannerWorker>> = OnceLock::new();
+    static WORKER: Mutex<Option<Arc<BannerWorker>>> = Mutex::new(None);
 
-    let worker = WORKER.get_or_init(|| {
-        let w = Arc::new(BannerWorker {
-            pending: Mutex::new(None),
-            cvar: Condvar::new(),
-        });
-        let bg = Arc::clone(&w);
-        let _ = std::thread::Builder::new()
-            .name("cynotch-notif-banners".to_string())
-            .spawn(move || loop {
-                let job = {
-                    let mut guard = bg.pending.lock().unwrap_or_else(|e| e.into_inner());
-                    while guard.is_none() {
-                        guard = bg.cvar.wait(guard).unwrap_or_else(|e| e.into_inner());
-                    }
-                    guard.take()
-                };
-                if let Some(job) = job {
-                    let count = set_exclusive_windows_banners(job.enable);
-                    for cb in job.callbacks {
-                        cb(count);
-                    }
-                }
+    let worker = {
+        let mut slot = WORKER.lock().unwrap_or_else(|e| e.into_inner());
+        if let Some(existing) = slot.as_ref() {
+            Arc::clone(existing)
+        } else {
+            let w = Arc::new(BannerWorker {
+                pending: Mutex::new(None),
+                cvar: Condvar::new(),
             });
-        w
-    });
+            let bg = Arc::clone(&w);
+            if std::thread::Builder::new()
+                .name("cynotch-notif-banners".to_string())
+                .spawn(move || loop {
+                    let job = {
+                        let mut guard = bg.pending.lock().unwrap_or_else(|e| e.into_inner());
+                        while guard.is_none() {
+                            guard = bg.cvar.wait(guard).unwrap_or_else(|e| e.into_inner());
+                        }
+                        guard.take()
+                    };
+                    if let Some(job) = job {
+                        let executed_enable = job.enable;
+                        let count = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                            set_exclusive_windows_banners(executed_enable)
+                        }))
+                        .unwrap_or(0);
+                        for (cb_enable, cb) in job.callbacks {
+                            if cb_enable == executed_enable {
+                                let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(
+                                    move || cb(count),
+                                ));
+                            }
+                        }
+                    }
+                })
+                .is_ok()
+            {
+                *slot = Some(Arc::clone(&w));
+                w
+            } else {
+                // Transient spawn failure: fall back synchronously rather than silently dropping.
+                drop(slot);
+                let count = set_exclusive_windows_banners(enable);
+                on_complete(count);
+                return;
+            }
+        }
+    };
 
     let mut guard = worker.pending.lock().unwrap_or_else(|e| e.into_inner());
     match guard.as_mut() {
         Some(existing) => {
             existing.enable = enable;
-            existing.callbacks.push(on_complete);
+            existing.callbacks.push((enable, on_complete));
         }
         None => {
             *guard = Some(PendingJob {
                 enable,
-                callbacks: vec![on_complete],
+                callbacks: vec![(enable, on_complete)],
             });
         }
     }
@@ -1287,11 +1316,17 @@ mod registry_integrity_tests {
     #[test]
     fn bh11_sound_mute_aborts_if_backup_write_fails() {
         let dir = isolated_dir("bh11_fail_backup");
-        // Passing a directory path as backup_path forces write failure
+        // BH-43: Use a non-existent file whose parent is a regular file so
+        // load_json_with_recovery returns Missing, query_root_dword runs, and
+        // atomic_write_json genuinely fails on create_dir_all/open.
+        let blocker_file = dir.join("not_a_dir");
+        std::fs::write(&blocker_file, "blocker").unwrap();
+        let impossible_backup_path = blocker_file.join("notif_sound_backup.json");
+
         let mut reg = MockRegistry::default();
         reg.root.insert(ALLOW_NOTIF_SOUND_NAME.to_string(), 1);
 
-        let ok = sync_windows_notification_sound_mute_with(&mut reg, &dir, true);
+        let ok = sync_windows_notification_sound_mute_with(&mut reg, &impossible_backup_path, true);
         assert!(!ok);
         // Registry must remain untouched (1, not 0)
         assert_eq!(reg.root.get(ALLOW_NOTIF_SOUND_NAME), Some(&1));
@@ -1356,8 +1391,12 @@ mod registry_integrity_tests {
             reg.apps.get("Discord").unwrap().get(SHOW_BANNER_NAME),
             Some(&1)
         );
-        // Corrupted backup preserved
-        assert!(backup_path.exists());
+        // Corrupted backup was moved to a `.corrupt-*` quarantine file (not silently wiped)
+        let has_quarantined = std::fs::read_dir(&dir)
+            .unwrap()
+            .filter_map(|e| e.ok())
+            .any(|e| e.file_name().to_string_lossy().contains(".corrupt-"));
+        assert!(has_quarantined);
 
         let _ = std::fs::remove_dir_all(&dir);
     }

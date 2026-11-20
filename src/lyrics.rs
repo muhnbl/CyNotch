@@ -1,8 +1,10 @@
 use crate::models::LyricLine;
+use std::time::{Duration, Instant};
 use windows::Win32::Networking::WinHttp::{
-    WinHttpCloseHandle, WinHttpConnect, WinHttpOpen, WinHttpOpenRequest, WinHttpReadData,
-    WinHttpReceiveResponse, WinHttpSendRequest, WinHttpSetTimeouts,
     WINHTTP_ACCESS_TYPE_DEFAULT_PROXY, WINHTTP_FLAG_SECURE, WINHTTP_OPEN_REQUEST_FLAGS,
+    WINHTTP_QUERY_FLAG_NUMBER, WINHTTP_QUERY_STATUS_CODE, WinHttpCloseHandle, WinHttpConnect,
+    WinHttpOpen, WinHttpOpenRequest, WinHttpQueryHeaders, WinHttpReadData, WinHttpReceiveResponse,
+    WinHttpSendRequest, WinHttpSetTimeouts,
 };
 use windows::core::{PCWSTR, w};
 
@@ -125,10 +127,35 @@ fn http_get_string(host: &str, path_and_query: &str, timeout_ms: u32) -> Option<
             return None;
         }
 
+        // BH-38: Require 2xx HTTP status before downloading response body.
+        let mut status_code: u32 = 0;
+        let mut status_len: u32 = std::mem::size_of::<u32>() as u32;
+        let status_ok = WinHttpQueryHeaders(
+            request,
+            WINHTTP_QUERY_STATUS_CODE | WINHTTP_QUERY_FLAG_NUMBER,
+            PCWSTR::null(),
+            Some(&mut status_code as *mut u32 as *mut core::ffi::c_void),
+            &mut status_len,
+            std::ptr::null_mut(),
+        )
+        .is_ok();
+        if !status_ok || !(200..=299).contains(&status_code) {
+            let _ = WinHttpCloseHandle(request);
+            let _ = WinHttpCloseHandle(connect);
+            let _ = WinHttpCloseHandle(session);
+            return None;
+        }
+
+        let total_deadline = Instant::now()
+            + Duration::from_millis((timeout_ms as u64).saturating_mul(2).max(2000));
         let mut raw_body: Vec<u8> = Vec::new();
         let mut buffer = [0u8; 8192];
-        let mut exceeded_limit = false;
+        let mut aborted = false;
         loop {
+            if Instant::now() >= total_deadline {
+                aborted = true;
+                break;
+            }
             let mut bytes_read: u32 = 0;
             let result = WinHttpReadData(
                 request,
@@ -136,12 +163,17 @@ fn http_get_string(host: &str, path_and_query: &str, timeout_ms: u32) -> Option<
                 buffer.len() as u32,
                 &mut bytes_read,
             );
-            if result.is_err() || bytes_read == 0 {
+            if result.is_err() {
+                // BH-38: Treat mid-stream I/O error as failure rather than returning truncated body.
+                aborted = true;
+                break;
+            }
+            if bytes_read == 0 {
                 break;
             }
             let n = (bytes_read as usize).min(buffer.len());
             if !append_bounded_chunk(&mut raw_body, &buffer[..n], MAX_LYRICS_RESPONSE_BYTES) {
-                exceeded_limit = true;
+                aborted = true;
                 break;
             }
         }
@@ -150,7 +182,7 @@ fn http_get_string(host: &str, path_and_query: &str, timeout_ms: u32) -> Option<
         let _ = WinHttpCloseHandle(connect);
         let _ = WinHttpCloseHandle(session);
 
-        if exceeded_limit || raw_body.is_empty() {
+        if aborted || raw_body.is_empty() {
             None
         } else {
             Some(String::from_utf8_lossy(&raw_body).into_owned())
@@ -195,8 +227,12 @@ fn parse_timestamp(ts: &str) -> Option<f64> {
 
     let minutes: f64 = parts[0].parse().ok()?;
     let seconds: f64 = parts[1].parse().ok()?;
+    if !minutes.is_finite() || !seconds.is_finite() || minutes < 0.0 || seconds < 0.0 {
+        return None;
+    }
 
-    Some(minutes * 60.0 + seconds)
+    let total = minutes * 60.0 + seconds;
+    if total.is_finite() { Some(total) } else { None }
 }
 
 fn urlencoding(s: &str) -> String {
@@ -249,5 +285,14 @@ mod tests {
         assert!(append_bounded_chunk(&mut capped, &[b'a'; 100], 128));
         assert!(!append_bounded_chunk(&mut capped, &[b'b'; 50], 128));
         assert_eq!(capped.len(), 100);
+    }
+
+    #[test]
+    fn bh38_parse_lrc_rejects_nan_inf_and_negative_timestamps() {
+        let lrc = "[NaN:00] bad1\n[inf:00] bad2\n[-1:30] bad3\n[01:-5] bad4\n[01:23.5] valid line";
+        let lines = parse_lrc(lrc);
+        assert_eq!(lines.len(), 1);
+        assert_eq!(lines[0].text, "valid line");
+        assert!((lines[0].seconds - 83.5).abs() < 1e-6);
     }
 }

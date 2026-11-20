@@ -8,21 +8,28 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 static TMP_SEQ: AtomicU64 = AtomicU64::new(0);
 
-/// Result of loading a persisted JSON file with automatic backup recovery
-/// and non-destructive corruption quarantine.
+/// Result of loading a persisted JSON file with automatic backup recovery,
+/// I/O-error separation, and non-destructive corruption quarantine.
 #[derive(Debug, PartialEq, Eq)]
 pub enum LoadOutcome<T> {
     Loaded(T),
     RecoveredFromBackup(T),
     Missing,
-    Corrupted { quarantined: Option<PathBuf> },
+    /// Primary file existed and was read, but failed JSON parsing or schema validation
+    /// and no valid `.bak` was available. Corrupted file is quarantined once (moved).
+    Corrupted {
+        quarantined: Option<PathBuf>,
+    },
+    /// Transient or permission I/O failure prevented reading; file was NOT treated as
+    /// corrupted and was NOT quarantined or overwritten.
+    IoError,
 }
 
 impl<T> LoadOutcome<T> {
     pub fn into_option(self) -> Option<T> {
         match self {
             Self::Loaded(v) | Self::RecoveredFromBackup(v) => Some(v),
-            Self::Missing | Self::Corrupted { .. } => None,
+            Self::Missing | Self::Corrupted { .. } | Self::IoError => None,
         }
     }
 }
@@ -48,6 +55,71 @@ fn unique_temp_path(path: &Path) -> PathBuf {
     }
 }
 
+fn is_transient_win_err(e: &io::Error) -> bool {
+    matches!(
+        e.kind(),
+        io::ErrorKind::PermissionDenied | io::ErrorKind::AlreadyExists
+    ) || e.raw_os_error() == Some(32)
+        || e.raw_os_error() == Some(5)
+}
+
+fn read_to_string_with_retry(path: &Path) -> io::Result<String> {
+    let mut last_err = None;
+    for attempt in 0..4 {
+        match fs::read_to_string(path) {
+            Ok(s) => return Ok(s),
+            Err(e) => {
+                let retryable = is_transient_win_err(&e);
+                last_err = Some(e);
+                if !retryable || attempt == 3 {
+                    break;
+                }
+                std::thread::sleep(Duration::from_millis(5 * (attempt as u64 + 1)));
+            }
+        }
+    }
+    Err(last_err.unwrap_or_else(|| io::Error::other("read failed")))
+}
+
+fn remove_file_with_retry(path: &Path) -> io::Result<()> {
+    let mut last_err = None;
+    for attempt in 0..5 {
+        match fs::remove_file(path) {
+            Ok(()) => return Ok(()),
+            Err(e) if e.kind() == io::ErrorKind::NotFound => return Ok(()),
+            Err(e) => {
+                let retryable = is_transient_win_err(&e);
+                last_err = Some(e);
+                if !retryable || attempt == 4 {
+                    break;
+                }
+                std::thread::sleep(Duration::from_millis(5 * (attempt as u64 + 1)));
+            }
+        }
+    }
+    Err(last_err.unwrap_or_else(|| io::Error::other("remove failed")))
+}
+
+fn rename_with_retry(src: &Path, dst: &Path) -> io::Result<()> {
+    let mut last_err = None;
+    for attempt in 0..6 {
+        match fs::rename(src, dst) {
+            Ok(()) => return Ok(()),
+            Err(e) => {
+                let retryable = is_transient_win_err(&e);
+                last_err = Some(e);
+                if !retryable || attempt == 5 {
+                    break;
+                }
+                std::thread::sleep(Duration::from_millis(5 * (attempt as u64 + 1)));
+            }
+        }
+    }
+    Err(last_err.unwrap_or_else(|| io::Error::other("rename failed")))
+}
+
+/// Moves a corrupted file out of the way to `<file>.corrupt-<ts>-<seq>` (BH-35)
+/// so repeated loads never spam duplicate `.corrupt-*` copies.
 fn quarantine_corrupt_file(path: &Path) -> Option<PathBuf> {
     let ts = SystemTime::now()
         .duration_since(UNIX_EPOCH)
@@ -63,34 +135,21 @@ fn quarantine_corrupt_file(path: &Path) -> Option<PathBuf> {
         Some(parent) if !parent.as_os_str().is_empty() => parent.join(corrupt_name),
         _ => PathBuf::from(corrupt_name),
     };
-    if fs::copy(path, &dst).is_ok() {
-        Some(dst)
+    if rename_with_retry(path, &dst).is_ok() {
+        return Some(dst);
+    }
+    // Fallback to a single deterministic `.corrupt` copy if rename failed.
+    let fallback = match path.parent() {
+        Some(parent) if !parent.as_os_str().is_empty() => {
+            parent.join(format!("{}.corrupt", file_name))
+        }
+        _ => PathBuf::from(format!("{}.corrupt", file_name)),
+    };
+    if fs::copy(path, &fallback).is_ok() {
+        Some(fallback)
     } else {
         None
     }
-}
-
-fn rename_with_retry(src: &Path, dst: &Path) -> io::Result<()> {
-    let mut last_err = None;
-    for attempt in 0..6 {
-        match fs::rename(src, dst) {
-            Ok(()) => return Ok(()),
-            Err(e) => {
-                // Transient Windows AV / indexer lock on destination file
-                let retryable = matches!(
-                    e.kind(),
-                    io::ErrorKind::PermissionDenied | io::ErrorKind::AlreadyExists
-                ) || e.raw_os_error() == Some(32)
-                    || e.raw_os_error() == Some(5);
-                last_err = Some(e);
-                if !retryable || attempt == 5 {
-                    break;
-                }
-                std::thread::sleep(Duration::from_millis(5 * (attempt as u64 + 1)));
-            }
-        }
-    }
-    Err(last_err.unwrap_or_else(|| io::Error::other("rename failed")))
 }
 
 fn write_temp_and_sync(path: &Path, data: &[u8]) -> io::Result<PathBuf> {
@@ -116,7 +175,7 @@ fn write_temp_and_sync(path: &Path, data: &[u8]) -> io::Result<PathBuf> {
 /// Atomically writes `data` to `path`:
 /// 1. Writes to a unique temporary file in the same directory and calls `sync_all()`.
 /// 2. If `keep_backup` is true and `path` already exists with non-empty data
-///    (passing `backup_eligible`), saves a durable `.bak` copy before replacing `path`.
+///    passing `backup_eligible`, saves a durable `.bak` copy before replacing `path`.
 /// 3. Atomically replaces `path` via `rename` (with transient Windows sharing-violation retry).
 /// 4. Cleans up temp files on error without touching the existing valid destination.
 pub fn atomic_write_bytes(path: &Path, data: &[u8], keep_backup: bool) -> io::Result<()> {
@@ -140,10 +199,10 @@ where
         && backup_eligible(&existing)
     {
         let bak = backup_path(path);
-        if let Ok(bak_tmp) = write_temp_and_sync(&bak, &existing) {
-            if rename_with_retry(&bak_tmp, &bak).is_err() {
-                let _ = fs::remove_file(&bak_tmp);
-            }
+        if let Ok(bak_tmp) = write_temp_and_sync(&bak, &existing)
+            && rename_with_retry(&bak_tmp, &bak).is_err()
+        {
+            let _ = fs::remove_file(&bak_tmp);
         }
     }
 
@@ -155,8 +214,10 @@ where
 }
 
 /// Atomically writes pre-serialized JSON string `json` to `path`.
-/// Never overwrites `.bak` with an existing primary file that is not valid JSON.
+/// Validates incoming JSON syntax and never overwrites `.bak` with invalid JSON.
 pub fn atomic_write_json_str(path: &Path, json: &str, keep_backup: bool) -> io::Result<()> {
+    serde_json::from_str::<serde_json::Value>(json)
+        .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
     atomic_write_bytes_guarded(path, json.as_bytes(), keep_backup, |existing| {
         serde_json::from_slice::<serde_json::Value>(existing).is_ok()
     })
@@ -164,62 +225,110 @@ pub fn atomic_write_json_str(path: &Path, json: &str, keep_backup: bool) -> io::
 
 /// Serializes `value` to pretty JSON *before* touching the filesystem, then writes atomically.
 /// Never overwrites `.bak` with an existing primary file that is not valid JSON.
-pub fn atomic_write_json<T: Serialize>(path: &Path, value: &T, keep_backup: bool) -> io::Result<()> {
+pub fn atomic_write_json<T: Serialize>(
+    path: &Path,
+    value: &T,
+    keep_backup: bool,
+) -> io::Result<()> {
     let json = serde_json::to_string_pretty(value)
         .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
     atomic_write_json_str(path, &json, keep_backup)
 }
 
-/// Loads and validates JSON from `path`.
-/// - If `path` is corrupted or fails `validate`, preserves a timestamped `.corrupt-*` copy
-///   and attempts automatic recovery from `<path>.bak`.
-/// - Never silently deletes or overwrites corrupted user data.
+/// Serializes `value` to pretty JSON and validates any existing primary file against schema `T`
+/// and `validate` before rotating it into `.bak` (prevents schema-invalid `.bak` poisoning — BH-35).
+pub fn atomic_write_json_validated<T, F>(
+    path: &Path,
+    value: &T,
+    keep_backup: bool,
+    validate: F,
+) -> io::Result<()>
+where
+    T: Serialize + DeserializeOwned,
+    F: Fn(&T) -> bool,
+{
+    let json = serde_json::to_string_pretty(value)
+        .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
+    atomic_write_bytes_guarded(path, json.as_bytes(), keep_backup, |existing| {
+        serde_json::from_slice::<T>(existing)
+            .map(|parsed| validate(&parsed))
+            .unwrap_or(false)
+    })
+}
+
+enum ParseFileResult<T> {
+    Ok(T),
+    NotFound,
+    IoErr,
+    Corrupt,
+}
+
+fn read_and_validate<T, F>(path: &Path, validate: &F) -> ParseFileResult<T>
+where
+    T: DeserializeOwned,
+    F: Fn(&T) -> bool,
+{
+    let text = match read_to_string_with_retry(path) {
+        Ok(s) => s,
+        Err(e) if e.kind() == io::ErrorKind::NotFound => return ParseFileResult::NotFound,
+        Err(_) => return ParseFileResult::IoErr,
+    };
+    match serde_json::from_str::<T>(&text) {
+        Ok(parsed) if validate(&parsed) => ParseFileResult::Ok(parsed),
+        _ => ParseFileResult::Corrupt,
+    }
+}
+
+/// Loads and validates JSON from `path`:
+/// - Distinguishes transient/permission I/O errors (`LoadOutcome::IoError`) from corruption.
+/// - On parse/validation failure, moves the corrupt primary to `.corrupt-<ts>-<seq>` (preventing
+///   unbounded quarantine spam on reloads), recovers from `<path>.bak` if valid, and heals
+///   `path` from `.bak` so subsequent reads succeed directly.
 pub fn load_json_with_recovery<T, F>(path: &Path, validate: F) -> LoadOutcome<T>
 where
     T: DeserializeOwned,
     F: Fn(&T) -> bool,
 {
-    let try_parse = |p: &Path| -> Option<T> {
-        let text = fs::read_to_string(p).ok()?;
-        let parsed = serde_json::from_str::<T>(&text).ok()?;
-        if validate(&parsed) {
-            Some(parsed)
-        } else {
-            None
-        }
-    };
-
     let bak = backup_path(path);
-    if !path.exists() {
-        return match try_parse(&bak) {
-            Some(v) => LoadOutcome::RecoveredFromBackup(v),
-            None => LoadOutcome::Missing,
-        };
-    }
-
-    if let Some(v) = try_parse(path) {
-        return LoadOutcome::Loaded(v);
-    }
-
-    let quarantined = quarantine_corrupt_file(path);
-    if let Some(v) = try_parse(&bak) {
-        LoadOutcome::RecoveredFromBackup(v)
-    } else {
-        LoadOutcome::Corrupted { quarantined }
+    match read_and_validate(path, &validate) {
+        ParseFileResult::Ok(v) => LoadOutcome::Loaded(v),
+        ParseFileResult::IoErr => LoadOutcome::IoError,
+        ParseFileResult::NotFound => match read_and_validate(&bak, &validate) {
+            ParseFileResult::Ok(v) => {
+                if let Ok(bak_bytes) = fs::read(&bak) {
+                    let _ = atomic_write_bytes(path, &bak_bytes, false);
+                }
+                LoadOutcome::RecoveredFromBackup(v)
+            }
+            ParseFileResult::NotFound => LoadOutcome::Missing,
+            ParseFileResult::IoErr => LoadOutcome::IoError,
+            ParseFileResult::Corrupt => {
+                let quarantined = quarantine_corrupt_file(&bak);
+                LoadOutcome::Corrupted { quarantined }
+            }
+        },
+        ParseFileResult::Corrupt => {
+            let quarantined = quarantine_corrupt_file(path);
+            match read_and_validate(&bak, &validate) {
+                ParseFileResult::Ok(v) => {
+                    if let Ok(bak_bytes) = fs::read(&bak) {
+                        let _ = atomic_write_bytes(path, &bak_bytes, false);
+                    }
+                    LoadOutcome::RecoveredFromBackup(v)
+                }
+                _ => LoadOutcome::Corrupted { quarantined },
+            }
+        }
     }
 }
 
-/// Removes `path` and its companion `.bak` file if present.
+/// Removes `<path>.bak` FIRST and then `path` so a failed `.bak` deletion can never
+/// cause zombie resurrection of deleted state on the next load (BH-35).
 pub fn remove_with_backup(path: &Path) -> io::Result<()> {
-    let mut primary_res = Ok(());
-    if path.exists() {
-        primary_res = fs::remove_file(path);
-    }
     let bak = backup_path(path);
-    if bak.exists() {
-        let _ = fs::remove_file(&bak);
-    }
-    primary_res
+    remove_file_with_retry(&bak)?;
+    remove_file_with_retry(path)?;
+    Ok(())
 }
 
 #[cfg(test)]
@@ -270,7 +379,6 @@ mod tests {
             load_json_with_recovery::<SampleState, _>(&path, |s| s.version > 0),
             LoadOutcome::Loaded(v2)
         );
-        // .bak holds previous valid state v1
         assert_eq!(
             load_json_with_recovery::<SampleState, _>(&backup_path(&path), |_| true),
             LoadOutcome::Loaded(v1)
@@ -280,7 +388,7 @@ mod tests {
     }
 
     #[test]
-    fn corrupted_primary_recovers_from_backup_and_quarantines_corrupt_copy() {
+    fn corrupted_primary_recovers_heals_and_does_not_spam_quarantine_files() {
         let dir = temp_test_dir("corrupt_recover");
         let path = dir.join("tasks.json");
 
@@ -295,24 +403,27 @@ mod tests {
         atomic_write_json(&path, &v1, true).unwrap();
         atomic_write_json(&path, &v2, true).unwrap();
 
-        // Simulate interrupted/truncated write corrupting primary file
         fs::write(&path, "{ \"version\": 2, \"name\": ").unwrap();
 
         let outcome = load_json_with_recovery::<SampleState, _>(&path, |s| s.version > 0);
-        assert_eq!(outcome, LoadOutcome::RecoveredFromBackup(v1));
+        assert_eq!(outcome, LoadOutcome::RecoveredFromBackup(v1.clone()));
 
-        // Corrupt copy must be quarantined on disk
-        let has_quarantine = fs::read_dir(&dir)
+        // Second load must hit Loaded(v1) directly (primary healed) with still only 1 quarantine file.
+        let second = load_json_with_recovery::<SampleState, _>(&path, |s| s.version > 0);
+        assert_eq!(second, LoadOutcome::Loaded(v1));
+
+        let quarantine_count = fs::read_dir(&dir)
             .unwrap()
             .filter_map(|e| e.ok())
-            .any(|e| e.file_name().to_string_lossy().contains(".corrupt-"));
-        assert!(has_quarantine, "corrupted file must be quarantined");
+            .filter(|e| e.file_name().to_string_lossy().contains(".corrupt-"))
+            .count();
+        assert_eq!(quarantine_count, 1, "must create exactly 1 quarantine file");
 
         let _ = fs::remove_dir_all(&dir);
     }
 
     #[test]
-    fn corrupted_primary_without_backup_returns_corrupted_and_preserves_file() {
+    fn corrupted_primary_without_backup_quarantines_once_without_spam() {
         let dir = temp_test_dir("corrupt_nobak");
         let path = dir.join("shelf.json");
         fs::write(&path, "NOT VALID JSON {{{{").unwrap();
@@ -320,20 +431,32 @@ mod tests {
         let outcome = load_json_with_recovery::<SampleState, _>(&path, |_| true);
         match outcome {
             LoadOutcome::Corrupted { quarantined } => {
-                let q = quarantined.expect("quarantined copy should exist");
+                let q = quarantined.expect("quarantined file must exist");
                 assert!(q.exists());
                 assert_eq!(fs::read_to_string(&q).unwrap(), "NOT VALID JSON {{{{");
             }
             other => panic!("expected Corrupted, got {:?}", other),
         }
-        // Original corrupted file is never silently deleted
-        assert!(path.exists());
+
+        // Subsequent load sees Missing (corrupt file moved to quarantine) — no disk spam!
+        assert_eq!(
+            load_json_with_recovery::<SampleState, _>(&path, |_| true),
+            LoadOutcome::Missing
+        );
 
         let _ = fs::remove_dir_all(&dir);
     }
 
     #[test]
-    fn validation_failure_triggers_backup_recovery() {
+    fn directory_io_error_is_not_misclassified_as_corrupted() {
+        let dir = temp_test_dir("io_err");
+        let outcome = load_json_with_recovery::<SampleState, _>(&dir, |_| true);
+        assert_eq!(outcome, LoadOutcome::IoError);
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn validation_failure_does_not_poison_backup_when_using_validated_write() {
         let dir = temp_test_dir("validation");
         let path = dir.join("validated.json");
 
@@ -345,11 +468,18 @@ mod tests {
             version: 0,
             name: "invalid".to_string(),
         };
-        atomic_write_json(&path, &good, true).unwrap();
-        atomic_write_json(&path, &bad, true).unwrap();
-
-        let outcome = load_json_with_recovery::<SampleState, _>(&path, |s| s.version > 0);
-        assert_eq!(outcome, LoadOutcome::RecoveredFromBackup(good));
+        let v3 = SampleState {
+            version: 3,
+            name: "v3".to_string(),
+        };
+        atomic_write_json_validated(&path, &good, true, |s| s.version > 0).unwrap();
+        atomic_write_json_validated(&path, &bad, true, |s| s.version > 0).unwrap();
+        // Backup holds `good`; writing v3 must NOT overwrite `.bak` with invalid `bad`.
+        atomic_write_json_validated(&path, &v3, true, |s| s.version > 0).unwrap();
+        assert_eq!(
+            load_json_with_recovery::<SampleState, _>(&backup_path(&path), |s| s.version > 0),
+            LoadOutcome::Loaded(good)
+        );
 
         let _ = fs::remove_dir_all(&dir);
     }

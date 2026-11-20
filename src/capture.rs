@@ -499,57 +499,110 @@ pub fn read_clipboard_text(owner: HWND) -> Option<String> {
 const BLOCKED_SHELL_EXTENSIONS: &[&str] = &[
     "exe", "com", "bat", "cmd", "ps1", "psm1", "psd1", "vbs", "vbe", "js", "jse", "wsf", "wsh",
     "scr", "pif", "msi", "msp", "hta", "cpl", "msc", "reg", "lnk", "url", "jar", "inf", "scf",
-    "dll", "sys", "drv", "ocx",
+    "dll", "sys", "drv", "ocx", "chm", "iso", "img", "vhd", "vhdx", "appref-ms", "application",
+    "msix", "appx", "appinstaller", "diagcab", "settingcontent-ms", "library-ms",
+    "searchconnector-ms", "py", "pyw", "jnlp", "sct", "wsc", "xll", "docm", "xlsm", "pptm",
 ];
 
+fn has_blocked_extension(path: &std::path::Path) -> bool {
+    let Some(file_name) = path.file_name().and_then(|n| n.to_str()) else {
+        return false;
+    };
+    let clean_name = file_name.trim_end_matches(['.', ' ']);
+    let Some(ext) = std::path::Path::new(clean_name)
+        .extension()
+        .and_then(|e| e.to_str())
+    else {
+        return false;
+    };
+    BLOCKED_SHELL_EXTENSIONS.contains(&ext.to_ascii_lowercase().as_str())
+}
+
 /// Explicit security policy for `ShellExecuteW("open", ...)` targets originating from
-/// serialized shelf data or drag-and-drop payloads (BH-14):
-/// - Rejects empty strings, control characters, and UNC/network paths (`\\host\...`, `//host/...`, `\\?\UNC\...`).
-/// - Permits only `http://` and `https://` URI schemes (blocks `ms-msdt:`, `search-ms:`, `file:`, etc.).
-/// - For local filesystem targets, requires an existing local file/directory whose extension
-///   is not an executable, script, or shell shortcut.
+/// serialized shelf data or drag-and-drop payloads (BH-14, BH-32):
+/// - Rejects empty strings, control characters, and ANY leading slash/backslash pair
+///   (`\\`, `//`, `\/`, `/\`, `\\?\`, `\\.\`) to block UNC/NTLM leaks and device namespaces.
+/// - Permits only well-formed `http://` and `https://` URLs with a non-empty host and no
+///   whitespace or quote/shell metacharacters.
+/// - For local filesystem targets, requires an absolute path with NO secondary `:` (blocks
+///   NTFS Alternate Data Streams such as `safe.txt:evil.exe` and `evil.bat::$DATA`), NO
+///   trailing dots/spaces on path segments (blocks Windows `calc.exe.` normalization bypass),
+///   canonicalizes via `fs::canonicalize` (resolving symlinks and rejecting canonical UNC),
+///   and checks both original and canonical filenames against the executable/script denylist.
 pub fn validate_shell_open_target(raw: &str) -> Result<String, &'static str> {
     let trimmed = raw.trim();
     if trimmed.is_empty() || trimmed.chars().any(|c| c.is_control()) {
         return Err("empty or control characters in target");
     }
 
-    let lower = trimmed.to_ascii_lowercase();
-    // Block UNC and extended-UNC network paths to prevent NTLM leaks & remote execution.
-    if trimmed.starts_with(r"\\") || trimmed.starts_with("//") || lower.starts_with(r"\\?\unc\") {
-        return Err("UNC network paths are blocked");
+    let bytes = trimmed.as_bytes();
+    // Block UNC, mixed-slash UNC (`\/`, `/\`), extended `\\?\`, and device `\\.\` paths.
+    if bytes.len() >= 2
+        && (bytes[0] == b'\\' || bytes[0] == b'/')
+        && (bytes[1] == b'\\' || bytes[1] == b'/')
+    {
+        return Err("UNC or device paths are blocked");
     }
 
+    let lower = trimmed.to_ascii_lowercase();
     // Detect URI scheme (anything with `:` other than Windows drive letter like `C:\...` or `C:/...`).
     if let Some(colon_idx) = trimmed.find(':') {
         let is_drive_letter = colon_idx == 1
-            && trimmed
-                .as_bytes()
-                .first()
-                .is_some_and(|b| b.is_ascii_alphabetic())
-            && trimmed
-                .as_bytes()
-                .get(2)
-                .is_some_and(|&b| b == b'\\' || b == b'/');
+            && bytes.first().is_some_and(|b| b.is_ascii_alphabetic())
+            && bytes.get(2).is_some_and(|&b| b == b'\\' || b == b'/');
         if !is_drive_letter {
-            if lower.starts_with("https://") || lower.starts_with("http://") {
-                return Ok(trimmed.to_string());
+            let rest = if lower.starts_with("https://") {
+                &trimmed[8..]
+            } else if lower.starts_with("http://") {
+                &trimmed[7..]
+            } else {
+                return Err("URI scheme is not permitted");
+            };
+            let host = rest.split(['/', '?', '#']).next().unwrap_or("");
+            if host.is_empty()
+                || trimmed.chars().any(|c| {
+                    c.is_whitespace() || matches!(c, '"' | '\'' | '<' | '>' | '`')
+                })
+            {
+                return Err("malformed or unsafe HTTP(S) URL");
             }
-            return Err("URI scheme is not permitted");
+            return Ok(trimmed.to_string());
+        }
+        // Reject any second colon after `C:` to block NTFS Alternate Data Streams (`:stream`, `::$DATA`).
+        if trimmed[2..].contains(':') {
+            return Err("NTFS alternate data streams are blocked");
+        }
+    }
+
+    // Reject Windows trailing-dot/space path normalization tricks on any segment (`calc.exe.`).
+    for seg in trimmed.split(['\\', '/']) {
+        if !seg.is_empty() && (seg.ends_with('.') || seg.ends_with(' ')) {
+            return Err("trailing dot or space in path segment is blocked");
         }
     }
 
     let path = std::path::Path::new(trimmed);
-    if !path.exists() {
-        return Err("local target does not exist");
+    if !path.is_absolute() {
+        return Err("relative paths are blocked");
     }
-    if path.is_file()
-        && let Some(ext) = path.extension().and_then(|e| e.to_str())
-        && BLOCKED_SHELL_EXTENSIONS.contains(&ext.to_ascii_lowercase().as_str())
-    {
+    if has_blocked_extension(path) {
         return Err("executable or script file type is blocked");
     }
-    Ok(trimmed.to_string())
+
+    let canonical = std::fs::canonicalize(path).map_err(|_| "local target does not exist")?;
+    let canon_str = canonical
+        .to_str()
+        .ok_or("non-UTF-8 canonical path")?;
+    if canon_str.to_ascii_lowercase().starts_with(r"\\?\unc\") {
+        return Err("canonical UNC path is blocked");
+    }
+    let clean_canon = canon_str.strip_prefix(r"\\?\").unwrap_or(canon_str);
+    let clean_path = std::path::Path::new(clean_canon);
+
+    if clean_path.is_file() && has_blocked_extension(clean_path) {
+        return Err("canonical target is an executable or script");
+    }
+    Ok(clean_canon.to_string())
 }
 
 struct ShellComGuard(bool);
@@ -597,15 +650,22 @@ mod tests {
     use super::*;
 
     #[test]
-    fn bh14_blocks_unc_dangerous_schemes_and_executables() {
+    fn bh14_bh32_blocks_unc_ads_trailing_dots_schemes_and_executables() {
         assert!(validate_shell_open_target("").is_err());
         assert!(validate_shell_open_target(r"\\attacker\share\doc.pdf").is_err());
         assert!(validate_shell_open_target("//attacker/share/doc.pdf").is_err());
+        assert!(validate_shell_open_target(r"\/attacker\share\doc.pdf").is_err());
+        assert!(validate_shell_open_target(r"/\attacker\share\doc.pdf").is_err());
         assert!(validate_shell_open_target(r"\\?\UNC\attacker\share\a.txt").is_err());
+        assert!(validate_shell_open_target(r"\\.\C:\Windows\win.ini").is_err());
         assert!(validate_shell_open_target("ms-msdt:/id PCWDiagnostic").is_err());
         assert!(validate_shell_open_target("search-ms:query=test").is_err());
         assert!(validate_shell_open_target("file:///C:/Windows/System32/cmd.exe").is_err());
         assert!(validate_shell_open_target("javascript:alert(1)").is_err());
+        // URL argument smuggling & empty hosts
+        assert!(validate_shell_open_target("https://").is_err());
+        assert!(validate_shell_open_target("https://example.com\" --arg").is_err());
+        assert!(validate_shell_open_target("https://example.com/a b").is_err());
         assert!(validate_shell_open_target("https://example.com/docs").is_ok());
         assert!(validate_shell_open_target("http://localhost:8080/").is_ok());
 
@@ -614,14 +674,29 @@ mod tests {
         let safe_txt = dir.join("notes.txt");
         let evil_bat = dir.join("run.bat");
         let evil_lnk = dir.join("shortcut.lnk");
+        let evil_chm = dir.join("help.chm");
+        let evil_iso = dir.join("disk.iso");
         std::fs::write(&safe_txt, "hello").unwrap();
         std::fs::write(&evil_bat, "@echo hi").unwrap();
         std::fs::write(&evil_lnk, "fake").unwrap();
+        std::fs::write(&evil_chm, "fake").unwrap();
+        std::fs::write(&evil_iso, "fake").unwrap();
 
         assert!(validate_shell_open_target(safe_txt.to_str().unwrap()).is_ok());
         assert!(validate_shell_open_target(dir.to_str().unwrap()).is_ok());
         assert!(validate_shell_open_target(evil_bat.to_str().unwrap()).is_err());
         assert!(validate_shell_open_target(evil_lnk.to_str().unwrap()).is_err());
+        assert!(validate_shell_open_target(evil_chm.to_str().unwrap()).is_err());
+        assert!(validate_shell_open_target(evil_iso.to_str().unwrap()).is_err());
+
+        // BH-32: Trailing-dot bypass (`run.bat.`), NTFS ADS (`::$DATA` / `:evil.exe`), relative path
+        let trailing_dot_bat = format!("{}.", evil_bat.to_str().unwrap());
+        let ads_data_bat = format!("{}::$DATA", evil_bat.to_str().unwrap());
+        let ads_stream_txt = format!("{}:evil.exe", safe_txt.to_str().unwrap());
+        assert!(validate_shell_open_target(&trailing_dot_bat).is_err());
+        assert!(validate_shell_open_target(&ads_data_bat).is_err());
+        assert!(validate_shell_open_target(&ads_stream_txt).is_err());
+        assert!(validate_shell_open_target("notes.txt").is_err());
         assert!(
             validate_shell_open_target(dir.join("nonexistent.txt").to_str().unwrap()).is_err()
         );

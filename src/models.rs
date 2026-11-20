@@ -2249,6 +2249,8 @@ impl AppState {
         )
     }
 
+    const TSV_V1_HEADER: &'static str = "#cynotch-tsv-v1";
+
     fn escape_tsv_field(raw: &str) -> String {
         let mut out = String::with_capacity(raw.len());
         for ch in raw.chars() {
@@ -2286,8 +2288,18 @@ impl AppState {
         out
     }
 
+    fn sanitize_nusa_plain_line(raw: &str) -> String {
+        raw.chars()
+            .map(|c| match c {
+                '\t' | '\n' | '\r' => ' ',
+                other => other,
+            })
+            .collect()
+    }
+
     pub fn format_tsv_tasks(tasks: &[TaskItem]) -> String {
-        let mut lines = Vec::with_capacity(tasks.len());
+        let mut lines = Vec::with_capacity(tasks.len() + 1);
+        lines.push(Self::TSV_V1_HEADER.to_string());
         for t in tasks {
             let flag = if t.completed { "1" } else { "0" };
             lines.push(format!("{}\t{}", flag, Self::escape_tsv_field(&t.text)));
@@ -2300,8 +2312,13 @@ impl AppState {
             return;
         }
         let _ = crate::persistence::atomic_write_json(&Self::tasks_path(), &self.tasks, true);
-        // Mirror TSV backup for interoperability with Nusa if present in current user's profile
-        let content = Self::format_tsv_tasks(&self.tasks);
+        // Mirror plain single-line TSV for interoperability with Nusa if present in current user's profile
+        let mut nusa_lines = Vec::with_capacity(self.tasks.len());
+        for t in &self.tasks {
+            let flag = if t.completed { "1" } else { "0" };
+            nusa_lines.push(format!("{}\t{}", flag, Self::sanitize_nusa_plain_line(&t.text)));
+        }
+        let content = nusa_lines.join("\n");
         if let Some(nusa_path) = Self::nusa_tasks_path()
             && nusa_path.exists()
         {
@@ -2309,21 +2326,33 @@ impl AppState {
         }
     }
 
+    /// Parses both `#cynotch-tsv-v1` escaped TSV and legacy unescaped Nusa TSV without
+    /// corrupting Windows paths (`C:\temp\notes`) or dropping flagless lines containing tabs (BH-40).
     pub fn parse_tsv_tasks(content: &str) -> Vec<TaskItem> {
+        let mut lines = content.lines().peekable();
+        let is_v1 = lines
+            .peek()
+            .is_some_and(|first| first.trim() == Self::TSV_V1_HEADER);
+        if is_v1 {
+            lines.next();
+        }
         let mut list = Vec::new();
-        for line in content.lines() {
+        for line in lines {
             if line.trim().is_empty() {
                 continue;
             }
             let (completed, raw_text) = match line.split_once('\t') {
-                Some((flag, rest)) => (flag.trim() == "1", rest),
-                None => (false, line),
+                Some((flag, rest)) if matches!(flag.trim(), "0" | "1") => (flag.trim() == "1", rest),
+                _ => (false, line),
             };
-            let decoded = Self::unescape_tsv_field(raw_text);
-            let trimmed = decoded.trim();
-            if !trimmed.is_empty() {
+            let decoded = if is_v1 {
+                Self::unescape_tsv_field(raw_text)
+            } else {
+                raw_text.trim().to_string()
+            };
+            if !decoded.trim().is_empty() {
                 list.push(TaskItem {
-                    text: trimmed.to_string(),
+                    text: decoded,
                     completed,
                 });
             }
@@ -3928,14 +3957,14 @@ impl AppState {
         }
 
         #[test]
-        fn bh22_tsv_tasks_preserve_tabs_newlines_and_legacy_lines() {
+        fn bh22_bh40_tsv_tasks_preserve_tabs_newlines_legacy_paths_and_flagless_lines() {
             let tasks = vec![
                 TaskItem {
                     text: "Line1\nLine2\tColB".to_string(),
                     completed: true,
                 },
                 TaskItem {
-                    text: "Path C:\\temp\\file".to_string(),
+                    text: "  Path C:\\temp\\notes\\readme.txt  ".to_string(),
                     completed: false,
                 },
             ];
@@ -3947,12 +3976,16 @@ impl AppState {
             assert_eq!(decoded[1].text, tasks[1].text);
             assert!(!decoded[1].completed);
 
-            // Backward compatibility: legacy unescaped TSV with raw tab inside text
-            let legacy = "1\tKeep first\tand second";
+            // BH-40: Legacy unescaped Nusa TSV must NOT corrupt Windows backslashes or drop flagless tabs
+            let legacy = "1\tKeep first\tand second\n0\tC:\\temp\\notes\\readme.txt\nBuy milk\t2";
             let parsed_legacy = AppState::parse_tsv_tasks(legacy);
-            assert_eq!(parsed_legacy.len(), 1);
+            assert_eq!(parsed_legacy.len(), 3);
             assert!(parsed_legacy[0].completed);
             assert_eq!(parsed_legacy[0].text, "Keep first\tand second");
+            assert!(!parsed_legacy[1].completed);
+            assert_eq!(parsed_legacy[1].text, "C:\\temp\\notes\\readme.txt");
+            assert!(!parsed_legacy[2].completed);
+            assert_eq!(parsed_legacy[2].text, "Buy milk\t2");
         }
 
         #[test]

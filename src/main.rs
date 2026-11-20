@@ -499,8 +499,6 @@ fn main() {
         Ok(window) => {
             log_info!("CyNotch initialized successfully at screen top-center!");
             window.run_loop();
-            cynotch::window::SHUTDOWN_REQUESTED.store(true, Ordering::Release);
-            let _ = poll_handle.join();
         }
         Err(e) => {
             let path = cynotch::models::crash_log_path("err.txt");
@@ -511,57 +509,76 @@ fn main() {
             log_err!("Failed to create CyNotch window: {:?}", e);
         }
     }
+    // BH-41: Always signal shutdown and join poll_handle even if window creation failed.
+    cynotch::window::SHUTDOWN_REQUESTED.store(true, Ordering::Release);
+    let _ = poll_handle.join();
 
     if !is_smoke {
         notifications::sync_windows_notification_sound_mute(false);
     }
 }
 
-/// Coalescing single background worker for lyrics fetching (BH-30).
+/// Coalescing single background worker for lyrics fetching (BH-30, BH-41).
+/// Retryable on transient OS spawn failure and panic-isolated via `catch_unwind`.
 fn enqueue_lyrics_fetch(state: Arc<Mutex<AppState>>, title: String, artist: String) {
-    use std::sync::{Condvar, OnceLock};
+    use std::sync::Condvar;
     struct LyricsWorker {
         pending: Mutex<Option<(Arc<Mutex<AppState>>, String, String)>>,
         cvar: Condvar,
     }
-    static WORKER: OnceLock<Arc<LyricsWorker>> = OnceLock::new();
+    static WORKER: Mutex<Option<Arc<LyricsWorker>>> = Mutex::new(None);
 
-    let worker = WORKER.get_or_init(|| {
-        let w = Arc::new(LyricsWorker {
-            pending: Mutex::new(None),
-            cvar: Condvar::new(),
-        });
-        let bg = Arc::clone(&w);
-        let _ = thread::Builder::new()
-            .name("cynotch-lyrics".to_string())
-            .spawn(move || loop {
-                let job = {
-                    let mut guard = bg.pending.lock().unwrap_or_else(|e| e.into_inner());
-                    while guard.is_none() {
-                        guard = bg.cvar.wait(guard).unwrap_or_else(|e| e.into_inner());
-                    }
-                    guard.take()
-                };
-                if let Some((fetch_state, title, artist)) = job {
-                    let lines = lyrics::fetch_lyrics(&title, &artist);
-                    if !lines.is_empty() {
-                        let mut updated = false;
-                        if let Ok(mut s) = fetch_state.lock()
-                            && s.media.title == title
-                        {
-                            s.lyrics = lines;
-                            updated = true;
-                        }
-                        if updated {
-                            cynotch::window::post_redraw();
-                        }
-                    }
-                }
+    let worker = {
+        let mut slot = WORKER.lock().unwrap_or_else(|e| e.into_inner());
+        if let Some(existing) = slot.as_ref() {
+            Some(Arc::clone(existing))
+        } else {
+            let w = Arc::new(LyricsWorker {
+                pending: Mutex::new(None),
+                cvar: Condvar::new(),
             });
-        w
-    });
+            let bg = Arc::clone(&w);
+            if thread::Builder::new()
+                .name("cynotch-lyrics".to_string())
+                .spawn(move || loop {
+                    let job = {
+                        let mut guard = bg.pending.lock().unwrap_or_else(|e| e.into_inner());
+                        while guard.is_none() {
+                            guard = bg.cvar.wait(guard).unwrap_or_else(|e| e.into_inner());
+                        }
+                        guard.take()
+                    };
+                    if let Some((fetch_state, title, artist)) = job {
+                        let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                            let lines = lyrics::fetch_lyrics(&title, &artist);
+                            if !lines.is_empty() {
+                                let mut updated = false;
+                                if let Ok(mut s) = fetch_state.lock()
+                                    && s.media.title == title
+                                {
+                                    s.lyrics = lines;
+                                    updated = true;
+                                }
+                                if updated {
+                                    cynotch::window::post_redraw();
+                                }
+                            }
+                        }));
+                    }
+                })
+                .is_ok()
+            {
+                *slot = Some(Arc::clone(&w));
+                Some(w)
+            } else {
+                None
+            }
+        }
+    };
 
-    let mut guard = worker.pending.lock().unwrap_or_else(|e| e.into_inner());
-    *guard = Some((state, title, artist));
-    worker.cvar.notify_one();
+    if let Some(worker) = worker {
+        let mut guard = worker.pending.lock().unwrap_or_else(|e| e.into_inner());
+        *guard = Some((state, title, artist));
+        worker.cvar.notify_one();
+    }
 }

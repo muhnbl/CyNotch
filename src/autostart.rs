@@ -3,15 +3,26 @@ use windows::Win32::Foundation::{ERROR_FILE_NOT_FOUND, ERROR_SUCCESS};
 use windows::Win32::System::Registry::*;
 use windows::core::*;
 
-/// Formats and validates a Windows `Run` registry command line for `exe_path`.
-/// Always wraps the path in double quotes (mitigating CWE-428 unquoted paths)
-/// and rejects empty paths or paths containing NUL, quotes, or control characters.
+/// Formats and validates a Windows `Run` registry command line for `exe_path` (BH-13, BH-39).
+/// Requires an absolute local path (rejecting relative, UNC, verbatim `\\?\`, trailing backslash,
+/// quotes, and control characters) and wraps it in double quotes.
 pub fn format_autostart_command(exe_path: &Path) -> Option<String> {
     let raw = exe_path.to_str()?;
     let trimmed = raw.trim();
+    let bytes = trimmed.as_bytes();
     if trimmed.is_empty()
+        || !exe_path.is_absolute()
         || trimmed.contains('"')
         || trimmed.chars().any(|c| c.is_control())
+        || trimmed.ends_with('\\')
+        || trimmed.ends_with('/')
+    {
+        return None;
+    }
+    // Reject UNC (`\\`, `//`, `\/`, `/\`) and verbatim `\\?\` / device `\\.\` paths.
+    if bytes.len() >= 2
+        && (bytes[0] == b'\\' || bytes[0] == b'/')
+        && (bytes[1] == b'\\' || bytes[1] == b'/')
     {
         return None;
     }
@@ -46,7 +57,25 @@ pub fn set_autostart(enable: bool) -> bool {
     unsafe {
         let mut hkey = HKEY::default();
         let subkey = w!("Software\\Microsoft\\Windows\\CurrentVersion\\Run");
-        if RegOpenKeyExW(HKEY_CURRENT_USER, subkey, 0, KEY_SET_VALUE, &mut hkey) != ERROR_SUCCESS {
+        if enable {
+            // BH-39: Use RegCreateKeyExW so fresh profiles without `Run` key succeed.
+            if RegCreateKeyExW(
+                HKEY_CURRENT_USER,
+                subkey,
+                0,
+                None,
+                REG_OPTION_NON_VOLATILE,
+                KEY_SET_VALUE,
+                None,
+                &mut hkey,
+                None,
+            ) != ERROR_SUCCESS
+            {
+                return false;
+            }
+        } else if RegOpenKeyExW(HKEY_CURRENT_USER, subkey, 0, KEY_SET_VALUE, &mut hkey)
+            != ERROR_SUCCESS
+        {
             return false;
         }
         let value_name = w!("CyNotch");
@@ -90,8 +119,12 @@ mod tests {
     }
 
     #[test]
-    fn bh13_rejects_empty_quotes_and_control_chars() {
+    fn bh13_bh39_rejects_empty_relative_unc_trailing_slash_quotes_and_control_chars() {
         assert!(format_autostart_command(Path::new("")).is_none());
+        assert!(format_autostart_command(Path::new("cynotch.exe")).is_none());
+        assert!(format_autostart_command(Path::new(r"\\attacker\share\cynotch.exe")).is_none());
+        assert!(format_autostart_command(Path::new(r"\\?\C:\CyNotch\cynotch.exe")).is_none());
+        assert!(format_autostart_command(Path::new(r"C:\CyNotch\")).is_none());
         assert!(format_autostart_command(Path::new("C:\\foo\"bar\\cynotch.exe")).is_none());
         assert!(format_autostart_command(Path::new("C:\\foo\nbar\\cynotch.exe")).is_none());
         assert!(format_autostart_command(Path::new("C:\\foo\0bar\\cynotch.exe")).is_none());

@@ -923,18 +923,17 @@ impl Renderer {
                     LyricSize::Standard => (17.2, 12.4),
                     LyricSize::Large => (19.6, 13.4),
                 };
-                let lyric_clipped = p.prepare_rrect_clip(pad_x, ctx_y, inner_w, ctx_h, 12.0);
+                // BH-42: Clamp glow radius softly within lyrics region instead of pushing a tight
+                // inner clip box that creates a visible horizontal seam below the header bar.
+                let safe_r = (inner_w * 0.36).min((ctx_h * 0.48).max(12.0));
                 p.radial_glow(
                     pad_x + inner_w * 0.5,
                     center_y - 2.0,
-                    inner_w * 0.36,
+                    safe_r,
                     rgba(139, 92, 246, 38),
                     BlendMode::SourceOver,
                     true,
                 );
-                if lyric_clipped {
-                    p.pop_clip();
-                }
                 let (hero_lines, fit_hero_sz) = p.wrap_lines_fit(
                     &state.lyrics[center_idx].text,
                     hero_sz,

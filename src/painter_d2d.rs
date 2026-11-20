@@ -16,7 +16,7 @@ use windows::Win32::Graphics::Direct2D::{
     ID2D1RadialGradientBrush, ID2D1RenderTarget, ID2D1RoundedRectangleGeometry,
     ID2D1SolidColorBrush, D2D1_ARC_SIZE, D2D1_ARC_SIZE_LARGE, D2D1_ARC_SIZE_SMALL,
     D2D1_EXTEND_MODE_CLAMP, D2D1_GAMMA_2_2,
-    D2D1_LAYER_OPTIONS1_NONE, D2D1_ROUNDED_RECT,
+    D2D1_ROUNDED_RECT,
 };
 
 pub use crate::font_d2d::Weight;
@@ -1272,7 +1272,17 @@ impl<'a> D2DPainter<'a> {
         mut col: D2D1_COLOR_F,
     ) -> Result<()> {
         col.a *= self.global_alpha;
-        if sweep.abs() < 1e-4 {
+        // BH-36: Guard against NaN/infinite/non-positive sweep, radius, width, or coordinates.
+        if !sweep.is_finite()
+            || !r.is_finite()
+            || !width.is_finite()
+            || !cx.is_finite()
+            || !cy.is_finite()
+            || !a0.is_finite()
+            || r <= 0.0
+            || width <= 0.0
+            || sweep.abs() < 1e-4
+        {
             return Ok(());
         }
         let (dcx, dcy) = self.tf_pt(cx, cy);
@@ -1380,7 +1390,9 @@ impl<'a> D2DPainter<'a> {
             maskTransform: windows::Foundation::Numerics::Matrix3x2::identity(),
             opacity: 1.0,
             opacityBrush: ManuallyDrop::new(None),
-            layerOptions: D2D1_LAYER_OPTIONS1_NONE,
+            // BH-42: Initialize clip layer from background so BlendMode::Plus glows
+            // composite additively onto the already-drawn capsule shell instead of transparent black.
+            layerOptions: windows::Win32::Graphics::Direct2D::D2D1_LAYER_OPTIONS1_INITIALIZE_FROM_BACKGROUND,
         };
         unsafe {
             self.ctx.PushLayer(&layer_params, None);
@@ -2014,7 +2026,9 @@ impl<'a> D2DPainter<'a> {
             maskTransform: windows::Foundation::Numerics::Matrix3x2::identity(),
             opacity: 1.0,
             opacityBrush: ManuallyDrop::new(None),
-            layerOptions: D2D1_LAYER_OPTIONS1_NONE,
+            // BH-42: Initialize clip layer from background so BlendMode::Plus glows
+            // composite additively onto the already-drawn capsule shell instead of transparent black.
+            layerOptions: windows::Win32::Graphics::Direct2D::D2D1_LAYER_OPTIONS1_INITIALIZE_FROM_BACKGROUND,
         };
 
         unsafe { self.ctx.PushLayer(&layer_params, None) };
@@ -2106,7 +2120,9 @@ impl<'a> D2DPainter<'a> {
             maskTransform: windows::Foundation::Numerics::Matrix3x2::identity(),
             opacity: 1.0,
             opacityBrush: ManuallyDrop::new(None),
-            layerOptions: D2D1_LAYER_OPTIONS1_NONE,
+            // BH-42: Initialize clip layer from background so BlendMode::Plus glows
+            // composite additively onto the already-drawn capsule shell instead of transparent black.
+            layerOptions: windows::Win32::Graphics::Direct2D::D2D1_LAYER_OPTIONS1_INITIALIZE_FROM_BACKGROUND,
         };
 
         unsafe { self.ctx.PushLayer(&layer_params, None) };
@@ -2128,10 +2144,10 @@ impl<'a> D2DPainter<'a> {
     pub fn elevated_card(&mut self, x: f32, y: f32, w: f32, h: f32, r: f32) -> Result<()> {
         // Shadow
         self.rrect_drop_shadow(x, y, w, h, r, 8.0, tok::obsidian_deep())?;
-        // Background
-        self.rrect(x, y, w, h, r, tok::surface_base().to_d2d(self.global_alpha))?;
+        // Background (BH-36: self.rrect/rrect_stroke apply self.global_alpha once)
+        self.rrect(x, y, w, h, r, tok::surface_base().to_d2d(1.0))?;
         // Border
-        self.rrect_stroke(x, y, w, h, r, 1.0, tok::hairline().to_d2d(self.global_alpha))
+        self.rrect_stroke(x, y, w, h, r, 1.0, tok::hairline().to_d2d(1.0))
     }
 
     /// Luminous pill button (tonal variant).
@@ -2149,8 +2165,8 @@ impl<'a> D2DPainter<'a> {
         let r = h * 0.5;
         let t = if is_active { 1.0 } else if is_hot { 0.5 } else { 0.0 };
         let bg = lerp_color(base, highlight, t);
-        self.rrect(x, y, w, h, r, bg.to_d2d(self.global_alpha))?;
-        self.rrect_stroke(x, y, w, h, r, 1.0, tok::cyno_badge_ring().to_d2d(self.global_alpha))
+        self.rrect(x, y, w, h, r, bg.to_d2d(1.0))?;
+        self.rrect_stroke(x, y, w, h, r, 1.0, tok::cyno_badge_ring().to_d2d(1.0))
     }
 
     /// Luminous pill button (full variant with text).
@@ -2189,8 +2205,8 @@ impl<'a> D2DPainter<'a> {
         let r = h * 0.5;
         let t = if is_active { 1.0 } else if is_hot { 0.3 } else { 0.0 };
         let bg = lerp_color(base, highlight, t);
-        self.rrect(x, y, w, h, r, bg.to_d2d(self.global_alpha))?;
-        self.rrect_stroke(x, y, w, h, r, 1.0, tok::surface_hi().to_d2d(self.global_alpha))
+        self.rrect(x, y, w, h, r, bg.to_d2d(1.0))?;
+        self.rrect_stroke(x, y, w, h, r, 1.0, tok::surface_hi().to_d2d(1.0))
     }
 
     /// Tactile surface pill (full variant with text).
@@ -2219,29 +2235,32 @@ impl<'a> D2DPainter<'a> {
         let r = h * 0.5;
         let track_bg = if on { tok::cyno_violet() } else { tok::surface_well() };
         let track_bg = if hot { fade(track_bg, 1.15) } else { track_bg };
-        self.rrect(x, y, w, h, r, track_bg.to_d2d(self.global_alpha))?;
-        self.rrect_stroke(x, y, w, h, r, 1.0, tok::hairline().to_d2d(self.global_alpha))?;
+        self.rrect(x, y, w, h, r, track_bg.to_d2d(1.0))?;
+        self.rrect_stroke(x, y, w, h, r, 1.0, tok::hairline().to_d2d(1.0))?;
 
         let knob_d = h - 4.0;
         let knob_x = if on { x + w - knob_d - 2.0 } else { x + 2.0 };
         let knob_y = y + 2.0;
-        self.rrect(knob_x, knob_y, knob_d, knob_d, knob_d * 0.5, tok::cyno_lavender_white().to_d2d(self.global_alpha))?;
-        self.rrect_stroke(knob_x, knob_y, knob_d, knob_d, knob_d * 0.5, 1.0, tok::hairline().to_d2d(self.global_alpha))
+        self.rrect(knob_x, knob_y, knob_d, knob_d, knob_d * 0.5, tok::cyno_lavender_white().to_d2d(1.0))?;
+        self.rrect_stroke(knob_x, knob_y, knob_d, knob_d, knob_d * 0.5, 1.0, tok::hairline().to_d2d(1.0))
     }
 
     /// Draws a glowing striped bar (progress/loading indicator).
     pub fn glowing_striped_bar(&mut self, x: f32, y: f32, w: f32, h: f32, r: f32, progress: f32, base: Color, glow: Color) -> Result<()> {
-        self.rrect(x, y, w, h, r, base.to_d2d(self.global_alpha))?;
+        self.rrect(x, y, w, h, r, base.to_d2d(1.0))?;
         let fill_w = w * progress.clamp(0.0, 1.0);
         if fill_w > 0.0 {
             self.rrect_corners_vertical_gradient(x, y, fill_w, h, r, 0.0, r, 0.0, glow, base)?;
         }
-        self.rrect_stroke(x, y, w, h, r, 1.0, tok::hairline().to_d2d(self.global_alpha))
+        self.rrect_stroke(x, y, w, h, r, 1.0, tok::hairline().to_d2d(1.0))
     }
 
     /// Draws a dot matrix pattern.
     pub fn dot_matrix(&mut self, x: f32, y: f32, w: f32, h: f32, spacing: f32, dot_r: f32, color: Color) -> Result<()> {
-        let col = color.to_d2d(self.global_alpha);
+        if !spacing.is_finite() || spacing <= 0.0 || !w.is_finite() || !h.is_finite() {
+            return Ok(());
+        }
+        let col = color.to_d2d(1.0);
         let mut cx = x;
         while cx < x + w {
             let mut cy = y;

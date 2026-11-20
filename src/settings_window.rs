@@ -533,42 +533,40 @@ unsafe fn redraw_settings_with_cache(hwnd: HWND, _allow_pane_cache: bool) {
             *d2d_cache = None;
             *dcomp = DCompHost::new(hwnd, int_w as u32, int_h as u32).ok();
         }
-        let Some(host) = dcomp.as_mut() else {
-            return;
-        };
         let active_slider_id = active_slider.map(|s| s.id);
-        let resize_ok = host.resize(int_w as u32, int_h as u32).is_ok();
         let mut ok = false;
-        if resize_ok && let Ok(ctx) = host.begin_d2d_draw() {
-            if d2d_cache.is_none() {
-                *d2d_cache = D2DResourceCache::new(&ctx).ok();
+        if let Some(host) = dcomp.as_mut() {
+            let resize_ok = host.resize(int_w as u32, int_h as u32).is_ok();
+            if resize_ok && let Ok(ctx) = host.begin_d2d_draw() {
+                if d2d_cache.is_none() {
+                    *d2d_cache = D2DResourceCache::new(&ctx).ok();
+                }
+                if let Some(cache) = d2d_cache.as_mut() {
+                    let (new_hits, new_slots, new_sliders, max_scroll) = render_settings_d2d_inner(
+                        &ctx,
+                        cache,
+                        fonts,
+                        int_w as u32,
+                        int_h as u32,
+                        &snapshot,
+                        pointer,
+                        active_slider_id,
+                    );
+                    *hits = new_hits;
+                    *slot_map = new_slots;
+                    *sliders = new_sliders;
+                    *last_max_scroll = max_scroll;
+                }
+                ok = host.end_d2d_draw_and_present().is_ok();
             }
-            if let Some(cache) = d2d_cache.as_mut() {
-                let (new_hits, new_slots, new_sliders, max_scroll) = render_settings_d2d_inner(
-                    &ctx,
-                    cache,
-                    fonts,
-                    int_w as u32,
-                    int_h as u32,
-                    &snapshot,
-                    pointer,
-                    active_slider_id,
-                );
-                *hits = new_hits;
-                *slot_map = new_slots;
-                *sliders = new_sliders;
-                *last_max_scroll = max_scroll;
-            }
-            ok = host.end_d2d_draw_and_present().is_ok();
         }
         if !ok {
             *d2d_cache = None;
-            if let Ok(new_host) = DCompHost::new(hwnd, int_w as u32, int_h as u32) {
-                *host = new_host;
-                if let Ok(ctx) = host.begin_d2d_draw() {
-                    if d2d_cache.is_none() {
-                        *d2d_cache = D2DResourceCache::new(&ctx).ok();
-                    }
+            // BH-33: Drop old DCompHost FIRST so DesktopWindowTarget::Close() releases HWND.
+            *dcomp = None;
+            if let Ok(mut new_host) = DCompHost::new(hwnd, int_w as u32, int_h as u32) {
+                if let Ok(ctx) = new_host.begin_d2d_draw() {
+                    *d2d_cache = D2DResourceCache::new(&ctx).ok();
                     if let Some(cache) = d2d_cache.as_mut() {
                         let (new_hits, new_slots, new_sliders, max_scroll) =
                             render_settings_d2d_inner(
@@ -586,8 +584,9 @@ unsafe fn redraw_settings_with_cache(hwnd: HWND, _allow_pane_cache: bool) {
                         *sliders = new_sliders;
                         *last_max_scroll = max_scroll;
                     }
-                    let _ = host.end_d2d_draw_and_present();
+                    let _ = new_host.end_d2d_draw_and_present();
                 }
+                *dcomp = Some(new_host);
             }
         }
     });

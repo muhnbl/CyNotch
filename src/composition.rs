@@ -1,6 +1,7 @@
 #![allow(unsafe_op_in_unsafe_fn)]
 
 use std::cell::RefCell;
+use std::sync::atomic::{AtomicU64, Ordering};
 use windows::Foundation::Numerics::Vector2;
 use windows::System::DispatcherQueueController;
 use windows::UI::Composition::Desktop::DesktopWindowTarget;
@@ -42,8 +43,11 @@ use windows::Win32::System::WinRT::{
 };
 use windows::core::{Interface, Result};
 
+static SHARED_DCOMP_GEN: AtomicU64 = AtomicU64::new(1);
+
 #[derive(Clone)]
 struct SharedDComp {
+    generation: u64,
     compositor: Compositor,
     d3d_device: ID3D11Device,
     d3d_context: ID3D11DeviceContext,
@@ -77,7 +81,9 @@ fn shared_dcomp() -> Result<SharedDComp> {
         let d2d_factory: ID2D1Factory1 = unsafe { D2D1CreateFactory(D2D1_FACTORY_TYPE_SINGLE_THREADED, None)? };
         let d2d_device: ID2D1Device = unsafe { d2d_factory.CreateDevice(&dxgi_device)? };
 
+        let generation = SHARED_DCOMP_GEN.fetch_add(1, Ordering::Relaxed);
         let shared = SharedDComp {
+            generation,
             compositor,
             d3d_device,
             d3d_context,
@@ -90,15 +96,25 @@ fn shared_dcomp() -> Result<SharedDComp> {
     })
 }
 
-fn clear_shared_if_device_lost_err(err: &windows::core::Error) {
+/// BH-33: Only evict `SHARED_DCOMP` when its generation still matches the failing host,
+/// preventing a stale second window from evicting another window's newly recovered device.
+fn clear_shared_if_device_lost_err(failed_gen: u64, err: &windows::core::Error) {
     if is_device_lost_hresult(err.code()) {
-        SHARED_DCOMP.with_borrow_mut(|slot| *slot = None);
+        SHARED_DCOMP.with_borrow_mut(|slot| {
+            if slot.as_ref().is_some_and(|s| s.generation == failed_gen) {
+                *slot = None;
+            }
+        });
     }
 }
 
-fn clear_shared_if_device_lost_hr(hr: windows::core::HRESULT) -> bool {
+fn clear_shared_if_device_lost_hr(failed_gen: u64, hr: windows::core::HRESULT) -> bool {
     if is_device_lost_hresult(hr) {
-        SHARED_DCOMP.with_borrow_mut(|slot| *slot = None);
+        SHARED_DCOMP.with_borrow_mut(|slot| {
+            if slot.as_ref().is_some_and(|s| s.generation == failed_gen) {
+                *slot = None;
+            }
+        });
         true
     } else {
         false
@@ -169,6 +185,7 @@ fn create_d3d11_device() -> Result<(ID3D11Device, ID3D11DeviceContext)> {
 /// premultiplied per-pixel alpha windows without DWM backdrop blur or GDI
 /// `UpdateLayeredWindow` CPU sync overhead.
 pub struct DCompHost {
+    shared_gen: u64,
     _compositor: Compositor,
     _target: DesktopWindowTarget,
     root_visual: ContainerVisual,
@@ -192,6 +209,7 @@ impl DCompHost {
         let h = height.max(1);
 
         let SharedDComp {
+            generation: shared_gen,
             compositor,
             d3d_device,
             d3d_context,
@@ -248,6 +266,7 @@ impl DCompHost {
         root_visual.Children()?.InsertAtTop(&content_visual)?;
 
         let mut host = Self {
+            shared_gen,
             _compositor: compositor,
             _target: target,
             root_visual,
@@ -268,9 +287,10 @@ impl DCompHost {
     }
 
     fn bind_d2d_target(&mut self) -> Result<()> {
+        let gen_id = self.shared_gen;
         unsafe {
             let surface: IDXGISurface = self.swap_chain.GetBuffer(0).inspect_err(|e| {
-                clear_shared_if_device_lost_err(e);
+                clear_shared_if_device_lost_err(gen_id, e);
             })?;
             let props = D2D1_BITMAP_PROPERTIES1 {
                 pixelFormat: D2D1_PIXEL_FORMAT {
@@ -286,7 +306,7 @@ impl DCompHost {
                 .d2d_context
                 .CreateBitmapFromDxgiSurface(&surface, Some(&props))
                 .inspect_err(|e| {
-                    clear_shared_if_device_lost_err(e);
+                    clear_shared_if_device_lost_err(gen_id, e);
                 })?;
             self.d2d_context.SetTarget(&bitmap);
             self.d2d_target = Some(bitmap);
@@ -317,14 +337,15 @@ impl DCompHost {
     }
 
     pub fn end_d2d_draw_and_present(&mut self) -> Result<()> {
+        let gen_id = self.shared_gen;
         unsafe {
             if let Err(e) = self.d2d_context.EndDraw(None, None) {
-                clear_shared_if_device_lost_err(&e);
+                clear_shared_if_device_lost_err(gen_id, &e);
                 return Err(e);
             }
             let hr = self.swap_chain.Present(0, DXGI_PRESENT(0));
             if hr.is_err() {
-                clear_shared_if_device_lost_hr(hr);
+                clear_shared_if_device_lost_hr(gen_id, hr);
                 return Err(windows::core::Error::from(hr));
             }
         }
@@ -347,6 +368,7 @@ impl DCompHost {
     }
 
     fn rebind_swap_chain(&mut self, w: u32, h: u32) -> Result<()> {
+        let gen_id = self.shared_gen;
         unsafe {
             self.d2d_context.SetTarget(None);
             self.d2d_target = None;
@@ -359,7 +381,7 @@ impl DCompHost {
                     DXGI_SWAP_CHAIN_FLAG(0),
                 )
                 .inspect_err(|e| {
-                    clear_shared_if_device_lost_err(e);
+                    clear_shared_if_device_lost_err(gen_id, e);
                 })?;
         }
         self.width = w;
@@ -447,9 +469,10 @@ impl DCompHost {
         };
         self.prev_dirty = clamped_box;
 
+        let gen_id = self.shared_gen;
         unsafe {
             let back_buf: ID3D11Texture2D = self.swap_chain.GetBuffer(0).inspect_err(|e| {
-                clear_shared_if_device_lost_err(e);
+                clear_shared_if_device_lost_err(gen_id, e);
             })?;
             let resource: ID3D11Resource = back_buf.cast()?;
             let row_pitch = self.width * 4;
@@ -488,7 +511,7 @@ impl DCompHost {
             }
             let hr = self.swap_chain.Present(0, DXGI_PRESENT(0));
             if hr.is_err() {
-                clear_shared_if_device_lost_hr(hr);
+                clear_shared_if_device_lost_hr(gen_id, hr);
                 return Err(windows::core::Error::from(hr));
             }
         }
@@ -502,6 +525,9 @@ impl Drop for DCompHost {
             self.d2d_context.SetTarget(None);
         }
         self.d2d_target = None;
+        // BH-33: Explicitly close WinRT DesktopWindowTarget so HWND is immediately unbound
+        // and can accept a fresh CreateDesktopWindowTarget during device-lost recovery.
+        let _ = self._target.Close();
     }
 }
 
@@ -534,7 +560,20 @@ mod tests {
         assert!(is_device_lost_hresult(DXGI_ERROR_DRIVER_INTERNAL_ERROR));
         assert!(is_device_lost_hresult(D2DERR_RECREATE_TARGET));
         assert!(!is_device_lost_hresult(windows::core::HRESULT(0)));
-        assert!(clear_shared_if_device_lost_hr(DXGI_ERROR_DEVICE_RESET));
-        assert!(!clear_shared_if_device_lost_hr(windows::core::HRESULT(0)));
+
+        // BH-33: Verify generation-guarded SHARED_DCOMP eviction does not clobber newer devices.
+        let _ = ensure_dispatcher_queue();
+        if let Ok(first) = shared_dcomp() {
+            let gen1 = first.generation;
+            // Stale generation must NOT evict current device
+            clear_shared_if_device_lost_hr(gen1.wrapping_sub(1), DXGI_ERROR_DEVICE_RESET);
+            let still_same = shared_dcomp().unwrap().generation;
+            assert_eq!(still_same, gen1);
+            // Matching generation MUST evict and force a new generation
+            clear_shared_if_device_lost_hr(gen1, DXGI_ERROR_DEVICE_RESET);
+            let gen2 = shared_dcomp().unwrap().generation;
+            assert_ne!(gen2, gen1);
+            release_thread_locals();
+        }
     }
 }

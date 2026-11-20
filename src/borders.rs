@@ -11,14 +11,17 @@ use windows::Win32::Graphics::Dwm::{
     DWMWA_BORDER_COLOR, DWMWA_CLOAKED, DWMWA_COLOR_DEFAULT, DWMWA_COLOR_NONE,
     DWMWA_WINDOW_CORNER_PREFERENCE, DWMWCP_ROUND, DwmGetWindowAttribute, DwmSetWindowAttribute,
 };
-use windows::Win32::System::Threading::GetCurrentThreadId;
+use windows::Win32::System::Threading::{GetCurrentProcessId, GetCurrentThreadId};
 use windows::Win32::UI::WindowsAndMessaging::{
     DispatchMessageW, EVENT_OBJECT_CREATE, EVENT_OBJECT_SHOW, EVENT_SYSTEM_FOREGROUND,
     EVENT_SYSTEM_MOVESIZEEND, EnumWindows, GWL_EXSTYLE, GWL_STYLE, GetMessageW, GetWindowLongPtrW,
-    IsWindow, IsWindowVisible, KillTimer, MSG, OBJID_WINDOW, PM_NOREMOVE, PeekMessageW,
-    PostThreadMessageW, SetTimer, TranslateMessage, WINEVENT_OUTOFCONTEXT, WINEVENT_SKIPOWNPROCESS,
-    WM_QUIT, WM_TIMER, WS_CAPTION, WS_EX_TOOLWINDOW, WS_THICKFRAME,
+    GetWindowThreadProcessId, IsWindow, IsWindowVisible, KillTimer, MSG, OBJID_WINDOW, PM_NOREMOVE,
+    PeekMessageW, PostThreadMessageW, SetTimer, TranslateMessage, WINEVENT_OUTOFCONTEXT,
+    WINEVENT_SKIPOWNPROCESS, WM_QUIT, WM_TIMER, WM_USER, WS_CAPTION, WS_EX_TOOLWINDOW,
+    WS_THICKFRAME,
 };
+
+const WM_BORDER_REAPPLY: u32 = WM_USER + 1;
 
 type HWINEVENTHOOK = *mut c_void;
 type WINEVENTPROC = unsafe extern "system" fn(
@@ -119,7 +122,10 @@ unsafe fn apply_border_color(hwnd: HWND, color: u32) {
 
 unsafe extern "system" fn enum_windows_cb(hwnd: HWND, lparam: LPARAM) -> BOOL {
     unsafe {
-        if is_eligible_window(hwnd) {
+        // BH-37: Skip own process windows (matching WINEVENT_SKIPOWNPROCESS).
+        let mut pid: u32 = 0;
+        let _ = GetWindowThreadProcessId(hwnd, Some(&mut pid));
+        if pid != GetCurrentProcessId() && is_eligible_window(hwnd) {
             apply_border_color(hwnd, lparam.0 as u32);
         }
         BOOL(1)
@@ -159,9 +165,13 @@ fn apply_all(color: u32) {
 pub fn set_enabled(enabled: bool) {
     let mut slot = WORKER.lock().unwrap_or_else(|e| e.into_inner());
     if enabled {
-        if slot.is_some() {
+        if let Some(existing) = slot.as_ref() {
             ACTIVE.store(true, Ordering::Release);
-            apply_all(DWMWA_COLOR_NONE);
+            if existing.tid != 0 {
+                unsafe {
+                    let _ = PostThreadMessageW(existing.tid, WM_BORDER_REAPPLY, WPARAM(0), LPARAM(0));
+                }
+            }
             return;
         }
         ACTIVE.store(true, Ordering::Release);
@@ -209,13 +219,14 @@ pub fn set_enabled(enabled: bool) {
                 );
                 let timer_id = SetTimer(None, 1, 30_000, None);
 
+                // BH-37: Check GetMessageW(...).0 > 0 so -1 (error) exits instead of spinning infinitely.
                 while ACTIVE.load(Ordering::Acquire)
-                    && GetMessageW(&mut msg, None, 0, 0).as_bool()
+                    && GetMessageW(&mut msg, None, 0, 0).0 > 0
                 {
                     if !ACTIVE.load(Ordering::Acquire) {
                         break;
                     }
-                    if msg.message == WM_TIMER {
+                    if msg.message == WM_TIMER || msg.message == WM_BORDER_REAPPLY {
                         apply_all(DWMWA_COLOR_NONE);
                     } else {
                         let _ = TranslateMessage(&msg);
@@ -232,6 +243,8 @@ pub fn set_enabled(enabled: bool) {
                 if !hook_fg.is_null() {
                     let _ = UnhookWinEvent(hook_fg);
                 }
+                // Restore system borders cleanly on worker exit (single sweep).
+                apply_all(DWMWA_COLOR_DEFAULT);
             })
         {
             let (lock, cvar) = &*ready;
@@ -241,6 +254,9 @@ pub fn set_enabled(enabled: bool) {
             }
             let tid = guard.unwrap_or(0);
             *slot = Some(BorderWorkerHandle { tid, join });
+        } else {
+            // BH-37: Keep ACTIVE synchronized with WORKER on spawn failure.
+            ACTIVE.store(false, Ordering::Release);
         }
     } else {
         let was_active = ACTIVE.swap(false, Ordering::AcqRel);
@@ -251,8 +267,7 @@ pub fn set_enabled(enabled: bool) {
                 }
             }
             let _ = handle.join.join();
-        }
-        if was_active {
+        } else if was_active {
             apply_all(DWMWA_COLOR_DEFAULT);
         }
     }

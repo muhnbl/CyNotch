@@ -3993,7 +3993,11 @@ unsafe fn redraw_window(hwnd: HWND) {
     // Render into the resized SwapChain BEFORE SetWindowPos moves/resizes the HWND so
     // DWM never flashes a stale frame shifted to the new window origin ("teleporting ghost").
     ren.resize(canvas_w as u32, canvas_h as u32);
-    let mut ok = true;
+    if host_opt.is_none() {
+        ren.clear_d2d_cache();
+        host_opt = DCompHost::new(hwnd, canvas_w as u32, canvas_h as u32).ok();
+    }
+    let mut ok = false;
     if let Some(host) = host_opt.as_mut() {
         let resize_res = if !prev_init {
             host.rebind_for_dpi_change(canvas_w as u32, canvas_h as u32)
@@ -4005,18 +4009,19 @@ unsafe fn redraw_window(hwnd: HWND) {
         {
             ren.render_d2d(&ctx, &state_snapshot, pointer_pos);
             ok = host.end_d2d_draw_and_present().is_ok();
-        } else {
-            ok = false;
         }
-        if !ok {
-            ren.clear_d2d_cache();
-            if let Ok(new_host) = DCompHost::new(hwnd, canvas_w as u32, canvas_h as u32) {
-                *host = new_host;
-                if let Ok(ctx) = host.begin_d2d_draw() {
-                    ren.render_d2d(&ctx, &state_snapshot, pointer_pos);
-                    ok = host.end_d2d_draw_and_present().is_ok();
-                }
+    }
+    if !ok {
+        ren.clear_d2d_cache();
+        // BH-33: Explicitly drop old DCompHost FIRST so DesktopWindowTarget::Close()
+        // releases the HWND binding before recreating DCompHost on the same HWND.
+        host_opt = None;
+        if let Ok(mut new_host) = DCompHost::new(hwnd, canvas_w as u32, canvas_h as u32) {
+            if let Ok(ctx) = new_host.begin_d2d_draw() {
+                ren.render_d2d(&ctx, &state_snapshot, pointer_pos);
+                ok = new_host.end_d2d_draw_and_present().is_ok();
             }
+            host_opt = Some(new_host);
         }
     }
 

@@ -3,7 +3,7 @@
 use serde::{Deserialize, Serialize};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::mpsc::{SyncSender, sync_channel};
-use std::sync::OnceLock;
+use std::sync::{Mutex, OnceLock};
 use std::time::Instant;
 use windows::core::PCWSTR;
 use windows::Win32::Media::Audio::{PlaySoundW, SND_MEMORY, SND_NODEFAULT, SND_SYNC};
@@ -137,46 +137,49 @@ enum AudioMessage {
     PlaySnapchat { volume: f32 },
 }
 
-static AUDIO_TX: OnceLock<Option<SyncSender<AudioMessage>>> = OnceLock::new();
+static AUDIO_TX: Mutex<Option<SyncSender<AudioMessage>>> = Mutex::new(None);
 
-fn audio_sender() -> Option<&'static SyncSender<AudioMessage>> {
-    AUDIO_TX
-        .get_or_init(|| {
-            // BH-28: Bounded channel (8 slots) + fallible thread spawn (no panic on OS pressure).
-            let (tx, rx) = sync_channel::<AudioMessage>(8);
-            match std::thread::Builder::new()
-                .name("cynotch-audio-worker".into())
-                .spawn(move || {
-                    while let Ok(msg) = rx.recv() {
-                        // Drain any queued duplicate bursts within the same slice to prevent audio stutter
-                        let mut latest_vol = match msg {
-                            AudioMessage::PlaySnapchat { volume } => volume,
-                        };
-                        while let Ok(next) = rx.try_recv() {
-                            match next {
-                                AudioMessage::PlaySnapchat { volume } => latest_vol = volume,
-                            }
-                        }
-                        if latest_vol <= 0.002 {
-                            continue;
-                        }
-                        let wav_buf = scale_wav_volume(WAV_SNAPCHAT, latest_vol);
-                        // SAFETY: `wav_buf` remains valid on this dedicated worker thread for the entire
-                        // duration of synchronous `SND_SYNC` playback, guaranteeing zero use-after-free.
-                        unsafe {
-                            let _ = PlaySoundW(
-                                PCWSTR(wav_buf.as_ptr() as *const u16),
-                                None,
-                                SND_MEMORY | SND_SYNC | SND_NODEFAULT,
-                            );
-                        }
+fn audio_sender() -> Option<SyncSender<AudioMessage>> {
+    let mut slot = AUDIO_TX.lock().unwrap_or_else(|e| e.into_inner());
+    if let Some(tx) = slot.as_ref() {
+        return Some(tx.clone());
+    }
+    // BH-28/BH-41: Bounded channel (8 slots) + retryable fallible thread spawn (no panic, no permanent brick).
+    let (tx, rx) = sync_channel::<AudioMessage>(8);
+    if std::thread::Builder::new()
+        .name("cynotch-audio-worker".into())
+        .spawn(move || {
+            while let Ok(msg) = rx.recv() {
+                let mut latest_vol = match msg {
+                    AudioMessage::PlaySnapchat { volume } => volume,
+                };
+                while let Ok(next) = rx.try_recv() {
+                    match next {
+                        AudioMessage::PlaySnapchat { volume } => latest_vol = volume,
                     }
-                }) {
-                Ok(_) => Some(tx),
-                Err(_) => None,
+                }
+                if latest_vol <= 0.002 {
+                    continue;
+                }
+                let wav_buf = scale_wav_volume(WAV_SNAPCHAT, latest_vol);
+                // SAFETY: `wav_buf` remains valid on this dedicated worker thread for the entire
+                // duration of synchronous `SND_SYNC` playback, guaranteeing zero use-after-free.
+                unsafe {
+                    let _ = PlaySoundW(
+                        PCWSTR(wav_buf.as_ptr() as *const u16),
+                        None,
+                        SND_MEMORY | SND_SYNC | SND_NODEFAULT,
+                    );
+                }
             }
         })
-        .as_ref()
+        .is_ok()
+    {
+        *slot = Some(tx.clone());
+        Some(tx)
+    } else {
+        None
+    }
 }
 
 /// Plays a notification sound asynchronously at the fixed volume (25%).

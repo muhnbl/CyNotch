@@ -229,59 +229,72 @@ impl<T> CoalescingSlot<T> {
 
 #[cfg(windows)]
 pub fn seek_to_position_ms(pos_ms: u64) {
-    use std::sync::{Arc, OnceLock};
-    static SEEK_WORKER: OnceLock<Arc<CoalescingSlot<u64>>> = OnceLock::new();
+    use std::sync::{Arc, Mutex};
+    static SEEK_WORKER: Mutex<Option<Arc<CoalescingSlot<u64>>>> = Mutex::new(None);
 
-    let slot = SEEK_WORKER.get_or_init(|| {
-        let s = Arc::new(CoalescingSlot::new());
-        let bg = Arc::clone(&s);
-        let _ = std::thread::Builder::new()
-            .name("cynotch-media-seek".to_string())
-            .spawn(move || {
-                use windows::Media::Control::GlobalSystemMediaTransportControlsSessionManager;
-                use windows::Win32::System::Com::{COINIT_MULTITHREADED, CoInitializeEx};
-                let hr = unsafe { CoInitializeEx(None, COINIT_MULTITHREADED) };
-                let _com = SeekComGuard(hr.is_ok());
-                let mut manager: Option<GlobalSystemMediaTransportControlsSessionManager> = None;
+    let slot = {
+        let mut guard = SEEK_WORKER.lock().unwrap_or_else(|e| e.into_inner());
+        if let Some(existing) = guard.as_ref() {
+            Some(Arc::clone(existing))
+        } else {
+            let s = Arc::new(CoalescingSlot::new());
+            let bg = Arc::clone(&s);
+            if std::thread::Builder::new()
+                .name("cynotch-media-seek".to_string())
+                .spawn(move || {
+                    use windows::Media::Control::GlobalSystemMediaTransportControlsSessionManager;
+                    use windows::Win32::System::Com::{COINIT_MULTITHREADED, CoInitializeEx};
+                    let hr = unsafe { CoInitializeEx(None, COINIT_MULTITHREADED) };
+                    let _com = SeekComGuard(hr.is_ok());
+                    let mut manager: Option<GlobalSystemMediaTransportControlsSessionManager> =
+                        None;
 
-                loop {
-                    let target_ms = bg.take_blocking();
-                    let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                        if manager.is_none()
-                            && let Ok(op) =
-                                GlobalSystemMediaTransportControlsSessionManager::RequestAsync()
-                        {
-                            manager = op.get().ok();
-                        }
-                        if let Some(ref mgr) = manager {
-                            match mgr.GetCurrentSession() {
-                                Ok(session) => {
-                                    let ticks_100ns =
-                                        i64::try_from(target_ms)
+                    loop {
+                        let target_ms = bg.take_blocking();
+                        let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                            if manager.is_none()
+                                && let Ok(op) =
+                                    GlobalSystemMediaTransportControlsSessionManager::RequestAsync()
+                            {
+                                manager = op.get().ok();
+                            }
+                            if let Some(ref mgr) = manager {
+                                match mgr.GetCurrentSession() {
+                                    Ok(session) => {
+                                        let ticks_100ns = i64::try_from(target_ms)
                                             .unwrap_or(i64::MAX)
                                             .saturating_mul(10_000);
-                                    if let Ok(seek_op) =
-                                        session.TryChangePlaybackPositionAsync(ticks_100ns)
-                                    {
-                                        if seek_op.get().is_err() {
+                                        if let Ok(seek_op) =
+                                            session.TryChangePlaybackPositionAsync(ticks_100ns)
+                                        {
+                                            if seek_op.get().is_err() {
+                                                manager = None;
+                                            }
+                                        } else {
                                             manager = None;
                                         }
-                                    } else {
+                                    }
+                                    Err(_) => {
                                         manager = None;
                                     }
                                 }
-                                Err(_) => {
-                                    manager = None;
-                                }
                             }
-                        }
-                    }));
-                }
-            });
-        s
-    });
+                        }));
+                    }
+                })
+                .is_ok()
+            {
+                *guard = Some(Arc::clone(&s));
+                Some(s)
+            } else {
+                None
+            }
+        }
+    };
 
-    slot.post(pos_ms);
+    if let Some(s) = slot {
+        s.post(pos_ms);
+    }
 }
 
 #[cfg(not(windows))]
@@ -340,34 +353,63 @@ mod tests {
 
     #[test]
     fn bh21_coalescing_slot_preserves_monotonic_latest_value() {
+        use std::sync::{Condvar, Mutex};
         let slot = Arc::new(CoalescingSlot::<u64>::new());
         let bg = Arc::clone(&slot);
-        let seen = Arc::new(std::sync::Mutex::new(Vec::<u64>::new()));
+        let gate = Arc::new((Mutex::new(false), Condvar::new()));
+        let gate_bg = Arc::clone(&gate);
+        let done = Arc::new((Mutex::new(false), Condvar::new()));
+        let done_bg = Arc::clone(&done);
+        let seen = Arc::new(Mutex::new(Vec::<u64>::new()));
         let seen_bg = Arc::clone(&seen);
 
-        let worker = std::thread::spawn(move || loop {
-            let v = bg.take_blocking();
-            if v == u64::MAX {
-                break;
+        let worker = std::thread::spawn(move || {
+            {
+                let (lock, cvar) = &*gate_bg;
+                let mut g = lock.lock().unwrap();
+                while !*g {
+                    g = cvar.wait(g).unwrap();
+                }
             }
-            seen_bg.lock().unwrap().push(v);
-            std::thread::sleep(std::time::Duration::from_millis(2));
+            loop {
+                let v = bg.take_blocking();
+                if v == u64::MAX {
+                    break;
+                }
+                seen_bg.lock().unwrap().push(v);
+                if v == 200 {
+                    let (lock, cvar) = &*done_bg;
+                    *lock.lock().unwrap() = true;
+                    cvar.notify_all();
+                }
+            }
         });
 
         for ms in 1..=200 {
             slot.post(ms);
         }
-        std::thread::sleep(std::time::Duration::from_millis(20));
+        {
+            let (lock, cvar) = &*gate;
+            *lock.lock().unwrap() = true;
+            cvar.notify_all();
+        }
+        {
+            let (lock, cvar) = &*done;
+            let mut g = lock.lock().unwrap();
+            while !*g {
+                g = cvar.wait(g).unwrap();
+            }
+        }
         slot.post(u64::MAX);
         worker.join().unwrap();
 
         let vals = seen.lock().unwrap();
         assert!(!vals.is_empty());
-        // Strictly ordered (no out-of-order seek regressions) and coalesced
         for w in vals.windows(2) {
             assert!(w[1] > w[0], "seeks must never regress out-of-order: {:?}", *vals);
         }
         assert_eq!(*vals.last().unwrap(), 200);
+        assert!(vals.len() < 200, "200 rapid seeks must coalesce");
     }
 
     #[test]

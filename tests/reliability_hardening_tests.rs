@@ -8,7 +8,7 @@ use cynotch::models::{
     Action, AppState, ExpandedSizePreset, NotchPlacement, NotchSizePreset, NotchStyle,
     NotificationKind, TaskItem,
 };
-use cynotch::painter_d2d::{D2DResourceCache, D2DPainter, color_to_d2d};
+use cynotch::painter_d2d::{D2DPainter, D2DResourceCache, color_to_d2d};
 use cynotch::persistence::{LoadOutcome, atomic_write_json, backup_path, load_json_with_recovery};
 use cynotch::renderer::Renderer;
 use cynotch::screentime::ScreenTimeTracker;
@@ -16,7 +16,7 @@ use cynotch::sound::{find_data_chunk, scale_wav_volume};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 use windows::Win32::Graphics::Direct2D::Common::{
-    D2D1_ALPHA_MODE_PREMULTIPLIED, D2D1_COLOR_F, D2D1_PIXEL_FORMAT, D2D_SIZE_U,
+    D2D_SIZE_U, D2D1_ALPHA_MODE_PREMULTIPLIED, D2D1_COLOR_F, D2D1_PIXEL_FORMAT,
 };
 use windows::Win32::Graphics::Direct2D::{
     D2D1_BITMAP_OPTIONS_CANNOT_DRAW, D2D1_BITMAP_OPTIONS_CPU_READ, D2D1_BITMAP_OPTIONS_TARGET,
@@ -97,7 +97,15 @@ fn create_isolated_d2d_target(w: u32, h: u32) -> (ID2D1Factory1, ID2D1DeviceCont
             colorContext: std::mem::ManuallyDrop::new(None),
         };
         let target = ctx
-            .CreateBitmap(D2D_SIZE_U { width: w, height: h }, None, 0, &props)
+            .CreateBitmap(
+                D2D_SIZE_U {
+                    width: w,
+                    height: h,
+                },
+                None,
+                0,
+                &props,
+            )
             .unwrap();
         ctx.SetTarget(&target);
         (factory, ctx, target)
@@ -122,7 +130,15 @@ fn readback_nonzero_alpha_pixels(
             colorContext: std::mem::ManuallyDrop::new(None),
         };
         let staging = ctx
-            .CreateBitmap(D2D_SIZE_U { width: w, height: h }, None, 0, &staging_props)
+            .CreateBitmap(
+                D2D_SIZE_U {
+                    width: w,
+                    height: h,
+                },
+                None,
+                0,
+                &staging_props,
+            )
             .unwrap();
         staging.CopyFromBitmap(None, target, None).unwrap();
         let mapped = staging.Map(D2D1_MAP_OPTIONS_READ).unwrap();
@@ -177,7 +193,11 @@ fn bh02_cross_factory_device_lost_recovery_renders_without_wrong_factory_error()
         unsafe { ctx2.EndDraw(None, None) }
             .expect("Factory #2 EndDraw must succeed without D2DERR_WRONG_FACTORY");
         let lit = readback_nonzero_alpha_pixels(&ctx2, &target2, 560, 320);
-        assert!(lit > 500, "recovered frame must draw visible pixels, got {}", lit);
+        assert!(
+            lit > 500,
+            "recovered frame must draw visible pixels, got {}",
+            lit
+        );
     }
 }
 
@@ -230,8 +250,15 @@ fn bh05_push_rrect_clip_repeated_stress_has_no_errors() {
         let mut p = D2DPainter::new(&ctx, &mut cache, 1.0, 0.0, 0.0, 1.0);
         for _ in 0..200 {
             p.push_rrect_clip(10.0, 10.0, 100.0, 100.0, 16.0).unwrap();
-            p.rrect(0.0, 0.0, 128.0, 128.0, 8.0, color_to_d2d(120, 80, 255, 255, 1.0))
-                .unwrap();
+            p.rrect(
+                0.0,
+                0.0,
+                128.0,
+                128.0,
+                8.0,
+                color_to_d2d(120, 80, 255, 255, 1.0),
+            )
+            .unwrap();
             p.pop_clip().unwrap();
         }
     }
@@ -258,7 +285,7 @@ fn bh09_persistence_stress_and_screentime_recovery() {
         other => panic!("expected Loaded, got {:?}", other),
     }
 
-    // Corrupt primary file -> must recover v49 from .bak without destroying .bak
+    // Corrupt primary file -> must recover v49 from .bak and heal primary
     std::fs::write(&state_file, "{ truncated").unwrap();
     let recovered = load_json_with_recovery::<Vec<TaskItem>, _>(&state_file, |v| !v.is_empty());
     match recovered {
@@ -266,29 +293,29 @@ fn bh09_persistence_stress_and_screentime_recovery() {
         other => panic!("expected RecoveredFromBackup, got {:?}", other),
     }
 
-    // Subsequent atomic write must NOT poison .bak with the corrupted primary bytes
+    // Subsequent atomic write must preserve v49 in `.bak` (never poison `.bak` with corrupt bytes)
     let v51 = vec![TaskItem {
         text: "Task #51".to_string(),
         completed: false,
     }];
     atomic_write_json(&state_file, &v51, true).unwrap();
-    let bak_check = load_json_with_recovery::<Vec<TaskItem>, _>(&backup_path(&state_file), |_| true);
-    assert!(matches!(bak_check, LoadOutcome::Loaded(_)));
+    match load_json_with_recovery::<Vec<TaskItem>, _>(&backup_path(&state_file), |_| true) {
+        LoadOutcome::Loaded(v) => assert_eq!(v[0].text, "Task #49\twith\nnewlines"),
+        other => panic!("expected .bak to hold Task #49, got {:?}", other),
+    }
 
     // Fault injection: write to a directory path fails cleanly without panicking
     assert!(atomic_write_json(tmp.path(), &v51, true).is_err());
 
-    // ScreenTimeTracker isolated load + save + corruption recovery
+    // ScreenTimeTracker isolated load + save + corruption recovery using dynamic current date (BH-43)
     let st_path = tmp.path().join("screentime.json");
-    let tracker = ScreenTimeTracker::load_from_path(st_path.clone());
-    tracker.save();
-    // Write a valid screentime snapshot, then a second save so .bak exists, then corrupt primary
+    let today = cynotch::localtime::format_ymd(cynotch::localtime::local_now());
     let sample = serde_json::json!({
-        "current_date": "2026-11-20",
+        "current_date": today,
         "app_seconds": { "VS Code": 1200 },
         "total_seconds": 1200,
         "hourly_seconds": [0,0,0,0,0,0,0,0,0,0,1200,0,0,0,0,0,0,0,0,0,0,0,0,0],
-        "daily_totals": { "2026-11-19": 3600 }
+        "daily_totals": { "2026-01-01": 3600 }
     });
     atomic_write_json(&st_path, &sample, true).unwrap();
     atomic_write_json(&st_path, &sample, true).unwrap();
@@ -296,9 +323,13 @@ fn bh09_persistence_stress_and_screentime_recovery() {
 
     let recovered_tracker = ScreenTimeTracker::load_from_path(st_path);
     let stats = recovered_tracker.stats(10);
+    assert_eq!(
+        stats.today_secs, 1200,
+        "screentime must recover exact today_secs from .bak on primary corruption"
+    );
     assert!(
-        stats.today_secs >= 1200 || stats.seven_day_avg_secs > 0,
-        "screentime must recover history from .bak on primary corruption"
+        stats.seven_day_avg_secs > 0,
+        "screentime must recover daily_totals history from .bak"
     );
 }
 
@@ -315,9 +346,11 @@ fn bh08_bh13_bh14_bh22_security_and_state_stress_invariants() {
     }
 
     // BH-13 & BH-14 policy checks
-    assert!(format_autostart_command(Path::new(r"C:\Program Files\CyNotch\cynotch.exe"))
-        .unwrap()
-        .starts_with('"'));
+    assert!(
+        format_autostart_command(Path::new(r"C:\Program Files\CyNotch\cynotch.exe"))
+            .unwrap()
+            .starts_with('"')
+    );
     assert!(validate_shell_open_target(r"\\evil\share\payload.exe").is_err());
     assert!(validate_shell_open_target("ms-msdt:/id Test").is_err());
 

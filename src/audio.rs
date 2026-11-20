@@ -139,7 +139,7 @@ impl VolWorker {
     }
 }
 
-static VOL_WORKER: OnceLock<Arc<VolWorker>> = OnceLock::new();
+static VOL_WORKER: Mutex<Option<Arc<VolWorker>>> = Mutex::new(None);
 static LAST_VOL_WRITE_EPOCH: OnceLock<Instant> = OnceLock::new();
 static LAST_VOL_WRITE_MS: AtomicU64 = AtomicU64::new(0);
 
@@ -192,26 +192,42 @@ fn apply_master_volume_com(enumerator: &mut Option<IMMDeviceEnumerator>, level: 
 
 /// Non-blocking master volume update: coalesces rapid slider drags onto a
 /// single COM worker thread so Win32 UI `WM_MOUSEMOVE` never blocks.
+/// Retryable on transient OS thread-spawn failure and panic-isolated via `catch_unwind` (BH-41).
 pub fn set_master_volume(level: f32) {
-    let worker = VOL_WORKER.get_or_init(|| {
-        let w = Arc::new(VolWorker::new());
-        let bg = Arc::clone(&w);
-        let _ = std::thread::Builder::new()
-            .name("cynotch-audio".to_string())
-            .spawn(move || {
-                let hr = unsafe { CoInitializeEx(None, COINIT_MULTITHREADED) };
-                let _com = ComInitGuard(hr.is_ok());
-                let mut enumerator: Option<IMMDeviceEnumerator> = None;
-                loop {
-                    let val = bg.take_blocking();
-                    let _ = apply_master_volume_com(&mut enumerator, val);
-                }
-            });
-        w
-    });
+    let worker = {
+        let mut slot = VOL_WORKER.lock().unwrap_or_else(|e| e.into_inner());
+        if let Some(existing) = slot.as_ref() {
+            Some(Arc::clone(existing))
+        } else {
+            let w = Arc::new(VolWorker::new());
+            let bg = Arc::clone(&w);
+            if std::thread::Builder::new()
+                .name("cynotch-audio".to_string())
+                .spawn(move || {
+                    let hr = unsafe { CoInitializeEx(None, COINIT_MULTITHREADED) };
+                    let _com = ComInitGuard(hr.is_ok());
+                    let mut enumerator: Option<IMMDeviceEnumerator> = None;
+                    loop {
+                        let val = bg.take_blocking();
+                        let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                            let _ = apply_master_volume_com(&mut enumerator, val);
+                        }));
+                    }
+                })
+                .is_ok()
+            {
+                *slot = Some(Arc::clone(&w));
+                Some(w)
+            } else {
+                None
+            }
+        }
+    };
 
     LAST_VOL_WRITE_MS.store(monotonic_ms(), Ordering::Release);
-    worker.post(level.clamp(0.0, 1.0));
+    if let Some(w) = worker {
+        w.post(level.clamp(0.0, 1.0));
+    }
 }
 
 #[cfg(test)]
@@ -219,29 +235,63 @@ mod tests {
     use super::*;
 
     #[test]
-    fn bh03_vol_worker_coalesces_without_init_race_or_panic() {
+    fn bh03_vol_worker_coalesces_deterministically_without_init_race() {
         let w = Arc::new(VolWorker::new());
         let bg = Arc::clone(&w);
+        let gate = Arc::new((Mutex::new(false), Condvar::new()));
+        let gate_bg = Arc::clone(&gate);
+        let done = Arc::new((Mutex::new(false), Condvar::new()));
+        let done_bg = Arc::clone(&done);
         let received = Arc::new(Mutex::new(Vec::<f32>::new()));
         let rec_bg = Arc::clone(&received);
 
-        let handle = std::thread::spawn(move || loop {
-            let v = bg.take_blocking();
-            if v < 0.0 {
-                break;
+        let handle = std::thread::spawn(move || {
+            // Wait until producer has posted a burst so coalescing is deterministically exercised.
+            {
+                let (lock, cvar) = &*gate_bg;
+                let mut g = lock.lock().unwrap();
+                while !*g {
+                    g = cvar.wait(g).unwrap();
+                }
             }
-            rec_bg.lock().unwrap().push(v);
+            loop {
+                let v = bg.take_blocking();
+                if v < 0.0 {
+                    break;
+                }
+                rec_bg.lock().unwrap().push(v);
+                if (v - 1.0).abs() < 1e-4 {
+                    let (lock, cvar) = &*done_bg;
+                    *lock.lock().unwrap() = true;
+                    cvar.notify_all();
+                }
+            }
         });
 
-        for i in 0..50 {
+        for i in 1..=50 {
             w.post((i as f32) / 50.0);
         }
-        std::thread::sleep(std::time::Duration::from_millis(15));
+        {
+            let (lock, cvar) = &*gate;
+            *lock.lock().unwrap() = true;
+            cvar.notify_all();
+        }
+        {
+            let (lock, cvar) = &*done;
+            let mut g = lock.lock().unwrap();
+            while !*g {
+                g = cvar.wait(g).unwrap();
+            }
+        }
         w.post(-1.0);
         handle.join().expect("worker thread must not panic");
 
         let vals = received.lock().unwrap();
-        assert!(!vals.is_empty());
-        assert!(*vals.last().unwrap() <= 1.0);
+        assert_eq!(*vals.last().unwrap(), 1.0);
+        assert!(
+            vals.len() < 50,
+            "burst of 50 updates should coalesce, saw {}",
+            vals.len()
+        );
     }
 }
