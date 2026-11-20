@@ -4,11 +4,11 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>CyNotch v0.3.0 — Judgment at the top of your screen</title>
-<meta name="description" content="CyNotch v0.3.0 is a GPU-accelerated Dynamic Island for Windows 10/11 in Rust (~1.66 MB). Direct2D/DirectWrite engine, portal edge glow, synced lyrics, telemetry, and Memory Reduct.">
+<meta name="description" content="CyNotch v0.3.0 is a GPU-accelerated Dynamic Island for Windows 10/11 in Rust (~1.74 MB). Direct2D/DirectWrite engine, corner & edge portal glow, synced lyrics, telemetry, and Memory Reduct.">
 <meta name="theme-color" content="#0A0712">
 <meta property="og:type" content="website">
 <meta property="og:title" content="CyNotch v0.3.0 — Judgment at the top of your screen">
-<meta property="og:description" content="A GPU-accelerated Dynamic Island for Windows 10/11 in 1.66 MB of Rust. Direct2D engine, portal edge glow, media, synced lyrics, telemetry and RAM judgment.">
+<meta property="og:description" content="A GPU-accelerated Dynamic Island for Windows 10/11 in 1.74 MB of Rust. Direct2D engine, corner & edge portal glow, media, synced lyrics, telemetry and RAM judgment.">
 <meta property="og:image" content="https://raw.githubusercontent.com/muhnbl/CyNotch/main/assets/cynotch_icon.png">
 <meta name="twitter:card" content="summary">
 <link rel="canonical" href="https://muhnbl.github.io/CyNotch/">
@@ -24,7 +24,7 @@
   "operatingSystem":"Windows 10, Windows 11 (x64)",
   "applicationCategory":"UtilitiesApplication",
   "softwareVersion":"0.3.0",
-  "description":"Ultra-lightweight GPU-accelerated Dynamic Island and ambient command hub for Windows, written in Rust (1.66 MB), with Direct2D/DirectWrite rendering, screen-edge portal glow, built-in Memory Reduct engine, GSMTC media, LRCLIB lyrics and hardware telemetry.",
+  "description":"Ultra-lightweight GPU-accelerated Dynamic Island and ambient command hub for Windows, written in Rust (1.74 MB), with Direct2D/DirectWrite rendering, screen-edge and corner portal glow, built-in Memory Reduct engine, GSMTC media, LRCLIB lyrics and hardware telemetry.",
   "downloadUrl":"https://github.com/muhnbl/CyNotch/releases/download/v0.3.0/CyNotch-v0.3.0-portable.exe",
   "offers":{"@type":"Offer","price":"0","priceCurrency":"USD"},
   "author":{"@type":"Person","name":"muhnbl","url":"https://github.com/muhnbl"}
@@ -431,14 +431,14 @@ kbd{display:inline-flex;align-items:center;justify-content:center;min-width:26px
         <span class="chip">Windows 10 / 11, x64</span>
       </div>
       <h1 id="heroTitle"><span class="judge">Judgment,</span><br>at the top<br>of your screen.</h1>
-      <p class="hero-lede">CyNotch v0.3.0 is a GPU-accelerated Dynamic Island for Windows that actually does stuff. Hardware Direct2D + DirectWrite engine, physical screen-edge portal glow, synced lyrics, live telemetry and a Purge RAM button with main character energy. Built in Rust, shrunk to 1.66 MB, zero installer.</p>
+      <p class="hero-lede">CyNotch v0.3.0 is a GPU-accelerated Dynamic Island for Windows that actually does stuff. Hardware Direct2D + DirectWrite engine, physical screen-edge &amp; corner portal glow, synced lyrics, live telemetry and a Purge RAM button with main character energy. Built in Rust, shrunk to 1.74 MB, zero installer.</p>
       <div class="hero-cta">
         <a class="btn btn-primary btn-lg" href="#install">Download v0.3.0 <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><path d="M12 4v12m0 0 4-4m-4 4-4-4M5 20h14"/></svg></a>
         <a class="btn btn-ghost btn-lg" href="#benchmark">v0.3.0 vs v0.2.4.1 <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" aria-hidden="true"><path d="M5 12h14m-6-6 6 6-6 6"/></svg></a>
       </div>
       <div class="hero-micro">
         <span><kbd>Ctrl</kbd><kbd>Shift</kbd><kbd>C</kbd> to summon it</span>
-        <span>1.66 MB single .exe</span>
+        <span>1.74 MB single .exe</span>
         <span>0% idle CPU</span>
       </div>
     </div>
@@ -457,7 +457,7 @@ kbd{display:inline-flex;align-items:center;justify-content:center;min-width:26px
 
   <div class="wrap">
     <dl class="specs">
-      <div class="spec"><dt>Binary</dt><dd>1.66 <small>MB (−58%)</small></dd></div>
+      <div class="spec"><dt>Binary</dt><dd>1.74 <small>MB (−56%)</small></dd></div>
       <div class="spec"><dt>Expanded frame</dt><dd>0.93 <small>ms (9.8× faster)</small></dd></div>
       <div class="spec"><dt>Idle CPU</dt><dd>0.0<small>% (hibernated)</small></dd></div>
       <div class="spec"><dt>Renderer</dt><dd>Direct2D <small>+ DirectWrite</small></dd></div>
@@ -631,12 +631,12 @@ kbd{display:inline-flex;align-items:center;justify-content:center;min-width:26px
             <tr>
               <td>Portable Binary (<code>cynotch.exe</code>)</td>
               <td class="v-old">3,949,056 B (3.95 MB)</td>
-              <td class="v-new">1,662,976 B (1.66 MB) <span class="bench-badge">−57.9%</span></td>
+              <td class="v-new">1,742,848 B (1.74 MB) <span class="bench-badge">−55.9%</span></td>
             </tr>
             <tr>
               <td>Portable ZIP Archive</td>
               <td class="v-old">1.82 MB</td>
-              <td class="v-new">0.73 MB (769,916 B) <span class="bench-badge">−59.6%</span></td>
+              <td class="v-new">786 KB (805,236 B) <span class="bench-badge">−57.8%</span></td>
             </tr>
             <tr>
               <td>HTTP / Time / PNG Stack</td>
@@ -646,7 +646,7 @@ kbd{display:inline-flex;align-items:center;justify-content:center;min-width:26px
             <tr>
               <td>Automated Test Suite</td>
               <td class="v-old">73 tests passing</td>
-              <td class="v-new">93 unit + runtime + 100-persona QA tests</td>
+              <td class="v-new">132 unit + adversarial + GPU soak tests</td>
             </tr>
           </tbody>
         </table>
@@ -657,8 +657,8 @@ kbd{display:inline-flex;align-items:center;justify-content:center;min-width:26px
         <p class="bench-card-sub">Every visual surface, motion curve, and audio cue was refined for zero visual friction.</p>
         <div class="visual-diff-list">
           <div class="visual-diff-item">
-            <strong>Physical Screen-Edge Portal Glow <span>Visual + Motion</span></strong>
-            <p>Replaced v0.2.4.1's static inner capsule border cue with a dedicated click-through bezel portal window (<code>#C4B5FD → #A855F7 → #6D28D9</code>), 5th-order smootherstep opening, no hard white core line, and a 1.2s atmospheric dissipation fade-out.</p>
+            <strong>Physical Screen-Edge &amp; Corner Portal Glow <span>Visual + Motion</span></strong>
+            <p>Replaced v0.2.4.1's static inner capsule border cue with a dedicated click-through DirectComposition bezel portal window (32-stop 16bpc float radial violet aura) that hugs <strong>Top / Left / Right</strong> edges and <strong>originates directly from Top-Left / Top-Right corners</strong> when corner-docked, with 5th-order smootherstep opening and a 1.2s atmospheric dissipation fade-out.</p>
           </div>
           <div class="visual-diff-item">
             <strong>Monochromatic Electro Violet Palette &amp; Live Network <span>UI Polish</span></strong>
@@ -671,6 +671,10 @@ kbd{display:inline-flex;align-items:center;justify-content:center;min-width:26px
           <div class="visual-diff-item">
             <strong>Continuous Glass Sliders, 1:1 Scrubbers &amp; Snapchat Chime <span>UX &amp; Audio</span></strong>
             <p>Replaced stepped opacity/blur percentage buttons with live drag sliders, upgraded Music &amp; Volume bars to 1:1 sub-pixel scrubbers with glowing thumbs, calibrated all Preferences tabs to fit unclipped at <code>scroll=0</code>, and added a fixed 25% Snapchat Pop chime with burst deduplication.</p>
+          </div>
+          <div class="visual-diff-item">
+            <strong>Production Reliability, Security &amp; GPU Recovery <span>Hardening</span></strong>
+            <p>Audited and remediated 43 reliability findings: UTF-16 safe bounded <code>WinHTTP</code>, crash-resistant atomic persistence with <code>.bak</code> recovery, DirectComposition device-loss &amp; target recreation, strict Quick Shelf <code>ShellExecuteW</code> executable/ADS/UNC guard, safe Windows notification registry restore, and <strong>132/132</strong> automated + soak tests passing.</p>
           </div>
         </div>
       </div>
@@ -688,8 +692,8 @@ kbd{display:inline-flex;align-items:center;justify-content:center;min-width:26px
     <div class="reveal">
       <p class="kicker"><span>06</span> Under the hood</p>
       <h2 class="sec-h2" id="buildTitle">The engineering is the aesthetic.</h2>
-      <p class="sec-lede">A Win32 layered window bound to a DirectComposition DXGI SwapChain and painted on the GPU with Direct2D and DirectWrite. WinHTTP and WinRT talk to LRCLIB, your media session, and Action Center. Everything compiles into a single 1.66 MB portable executable.</p>
-      <p class="paper-statement">One 1.66 MB .exe. Rust, Direct2D, and Win32 handle the rest.</p>
+      <p class="sec-lede">A Win32 layered window bound to a DirectComposition DXGI SwapChain and painted on the GPU with Direct2D and DirectWrite. WinHTTP and WinRT talk to LRCLIB, your media session, and Action Center. Everything compiles into a single 1.74 MB portable executable.</p>
+      <p class="paper-statement">One 1.74 MB .exe. Rust, Direct2D, and Win32 handle the rest.</p>
       <div class="dossier-links">
         <a href="https://github.com/muhnbl/CyNotch/blob/main/OPTIMIZATION_REPORT.md" target="_blank" rel="noopener">Optimization report ↗</a>
         <a href="https://github.com/muhnbl/CyNotch/releases/tag/v0.3.0" target="_blank" rel="noopener">v0.3.0 release notes ↗</a>
@@ -698,7 +702,7 @@ kbd{display:inline-flex;align-items:center;justify-content:center;min-width:26px
     <div class="reveal">
       <dl class="dtable">
         <div class="drow"><dt>Language</dt><dd>Rust, edition 2024, MSVC toolchain</dd></div>
-        <div class="drow"><dt>Binary</dt><dd>1.66 MB (1,662,976 B), stripped LTO release build (−57.9% vs v0.2.4.1)</dd></div>
+        <div class="drow"><dt>Binary</dt><dd>1.74 MB (1,742,848 B), stripped LTO release build (−55.9% vs v0.2.4.1)</dd></div>
         <div class="drow"><dt>Frame time</dt><dd>59.3 µs idle / 0.93 ms expanded (Direct2D GPU)</dd></div>
         <div class="drow"><dt>Idle CPU</dt><dd>0.0% at rest (timers &amp; frame pacer fully hibernated)</dd></div>
         <div class="drow"><dt>Compositor</dt><dd>DirectComposition DXGI SwapChain + paired Win11 rounded frosted-blur backdrop</dd></div>
@@ -706,10 +710,10 @@ kbd{display:inline-flex;align-items:center;justify-content:center;min-width:26px
         <div class="drow"><dt>Media &amp; audio</dt><dd>WinRT GSMTC, CoreAudio, burst-deduplicated 25% Snapchat Pop PCM chime</dd></div>
         <div class="drow"><dt>Network &amp; OS</dt><dd>Native Win32 <code>WinHTTP</code>, <code>WIC</code> PNG encoder, <code>GetLocalTime</code>, <code>serde_json</code></dd></div>
         <div class="drow"><dt>Lyrics</dt><dd>LRCLIB, live synced lines (Classic, Karaoke, Minimal, Stream)</dd></div>
-        <div class="drow"><dt>Release</dt><dd>v0.3.0, 20 November 2026 (93/93 automated tests passing)</dd></div>
+        <div class="drow"><dt>Release</dt><dd>v0.3.0, 20 November 2026 (132/132 automated + soak tests passing)</dd></div>
       </dl>
       <div class="quote-card">
-        <blockquote>“Migrated rendering to hardware Direct2D + DirectWrite (9.8× faster expanded frames, 57.9% smaller 1.66 MB binary), added physical screen-edge portal glow with 1.2s atmospheric dissipation, Framer-Motion springs, live frosted sliders, and 25% burst-deduplicated Snapchat chime. Verified 93/93 tests passing and 96.3/100 100-persona QA swarm score.”</blockquote>
+        <blockquote>“Migrated rendering to hardware Direct2D + DirectWrite (9.8× faster expanded frames, 55.9% smaller 1.74 MB binary), added physical screen-edge &amp; corner-origin portal glow with 1.2s atmospheric dissipation, Framer-Motion springs, live frosted sliders, and 43 audited reliability, security &amp; GPU recovery fixes. Verified 132/132 automated + soak tests passing.”</blockquote>
         <cite>CyNotch v0.3.0 release notes</cite>
       </div>
       <div class="terminal">
@@ -734,7 +738,7 @@ cargo build --release
     <div class="reveal">
       <p class="kicker"><span>07</span> Install</p>
       <h2 class="sec-h2" id="installTitle">Download, double-click, done.</h2>
-      <p class="sec-lede">Portable 1.66 MB .exe, or a 752 KB ZIP with the helper scripts. No wizard asking where you want to install yourself.</p>
+      <p class="sec-lede">Portable 1.74 MB .exe, or a 786 KB ZIP with the helper scripts. No wizard asking where you want to install yourself.</p>
       <ol class="steps">
         <li><span class="num">01</span><div><strong>Download</strong><p>Grab the portable <code>.exe</code>. The <code>.zip</code> is there if you want the launcher and autostart scripts.</p></div></li>
         <li><span class="num">02</span><div><strong>Run it</strong><p>Double-click. CyNotch parks at the top centre (or left/right edge). Autostart is opt-in, so it will not greet you at boot unless you ask.</p></div></li>
@@ -751,9 +755,9 @@ cargo build --release
     <div class="reveal">
       <div class="get">
         <div class="get-top"><span>Latest release</span><span class="get-ver">v0.3.0</span><span>20 Nov 2026</span></div>
-        <div class="get-size"><strong>1.66</strong><span>MB · portable · win64 x64</span></div>
+        <div class="get-size"><strong>1.74</strong><span>MB · portable · win64 x64</span></div>
         <a class="btn btn-primary btn-lg btn-block" href="https://github.com/muhnbl/CyNotch/releases/download/v0.3.0/CyNotch-v0.3.0-portable.exe">Download portable.exe <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><path d="M12 4v12m0 0 4-4m-4 4-4-4M5 20h14"/></svg></a>
-        <a class="btn btn-ghost btn-block" href="https://github.com/muhnbl/CyNotch/releases/download/v0.3.0/CyNotch-v0.3.0-portable-win64.zip">Get the win64 .zip · 752 KB</a>
+        <a class="btn btn-ghost btn-block" href="https://github.com/muhnbl/CyNotch/releases/download/v0.3.0/CyNotch-v0.3.0-portable-win64.zip">Get the win64 .zip · 786 KB</a>
         <div class="get-links">
           <a href="https://github.com/muhnbl/CyNotch/releases" target="_blank" rel="noopener">All releases ↗</a>
           <a href="https://github.com/muhnbl/CyNotch/releases/tag/v0.3.0" target="_blank" rel="noopener">Release notes ↗</a>
@@ -761,9 +765,9 @@ cargo build --release
         </div>
         <div class="hash">
           <div class="hash-head"><span>SHA-256 · portable.exe</span><button class="copy-btn" type="button" data-copy="exeHash">Copy</button></div>
-          <code id="exeHash">3d97eaa6ca44beb2b5725138e2e1c8e09040002700664fe44e36a4df86a57d98</code>
+          <code id="exeHash">525c6e68841f2ded2d814141c49fdcdc10299ce1eebc78e8a2131ffb4276023c</code>
         </div>
-        <p class="get-note">Open-source portable build (unsigned .exe). Verify the SHA-256 above before running; if Windows SmartScreen prompts on first launch, click <strong>More info → Run anyway</strong> or build from source. ZIP digest: e6a8ad5ea0f836f9b459747dd1ff39d7c412032a360d1ddc7db6d25c01a3c604</p>
+        <p class="get-note">Open-source portable build (unsigned .exe). Verify the SHA-256 above before running; if Windows SmartScreen prompts on first launch, click <strong>More info → Run anyway</strong> or build from source. ZIP digest: 2c6a26660f6dd9a7bb2b4b28e88a6337f8ed3c6b3249aab309d339e730c8cded</p>
       </div>
     </div>
   </div>
