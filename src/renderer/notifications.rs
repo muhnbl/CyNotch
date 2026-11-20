@@ -1,4 +1,6 @@
 use super::*;
+use crate::painter_d2d::{PainterD2D, Color, tok, rgba, fade, lerp_color};
+use crate::font_d2d::Weight;
 
 impl Renderer {
     pub(super) fn notification_accent_and_icon(
@@ -41,7 +43,7 @@ impl Renderer {
         }
     }
 
-    pub(super) fn draw_notification_banner(p: &mut Painter, state: &AppState, w: f32, h: f32) {
+    pub(super) fn draw_notification_banner(p: &mut PainterD2D, state: &AppState, w: f32, h: f32) {
         let Some(ref notif) = state.notification else {
             return;
         };
@@ -290,12 +292,15 @@ impl Renderer {
             );
         }
 
-        if notif.kind == NotificationKind::SystemToast {
-            p.hit(0.0, 0.0, w, h, Action::ActivateNotification);
-        }
+        let body_action = match notif.kind {
+            NotificationKind::SystemToast => Action::ActivateNotification,
+            NotificationKind::Capture if notif.is_success => Action::OpenCaptureFolder,
+            _ => Action::DismissNotification,
+        };
+        p.hit(0.0, 0.0, w, h, body_action);
     }
 
-    pub(super) fn draw_expanded_toast_overlay(p: &mut Painter, state: &AppState, w: f32) {
+    pub(super) fn draw_expanded_toast_overlay(p: &mut PainterD2D, state: &AppState, w: f32) {
         let Some(ref notif) = state.notification else {
             return;
         };
@@ -412,9 +417,12 @@ impl Renderer {
             );
         }
 
-        if notif.kind == NotificationKind::SystemToast {
-            p.hit(bx, by, bw, bh, Action::ActivateNotification);
-        }
+        let body_action = match notif.kind {
+            NotificationKind::SystemToast => Action::ActivateNotification,
+            NotificationKind::Capture if notif.is_success => Action::OpenCaptureFolder,
+            _ => Action::DismissNotification,
+        };
+        p.hit(bx, by, bw, bh, body_action);
     }
 
     pub(super) fn format_relative_age(elapsed_secs: u64) -> String {
@@ -428,7 +436,7 @@ impl Renderer {
     }
 
     pub(super) fn draw_notif_history_view(
-        p: &mut Painter,
+        p: &mut PainterD2D,
         state: &AppState,
         w: f32,
         h: f32,

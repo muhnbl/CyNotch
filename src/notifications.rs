@@ -27,8 +27,9 @@ use windows::Win32::UI::Shell::{
     AO_NONE, ApplicationActivationManager, IApplicationActivationManager, ShellExecuteW,
 };
 use windows::Win32::UI::WindowsAndMessaging::{
-    EnumWindows, GetWindowTextW, GetWindowThreadProcessId, IsIconic, IsWindowVisible, SW_RESTORE,
-    SW_SHOWNORMAL, SetForegroundWindow, ShowWindow,
+    EnumWindows, GetWindowTextW, GetWindowThreadProcessId, IsIconic, IsWindowVisible,
+    SPI_GETCLIENTAREAANIMATION, SW_RESTORE, SW_SHOWNORMAL, SYSTEM_PARAMETERS_INFO_UPDATE_FLAGS,
+    SetForegroundWindow, ShowWindow, SystemParametersInfoW,
 };
 use windows::core::{HSTRING, PCWSTR, PWSTR};
 
@@ -55,6 +56,101 @@ fn backup_file_path() -> PathBuf {
     base.join("CyNotch").join("notif_banner_backup.json")
 }
 
+#[derive(Serialize, Deserialize, Default, Debug, PartialEq, Eq)]
+struct SoundMuteBackup {
+    prev_allow_sound: Option<u32>,
+}
+
+fn sound_mute_backup_path() -> PathBuf {
+    let base = std::env::var("LOCALAPPDATA")
+        .map(PathBuf::from)
+        .unwrap_or_else(|_| PathBuf::from("."));
+    base.join("CyNotch").join("notif_sound_backup.json")
+}
+
+const ALLOW_NOTIF_SOUND_VAL: PCWSTR =
+    windows::core::w!("NOC_GLOBAL_SETTING_ALLOW_NOTIFICATION_SOUND");
+
+/// Mutes or restores native Windows toast notification sounds so CyNotch's selected chime
+/// plays exclusively without double-beeping while CyNotch notifications are enabled.
+/// Persists the user's original registry value to `%LOCALAPPDATA%\CyNotch\notif_sound_backup.json`
+/// atomically, and cleanly restores it when CyNotch notifications are turned off or on app shutdown.
+pub fn sync_windows_notification_sound_mute(mute: bool) -> bool {
+    let backup_path = sound_mute_backup_path();
+    if mute {
+        unsafe {
+            let mut root = HKEY::default();
+            if RegOpenKeyExW(
+                HKEY_CURRENT_USER,
+                NOTIF_SETTINGS_SUBKEY,
+                0,
+                KEY_READ | KEY_WRITE,
+                &mut root,
+            ) != ERROR_SUCCESS
+            {
+                return false;
+            }
+            if !backup_path.exists() {
+                let prev = query_reg_dword(root, ALLOW_NOTIF_SOUND_VAL);
+                let backup = SoundMuteBackup {
+                    prev_allow_sound: prev,
+                };
+                if let Some(parent) = backup_path.parent() {
+                    let _ = std::fs::create_dir_all(parent);
+                }
+                if let Ok(json) = serde_json::to_string_pretty(&backup) {
+                    let tmp_path = backup_path.with_extension("json.tmp");
+                    if std::fs::write(&tmp_path, json).is_ok() {
+                        let _ = std::fs::rename(&tmp_path, &backup_path);
+                    }
+                }
+            }
+            let ok = set_reg_dword(root, ALLOW_NOTIF_SOUND_VAL, 0);
+            let _ = RegCloseKey(root);
+            ok
+        }
+    } else {
+        let backup_opt = std::fs::read_to_string(&backup_path)
+            .ok()
+            .and_then(|s| serde_json::from_str::<SoundMuteBackup>(&s).ok());
+        let Some(backup) = backup_opt else {
+            return false;
+        };
+        unsafe {
+            let mut root = HKEY::default();
+            if RegOpenKeyExW(
+                HKEY_CURRENT_USER,
+                NOTIF_SETTINGS_SUBKEY,
+                0,
+                KEY_READ | KEY_WRITE,
+                &mut root,
+            ) == ERROR_SUCCESS
+            {
+                match backup.prev_allow_sound {
+                    Some(prev) => {
+                        let _ = set_reg_dword(root, ALLOW_NOTIF_SOUND_VAL, prev);
+                    }
+                    None => {
+                        let _ = RegDeleteValueW(root, ALLOW_NOTIF_SOUND_VAL);
+                    }
+                }
+                let _ = RegCloseKey(root);
+            }
+        }
+        let _ = std::fs::remove_file(&backup_path);
+        true
+    }
+}
+
+/// Recovers user's original Windows notification sound setting on startup if a prior run
+/// was abnormally terminated while muted.
+pub fn recover_windows_sound_mute_on_startup(should_be_muted: bool) {
+    let backup_path = sound_mute_backup_path();
+    if !should_be_muted && backup_path.exists() {
+        let _ = sync_windows_notification_sound_mute(false);
+    }
+}
+
 /// Reads Windows Settings -> Personalization -> Colors -> Transparency effects.
 pub fn is_windows_transparency_enabled() -> bool {
     unsafe {
@@ -72,6 +168,26 @@ pub fn is_windows_transparency_enabled() -> bool {
         let val = query_reg_dword(hkey, windows::core::w!("EnableTransparency"));
         let _ = RegCloseKey(hkey);
         val.map(|v| v != 0).unwrap_or(false)
+    }
+}
+
+/// Reads Windows Settings -> Accessibility -> Visual effects -> Animation effects
+/// (`SPI_GETCLIENTAREAANIMATION`). When disabled in Windows, CyNotch disables all
+/// spring/choreographed motion and snaps transitions cleanly.
+pub fn is_windows_animations_enabled() -> bool {
+    unsafe {
+        let mut enabled: i32 = 1;
+        let ok = SystemParametersInfoW(
+            SPI_GETCLIENTAREAANIMATION,
+            0,
+            Some(&mut enabled as *mut i32 as *mut std::ffi::c_void),
+            SYSTEM_PARAMETERS_INFO_UPDATE_FLAGS(0),
+        );
+        if ok.is_ok() {
+            enabled != 0
+        } else {
+            true
+        }
     }
 }
 
@@ -114,11 +230,34 @@ pub fn open_windows_personalize_colors() {
     }
 }
 
-/// Strips control characters and normalizes whitespace for single-line capsule display.
+/// Invisible Unicode formatting / bidi / zero-width code points that render as
+/// dotted-box sigla (`[FSI]`, `[PDI]`, `[LRI]`, `[RLI]`, `[LRM]`, `[RLM]`, `[ZWSP]`, `[BOM]`)
+/// in `Segoe UI Variable Text` / DirectWrite when injected by apps like Discord, WhatsApp, or browsers.
+#[inline]
+pub fn is_invisible_format_char(ch: char) -> bool {
+    matches!(
+        ch,
+        '\u{00AD}' // Soft Hyphen (SHY)
+        | '\u{034F}' // Combining Grapheme Joiner (CGJ)
+        | '\u{061C}' // Arabic Letter Mark (ALM)
+        | '\u{180E}' // Mongolian Vowel Separator
+        | '\u{200B}'..='\u{200F}' // ZWSP, ZWNJ, ZWJ, LRM, RLM (note: ZWJ inside emoji sequences is rarely needed in single-glyph Segoe UI, but wait — keep ZWJ \u{200D} for multi-person/gender emoji ligatures!)
+        | '\u{2028}'..='\u{202E}' // Line/Paragraph Separator, LRE, RLE, PDF, LRO, RLO
+        | '\u{2060}'..='\u{206F}' // Word Joiner, Invisible operators, LRI (\u{2066}), RLI (\u{2067}), FSI (\u{2068}), PDI (\u{2069}), deprecated format chars
+        | '\u{FEFF}' // Zero Width No-Break Space / BOM
+        | '\u{FFF9}'..='\u{FFFB}' // Interlinear annotation anchors
+    ) && ch != '\u{200D}' // Preserve Zero-Width Joiner (U+200D) so compound emoji (e.g. 👨‍👩‍👧, 🏳️‍🌈) stay joined
+}
+
+/// Strips control characters, invisible Unicode bidi/formatting markers (`FSI`/`PDI`/`LRM`/etc.),
+/// and normalizes whitespace for single-line capsule display.
 pub fn sanitize_notification_text(raw: &str) -> String {
     let mut out = String::with_capacity(raw.len());
     let mut prev_space = true;
     for ch in raw.chars() {
+        if is_invisible_format_char(ch) {
+            continue;
+        }
         if ch.is_control() || ch.is_whitespace() {
             if !prev_space {
                 out.push(' ');

@@ -2,7 +2,7 @@ use super::*;
 use std::fmt::Write as _;
 
 impl Renderer {
-    pub(super) fn draw_home_view(p: &mut Painter, state: &AppState, w: f32, card_y: f32) {
+    pub(super) fn draw_home_view(p: &mut PainterD2D, state: &AppState, w: f32, card_y: f32) {
         let smooth = state.micro_interactions;
         let margin_x = 20.0;
         let card_h = 154.0;
@@ -19,6 +19,21 @@ impl Renderer {
             16.0,
             Some((40.0, 32.0, 72.0, tok::cyno_violet())),
         );
+
+        if !state.show_mascot {
+            let emb_cx = margin_x + 30.0;
+            let emb_cy = card_y + 31.0;
+            p.circle(emb_cx, emb_cy, 15.5, rgba(24, 22, 42, 225));
+            p.circle_stroke(emb_cx, emb_cy, 15.5, 1.0, rgba(192, 132, 252, 95));
+            icons::draw(
+                p,
+                Icon::Zap,
+                emb_cx - 7.5,
+                emb_cy - 7.5,
+                15.0,
+                tok::cyno_mist(),
+            );
+        }
 
         p.text(
             "General Cyno",
@@ -156,6 +171,61 @@ impl Renderer {
             tok::text1(),
         );
 
+        // Compact LIVE pill + subtle activity bars on right side of Network card
+        let pill_w = 50.0;
+        let pill_h = 18.0;
+        let pill_x = right_x + right_w - pill_w - 14.0;
+        let pill_y = card_y + 11.5;
+        p.rrect(pill_x, pill_y, pill_w, pill_h, 9.0, rgba(125, 211, 252, 22));
+        p.rrect_bevel_stroke(
+            pill_x,
+            pill_y,
+            pill_w,
+            pill_h,
+            9.0,
+            0.8,
+            rgba(125, 211, 252, 72),
+            rgba(125, 211, 252, 22),
+        );
+        let pulse = if state.are_animations_active() {
+            0.65 + 0.35 * (state.anim_time * 3.0).sin().abs()
+        } else {
+            1.0
+        };
+        p.circle(
+            pill_x + 10.5,
+            pill_y + pill_h * 0.5,
+            2.6,
+            fade(tok::cyan_hi(), pulse),
+        );
+        p.text(
+            "LIVE",
+            pill_x + 18.0,
+            pill_y + 12.2,
+            8.2,
+            Weight::Bold,
+            tok::cyan_hi(),
+        );
+
+        let bar_base_x = right_x + right_w - 58.0;
+        let bar_bot_y = card_y + 54.0;
+        let activity = ((state.telemetry.net_down_kbps + state.telemetry.net_up_kbps) / 2000.0)
+            .clamp(0.18, 1.0);
+        for i in 0..6 {
+            let phase = (i as f32) * 0.85 + if state.are_animations_active() { state.anim_time * 2.4 } else { 0.4 };
+            let wave = 0.35 + 0.65 * (0.5 + 0.5 * phase.sin());
+            let bh = (4.0 + 13.0 * activity * wave).clamp(3.5, 17.0);
+            let bx = bar_base_x + (i as f32) * 7.5;
+            p.rrect(
+                bx,
+                bar_bot_y - bh,
+                4.0,
+                bh,
+                2.0,
+                fade(tok::cyan_hi(), 0.30 + 0.50 * wave),
+            );
+        }
+
         let mut net_txt = StackStr::<64>::new();
         let _ = write!(
             net_txt,
@@ -163,7 +233,7 @@ impl Renderer {
             format_speed_long(state.telemetry.net_down_kbps),
             format_speed_long(state.telemetry.net_up_kbps)
         );
-        let net_ell = p.ellipsize_cow(&net_txt, 10.8, Weight::Semibold, right_w - 32.0);
+        let net_ell = p.ellipsize_cow(&net_txt, 10.8, Weight::Semibold, right_w - 86.0);
         p.text(
             &net_ell,
             right_x + 16.0,
@@ -325,7 +395,7 @@ impl Renderer {
     // ─────────────────────────────────────────────────────────────────────────────
     // 1. MUSIC PLAYER (Aligned 154x154 Art + Real Multi-Line Lyrics View)
     // ─────────────────────────────────────────────────────────────────────────────
-    pub(super) fn draw_music_view(p: &mut Painter, state: &AppState, w: f32, card_y: f32) {
+    pub(super) fn draw_music_view(p: &mut PainterD2D, state: &AppState, w: f32, card_y: f32) {
         let card_x = 20.0;
         let card_size = 154.0;
 
@@ -425,25 +495,37 @@ impl Renderer {
                 0.0
             };
             let mini_w = inner_w - 138.0;
+            let mini_y = card_y + 123.0;
             p.glowing_striped_bar(
                 pad_x,
-                card_y + 123.0,
+                mini_y,
                 mini_w,
                 6.0,
                 played_pct,
                 tok::cyno_deep(),
                 tok::cyno_violet(),
             );
-            for s in 0..8 {
-                let sw = mini_w / 8.0;
-                p.hit(
-                    pad_x + s as f32 * sw,
-                    card_y + 115.0,
-                    sw,
-                    22.0,
-                    Action::SeekMusic((s as f32 + 0.5) / 8.0),
-                );
-            }
+            let mini_hot = p.hot(pad_x - 4.0, card_y + 115.0, mini_w + 8.0, 22.0);
+            let thumb_x = (pad_x + mini_w * played_pct).clamp(pad_x + 4.0, pad_x + mini_w - 3.0);
+            let thumb_y = mini_y + 3.0;
+            let thumb_r = if mini_hot { 5.8 } else { 4.6 };
+            p.radial_glow(
+                thumb_x,
+                thumb_y,
+                if mini_hot { 11.0 } else { 8.5 },
+                rgba(233, 213, 255, if mini_hot { 130 } else { 85 }),
+                BlendMode::Plus,
+                false,
+            );
+            p.circle(thumb_x, thumb_y, thumb_r, rgba(255, 255, 255, 250));
+            p.circle(thumb_x, thumb_y, thumb_r * 0.44, tok::cyno_deep());
+            p.hit(
+                pad_x,
+                card_y + 115.0,
+                mini_w,
+                22.0,
+                Action::SeekMusic(played_pct),
+            );
             Self::draw_transport_buttons(
                 p,
                 state.media.is_playing,
@@ -496,19 +578,27 @@ impl Renderer {
             tok::cyno_deep(),
             tok::cyno_violet(),
         );
-
-        let seg_count = 10;
-        let seg_w = inner_w / seg_count as f32;
-        for s in 0..seg_count {
-            let frac = (s as f32 + 0.5) / seg_count as f32;
-            p.hit(
-                pad_x + (s as f32 * seg_w),
-                prog_y - 6.0,
-                seg_w,
-                19.0,
-                Action::SeekMusic(frac),
-            );
-        }
+        let scrub_hot = p.hot(pad_x - 4.0, prog_y - 6.0, inner_w + 8.0, 19.0);
+        let thumb_x = (pad_x + inner_w * played_pct).clamp(pad_x + 5.0, pad_x + inner_w - 3.0);
+        let thumb_y = prog_y + 3.25;
+        let thumb_r = if scrub_hot { 6.2 } else { 5.0 };
+        p.radial_glow(
+            thumb_x,
+            thumb_y,
+            if scrub_hot { 12.0 } else { 9.0 },
+            rgba(233, 213, 255, if scrub_hot { 135 } else { 90 }),
+            BlendMode::Plus,
+            false,
+        );
+        p.circle(thumb_x, thumb_y, thumb_r, rgba(255, 255, 255, 252));
+        p.circle(thumb_x, thumb_y, thumb_r * 0.44, tok::cyno_deep());
+        p.hit(
+            pad_x,
+            prog_y - 6.0,
+            inner_w,
+            19.0,
+            Action::SeekMusic(played_pct),
+        );
 
         let time_y = prog_y + 17.0;
         let pos_sec = state.media.position_ms / 1000;
@@ -563,7 +653,7 @@ impl Renderer {
     }
 
     pub(super) fn draw_lyrics_panel(
-        p: &mut Painter,
+        p: &mut PainterD2D,
         state: &AppState,
         pad_x: f32,
         top_y: f32,
@@ -1002,7 +1092,7 @@ impl Renderer {
     }
 
     pub(super) fn draw_transport_buttons(
-        p: &mut Painter,
+        p: &mut PainterD2D,
         is_playing: bool,
         ctrl_cx: f32,
         ctrl_y: f32,
@@ -1071,7 +1161,7 @@ impl Renderer {
     // ─────────────────────────────────────────────────────────────────────────────
     // 2. VOLUME MASTER VIEW
     // ─────────────────────────────────────────────────────────────────────────────
-    pub(super) fn draw_volume_view(p: &mut Painter, state: &AppState, w: f32, card_y: f32) {
+    pub(super) fn draw_volume_view(p: &mut PainterD2D, state: &AppState, w: f32, card_y: f32) {
         let smooth = state.micro_interactions;
         let margin_x = 20.0;
         let card_h = 154.0;
@@ -1232,34 +1322,40 @@ impl Renderer {
             tok::cyno_violet(),
         );
 
-        if pct_clamped > 0.01 {
-            let thumb_x = (slider_x + slider_w * pct_clamped)
-                .clamp(slider_x + 8.0, slider_x + slider_w - 4.0);
-            let thumb_y = slider_y + slider_h / 2.0;
-            p.radial_glow(
-                thumb_x,
-                thumb_y,
-                14.0,
-                rgba(255, 255, 255, 110),
-                BlendMode::Plus,
-                false,
-            );
-            p.circle(thumb_x, thumb_y, 8.5, rgba(255, 255, 255, 255));
-            p.circle(thumb_x, thumb_y, 4.0, tok::cyno_deep());
-        }
+        let thumb_x = (slider_x + slider_w * pct_clamped)
+            .clamp(slider_x + 7.0, slider_x + slider_w - 4.0);
+        let thumb_y = slider_y + slider_h / 2.0;
+        p.radial_glow(
+            thumb_x,
+            thumb_y,
+            14.0,
+            if is_muted {
+                rgba(239, 68, 68, 80)
+            } else {
+                rgba(255, 255, 255, 110)
+            },
+            BlendMode::Plus,
+            false,
+        );
+        p.circle(
+            thumb_x,
+            thumb_y,
+            8.5,
+            if is_muted {
+                rgba(226, 232, 240, 235)
+            } else {
+                rgba(255, 255, 255, 255)
+            },
+        );
+        p.circle(thumb_x, thumb_y, 4.0, tok::cyno_deep());
 
-        let seg_count = 10;
-        let seg_w = slider_w / seg_count as f32;
-        for s in 0..seg_count {
-            let frac = (s as f32 + 0.5) / seg_count as f32;
-            p.hit(
-                slider_x + (s as f32 * seg_w),
-                slider_y - 6.0,
-                seg_w,
-                26.0,
-                Action::SetVolume(frac),
-            );
-        }
+        p.hit(
+            slider_x,
+            slider_y - 6.0,
+            slider_w,
+            26.0,
+            Action::SetVolume(pct_clamped),
+        );
 
         let presets: [(f32, &str); 5] = [
             (0.0, "0%"),
@@ -1275,7 +1371,7 @@ impl Renderer {
 
         for (i, &(target_pct, label)) in presets.iter().enumerate() {
             let px = slider_x + (i as f32 * (pb_w + pb_gap));
-            let is_cur = (state.volume_pct - target_pct).abs() < 0.12;
+            let is_cur = (state.volume_pct - target_pct).abs() <= 0.015;
             let ht = p.hot_t(px, pb_y, pb_w, pb_h);
 
             if is_cur {
@@ -1317,7 +1413,7 @@ impl Renderer {
     // ─────────────────────────────────────────────────────────────────────────────
     // 3. MEMORY REDUCT VIEW (Full 8-Area Parity + Pool Metrics + Disable Triggers)
     // ─────────────────────────────────────────────────────────────────────────────
-    pub(super) fn draw_memreduct_view(p: &mut Painter, state: &AppState, w: f32, card_y: f32) {
+    pub(super) fn draw_memreduct_view(p: &mut PainterD2D, state: &AppState, w: f32, card_y: f32) {
         let smooth = state.micro_interactions;
         let margin_x = 20.0;
         let grid_w = w - (margin_x * 2.0);
@@ -1412,19 +1508,46 @@ impl Renderer {
 
         // Card 2: All 8 Mem Reduct Clean Areas + Auto Clean Toggle
         p.elevated_card(col2_x, row1_y, col_w, card_h, 15.0, None);
-        p.text(
-            "Clean Areas",
-            col2_x + 14.0,
-            row1_y + 16.0,
-            10.0,
-            Weight::Semibold,
-            tok::text2(),
-        );
 
         let auto_w = 68.0;
         let auto_x = col2_x + col_w - auto_w - 12.0;
         let auto_y = row1_y + 6.0;
         let auto_h = 16.0;
+
+        let a_gap_x = 4.5;
+        let a_gap_y = 3.5;
+        let pill_w = (col_w - 28.0 - a_gap_x * 3.0) / 4.0;
+        let pill_h = 16.0;
+
+        let hovered_area = (0..8).find(|&idx| {
+            let col_i = idx % 4;
+            let row_i = idx / 4;
+            let px = col2_x + 14.0 + (col_i as f32 * (pill_w + a_gap_x));
+            let py = row1_y + 29.0 + (row_i as f32 * (pill_h + a_gap_y));
+            p.hot(px, py, pill_w, pill_h)
+        });
+        let header_max_w = (auto_x - (col2_x + 14.0) - 8.0).max(60.0);
+        if let Some(desc) = hovered_area.and_then(crate::memreduct::clean_area_description) {
+            let ell = p.ellipsize_cow(desc, 9.2, Weight::Semibold, header_max_w);
+            p.text(
+                &ell,
+                col2_x + 14.0,
+                row1_y + 16.0,
+                9.2,
+                Weight::Semibold,
+                tok::cyno_violet_hi(),
+            );
+        } else {
+            p.text(
+                "Clean Areas",
+                col2_x + 14.0,
+                row1_y + 16.0,
+                10.0,
+                Weight::Semibold,
+                tok::text2(),
+            );
+        }
+
         let auto_ht = p.hot_t(auto_x, auto_y, auto_w, auto_h);
         p.tactile_surface_pill_t(
             auto_x,
@@ -1458,10 +1581,6 @@ impl Renderer {
         );
         p.hit(auto_x, auto_y, auto_w, auto_h, Action::ToggleAutoClean);
 
-        let a_gap_x = 4.5;
-        let a_gap_y = 3.5;
-        let pill_w = (col_w - 28.0 - a_gap_x * 3.0) / 4.0;
-        let pill_h = 16.0;
         let areas = [
             (
                 "WS",
@@ -1697,7 +1816,7 @@ impl Renderer {
     // ─────────────────────────────────────────────────────────────────────────────
     // 4. SCREEN TIME TELEMETRY VIEW (Real Hourly Sparkline + Multi-day Average)
     // ─────────────────────────────────────────────────────────────────────────────
-    pub(super) fn draw_screentime_view(p: &mut Painter, state: &AppState, w: f32, card_y: f32) {
+    pub(super) fn draw_screentime_view(p: &mut PainterD2D, state: &AppState, w: f32, card_y: f32) {
         let margin_x = 20.0;
         let grid_w = w - (margin_x * 2.0);
         let col_gap = 14.0;
@@ -1907,7 +2026,7 @@ impl Renderer {
     // ─────────────────────────────────────────────────────────────────────────────
     // 5. TASKS CHECKLIST VIEW (Scrollable + Individual Delete × + From Clip)
     // ─────────────────────────────────────────────────────────────────────────────
-    pub(super) fn draw_tasks_view(p: &mut Painter, state: &AppState, w: f32, card_y: f32) {
+    pub(super) fn draw_tasks_view(p: &mut PainterD2D, state: &AppState, w: f32, card_y: f32) {
         let margin_x = 20.0;
         let card_w = w - (margin_x * 2.0);
         let card_h = 154.0;
@@ -2103,7 +2222,7 @@ impl Renderer {
     // ─────────────────────────────────────────────────────────────────────────────
     // 7. SHELF (Persistent Clipboard History + Drag-and-Drop File Shelf)
     // ─────────────────────────────────────────────────────────────────────────────
-    pub(super) fn draw_shelf_view(p: &mut Painter, state: &AppState, w: f32, card_y: f32) {
+    pub(super) fn draw_shelf_view(p: &mut PainterD2D, state: &AppState, w: f32, card_y: f32) {
         let margin_x = 20.0;
         let card_w = w - (margin_x * 2.0);
         let card_h = 154.0;
@@ -2270,7 +2389,7 @@ impl Renderer {
     // ─────────────────────────────────────────────────────────────────────────────
     // 8. QUICK CAPTURE VIEW (Lazyshot-style Instant Desktop/Window PNG + Clipboard)
     // ─────────────────────────────────────────────────────────────────────────────
-    pub(super) fn draw_capture_view(p: &mut Painter, state: &AppState, w: f32, card_y: f32) {
+    pub(super) fn draw_capture_view(p: &mut PainterD2D, state: &AppState, w: f32, card_y: f32) {
         let margin_x = 20.0;
         let card_h = 154.0;
         let gap = 14.0;
@@ -2471,7 +2590,7 @@ impl Renderer {
     // ─────────────────────────────────────────────────────────────────────────────
     // 9. INLINE SETTINGS VIEW (Quick Controls + Launcher to Advanced Window)
     // ─────────────────────────────────────────────────────────────────────────────
-    pub(super) fn draw_settings_view(p: &mut Painter, state: &AppState, w: f32, card_y: f32) {
+    pub(super) fn draw_settings_view(p: &mut PainterD2D, state: &AppState, w: f32, card_y: f32) {
         let smooth = state.micro_interactions;
         let margin_x = 20.0;
         let card_h = 154.0;
@@ -2516,6 +2635,7 @@ impl Renderer {
         );
 
         let r1_y = card_y + 58.0;
+        let row_hit_w = card_w - 36.0;
         p.text(
             "Launch on Startup",
             left_x + 18.0,
@@ -2527,7 +2647,7 @@ impl Renderer {
         let sw_w = 46.0;
         let sw_h = 22.0;
         let sw1_x = left_x + card_w - sw_w - 18.0;
-        let sw1_ht = p.hot_t(sw1_x, r1_y, sw_w, sw_h);
+        let sw1_ht = p.hot_t(left_x + 18.0, r1_y, row_hit_w, sw_h);
         let st1 = if smooth {
             state.switch_t[ToggleId::Autostart as usize]
         } else if state.autostart {
@@ -2536,11 +2656,11 @@ impl Renderer {
             0.0
         };
         p.draw_toggle_switch(sw1_x, r1_y, sw_w, sw_h, st1, sw1_ht);
-        p.hit(sw1_x, r1_y, sw_w, sw_h, Action::ToggleAutostart);
+        p.hit(left_x + 18.0, r1_y, row_hit_w, sw_h, Action::ToggleAutostart);
 
         let r2_y = card_y + 88.0;
         p.text(
-            "Chime Audio",
+            "Action Audio",
             left_x + 18.0,
             r2_y + 15.0,
             11.5,
@@ -2548,7 +2668,7 @@ impl Renderer {
             tok::text1(),
         );
         let sw2_x = left_x + card_w - sw_w - 18.0;
-        let sw2_ht = p.hot_t(sw2_x, r2_y, sw_w, sw_h);
+        let sw2_ht = p.hot_t(left_x + 18.0, r2_y, row_hit_w, sw_h);
         let st2 = if smooth {
             state.switch_t[ToggleId::Chime as usize]
         } else if state.chime_enabled {
@@ -2557,7 +2677,7 @@ impl Renderer {
             0.0
         };
         p.draw_toggle_switch(sw2_x, r2_y, sw_w, sw_h, st2, sw2_ht);
-        p.hit(sw2_x, r2_y, sw_w, sw_h, Action::ToggleChime);
+        p.hit(left_x + 18.0, r2_y, row_hit_w, sw_h, Action::ToggleChime);
 
         let r3_y = card_y + 118.0;
         p.text(
@@ -2626,7 +2746,52 @@ impl Renderer {
             tok::text2(),
         );
 
-        let bot_y = card_y + 112.0;
+        let sw_right_x = right_x + card_w - sw_w - 18.0;
+        p.text(
+            "Frosted Glass",
+            right_x + 18.0,
+            r1_y + 15.0,
+            11.5,
+            Weight::Regular,
+            tok::text1(),
+        );
+        let sw3_ht = p.hot_t(right_x + 18.0, r1_y, row_hit_w, sw_h);
+        let st3 = if smooth {
+            state.switch_t[ToggleId::FrostedGlass as usize]
+        } else if state.frosted_glass_enabled {
+            1.0
+        } else {
+            0.0
+        };
+        p.draw_toggle_switch(sw_right_x, r1_y, sw_w, sw_h, st3, sw3_ht);
+        p.hit(right_x + 18.0, r1_y, row_hit_w, sw_h, Action::ToggleFrostedGlass);
+
+        p.text(
+            "Minimize Island",
+            right_x + 18.0,
+            r2_y + 15.0,
+            11.5,
+            Weight::Regular,
+            tok::text1(),
+        );
+        let sw4_ht = p.hot_t(right_x + 18.0, r2_y, row_hit_w, sw_h);
+        let st4 = if smooth {
+            state.switch_t[ToggleId::MinimizedIsland as usize]
+        } else if state.minimized_island {
+            1.0
+        } else {
+            0.0
+        };
+        p.draw_toggle_switch(sw_right_x, r2_y, sw_w, sw_h, st4, sw4_ht);
+        p.hit(
+            right_x + 18.0,
+            r2_y,
+            row_hit_w,
+            sw_h,
+            Action::ToggleMinimizedIsland,
+        );
+
+        let bot_y = card_y + 114.0;
         let bot_h = 28.0;
         let quit_w = 84.0;
         let spec_w = card_w - 36.0 - quit_w - 8.0;

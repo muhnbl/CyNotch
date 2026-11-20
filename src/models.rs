@@ -159,6 +159,40 @@ pub enum TypeScale {
     ExtraLarge,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+pub enum HoverDwellSpeed {
+    Quick,  // 120ms
+    #[default]
+    Normal, // 240ms
+    Slow,   // 450ms
+}
+
+impl HoverDwellSpeed {
+    pub fn ms(self) -> u64 {
+        match self {
+            Self::Quick => 120,
+            Self::Normal => 240,
+            Self::Slow => 450,
+        }
+    }
+
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Quick => "Quick (120ms)",
+            Self::Normal => "Normal (240ms)",
+            Self::Slow => "Slow (450ms)",
+        }
+    }
+
+    pub fn short_label(self) -> &'static str {
+        match self {
+            Self::Quick => "Q",
+            Self::Normal => "N",
+            Self::Slow => "S",
+        }
+    }
+}
+
 impl TypeScale {
     pub fn label(self) -> &'static str {
         match self {
@@ -446,6 +480,8 @@ pub struct SettingEffects {
     pub sync_windows_borders: Option<bool>,
     pub sync_exclusive_banners: Option<bool>,
     pub request_notif_access: bool,
+    pub play_sound: Option<crate::sound::NotificationSound>,
+    pub sync_win_notif_sound_mute: Option<bool>,
 }
 
 /// Pure exponential decay toward `target` with zero overshoot or bounce.
@@ -461,6 +497,47 @@ pub fn ease_exp(cur: f32, target: f32, speed: f32, dt: f32, eps: f32) -> (f32, b
     } else {
         (next, true)
     }
+}
+
+/// Framer-Motion-style damped spring integrator (semi-implicit Euler with substeps
+/// for stability across 60Hz-240Hz refresh rates).
+pub fn spring_step(
+    cur: f32,
+    vel: f32,
+    target: f32,
+    stiffness: f32,
+    damping: f32,
+    dt: f32,
+    pos_eps: f32,
+    vel_eps: f32,
+) -> (f32, f32, bool) {
+    if (target - cur).abs() <= pos_eps && vel.abs() <= vel_eps {
+        return (target, 0.0, (target - cur).abs() > 1e-5 || vel.abs() > 1e-5);
+    }
+    let total_dt = dt.clamp(0.0, 0.05);
+    if total_dt <= 1e-6 {
+        return (cur, vel, false);
+    }
+    let steps = if total_dt > 0.014 { 3 } else if total_dt > 0.008 { 2 } else { 1 };
+    let h = total_dt / steps as f32;
+    let mut x = cur;
+    let mut v = vel;
+    for _ in 0..steps {
+        let force = (target - x) * stiffness - v * damping;
+        v += force * h;
+        x += v * h;
+    }
+    if (target - x).abs() <= pos_eps && v.abs() <= vel_eps {
+        (target, 0.0, true)
+    } else {
+        (x, v, true)
+    }
+}
+
+/// Smooth cubic ease-out curve for directional view/pane glides.
+pub fn ease_out_cubic(t: f32) -> f32 {
+    let c = t.clamp(0.0, 1.0);
+    1.0 - (1.0 - c).powi(3)
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -548,6 +625,9 @@ pub enum Action {
     ToggleEqualizer,
     ToggleNotifications,
     SetNotificationSecs(u32),
+    SetNotificationSound(crate::sound::NotificationSound),
+    SetHoverDwellSpeed(HoverDwellSpeed),
+    TestNotificationSound,
     ToggleFrostedGlass,
     ToggleRemoveWindowsBorders,
     SetFrostedOpacity(u32),
@@ -845,6 +925,10 @@ impl MemReductConfig {
 pub struct AppState {
     pub mode: NotchMode,
     pub is_hovered: bool,
+    pub is_hover_pending: bool,
+    pub hover_dwell_t: f32,
+    pub anim_edge_glow_t: f32,
+    pub hover_dwell_start: Option<std::time::Instant>,
     pub is_pinned: bool,
     pub x_offset: i32,
     pub y_offset: i32,
@@ -869,12 +953,18 @@ pub struct AppState {
     pub equalizer_enabled: bool,
     pub notifications_enabled: bool,
     pub notification_secs: u32,
+    pub notification_sound: crate::sound::NotificationSound,
+    pub notification_volume: u32,
+    pub hover_dwell_speed: HoverDwellSpeed,
+    pub seen_hotkey_hint: bool,
+    pub hotkey_hint_expand_count: u8,
     pub lyric_size: LyricSize,
     pub lyric_style: LyricStyle,
     pub frosted_glass_enabled: bool,
     pub frosted_opacity_pct: u32,
     pub frosted_blur_px: u32,
     pub windows_transparency_enabled: bool,
+    pub windows_animations_enabled: bool,
     pub remove_windows_borders: bool,
     pub notif_listener_enabled: bool,
     pub notif_exclusive_mode: bool,
@@ -892,21 +982,32 @@ pub struct AppState {
     pub settings_open: bool,
     pub settings_category: SettingsCategory,
     pub settings_scroll: [f32; SettingsCategory::COUNT],
+    pub settings_scroll_target: [f32; SettingsCategory::COUNT],
 
-    // Smooth Zero-Bounce Animation parameters
+    // Smooth Framer-Motion Spring & Choreography Animation parameters
     pub current_width: f32,
     pub current_height: f32,
     pub target_width: f32,
     pub target_height: f32,
+    pub anim_width_vel: f32,
+    pub anim_height_vel: f32,
     pub anim_expand_t: f32,
+    pub anim_expand_vel: f32,
     pub anim_notif_t: f32,
+    pub anim_mode_t: f32,
+    pub anim_mode_dir: f32,
     pub target_anchor_x: f32,
     pub target_anchor_y: f32,
     pub anim_anchor_x: f32,
     pub anim_anchor_y: f32,
     pub anim_dock_x: f32,
     pub anim_dock_w: f32,
+    pub anim_dock_x_vel: f32,
+    pub anim_dock_w_vel: f32,
     pub anim_settings_cat_y: f32,
+    pub anim_settings_cat_vel: f32,
+    pub anim_settings_pane_t: f32,
+    pub anim_settings_pane_dir: f32,
     pub anim_vol_pct: f32,
     pub anim_ram_pct: f32,
     pub hover_target_idx: Option<usize>,
@@ -984,66 +1085,74 @@ struct PersistedConfig {
     expanded_size: ExpandedSizePreset,
     #[serde(default = "default_type_scale")]
     type_scale: TypeScale,
-    #[serde(default = "default_idle_metric")]
-    idle_metric: IdleMetric,
-    #[serde(default)]
-    minimized_island: bool,
-    #[serde(default)]
-    click_to_open: bool,
-    #[serde(default = "default_true")]
-    hide_in_fullscreen: bool,
-    #[serde(default = "default_true")]
-    show_mascot: bool,
-    #[serde(default = "default_true", alias = "status_ring_enabled")]
-    progress_arc_enabled: bool,
-    #[serde(default)]
-    fps_cap: u32,
-    #[serde(default = "default_true")]
-    micro_interactions: bool,
-    #[serde(default = "default_true")]
-    equalizer_enabled: bool,
-    #[serde(default = "default_true")]
-    notifications_enabled: bool,
-    #[serde(default = "default_notif_secs")]
-    notification_secs: u32,
-    #[serde(default)]
-    modules: ModuleVisibility,
-    #[serde(default = "default_true")]
-    lyrics_enabled: bool,
-    #[serde(default = "default_true")]
-    clipboard_watch_enabled: bool,
-    #[serde(default = "default_true")]
-    capture_to_clipboard: bool,
-    #[serde(default = "default_true")]
-    screentime_enabled: bool,
-    #[serde(default = "default_lyric_size")]
-    lyric_size: LyricSize,
-    #[serde(default = "default_lyric_style")]
-    lyric_style: LyricStyle,
-    #[serde(default = "default_true")]
-    frosted_glass_enabled: bool,
-    #[serde(default = "default_frosted_opacity")]
-    frosted_opacity_pct: u32,
-    #[serde(default = "default_frosted_blur")]
-    frosted_blur_px: u32,
-    #[serde(default)]
-    remove_windows_borders: bool,
-    #[serde(default)]
-    anchor_x: Option<f32>,
-    #[serde(default)]
-    anchor_y: Option<f32>,
-    #[serde(default = "default_true")]
-    notif_listener_enabled: bool,
-    #[serde(default)]
-    notif_exclusive_mode: bool,
-    #[serde(default)]
-    notif_auto_clear_action_center: bool,
-    #[serde(default)]
-    notif_over_fullscreen: bool,
-    /// Config schema revision; < 2 means saved before the bridge became default-on.
-    #[serde(default)]
-    config_rev: u32,
-}
+        #[serde(default = "default_idle_metric")]
+        idle_metric: IdleMetric,
+        #[serde(default)]
+        minimized_island: bool,
+        #[serde(default)]
+        click_to_open: bool,
+        #[serde(default = "default_true")]
+        hide_in_fullscreen: bool,
+        #[serde(default = "default_true")]
+        show_mascot: bool,
+        #[serde(default = "default_true", alias = "status_ring_enabled")]
+        progress_arc_enabled: bool,
+        #[serde(default)]
+        fps_cap: u32,
+        #[serde(default = "default_true")]
+        micro_interactions: bool,
+        #[serde(default = "default_true")]
+        equalizer_enabled: bool,
+        #[serde(default = "default_true")]
+        notifications_enabled: bool,
+        #[serde(default = "default_notif_secs")]
+        notification_secs: u32,
+        #[serde(default)]
+        notification_sound: crate::sound::NotificationSound,
+        #[serde(default = "default_notif_volume")]
+        notification_volume: u32,
+        #[serde(default)]
+        hover_dwell_speed: HoverDwellSpeed,
+        #[serde(default)]
+        seen_hotkey_hint: bool,
+        #[serde(default)]
+        modules: ModuleVisibility,
+        #[serde(default = "default_true")]
+        lyrics_enabled: bool,
+        #[serde(default = "default_true")]
+        clipboard_watch_enabled: bool,
+        #[serde(default = "default_true")]
+        capture_to_clipboard: bool,
+        #[serde(default = "default_true")]
+        screentime_enabled: bool,
+        #[serde(default = "default_lyric_size")]
+        lyric_size: LyricSize,
+        #[serde(default = "default_lyric_style")]
+        lyric_style: LyricStyle,
+        #[serde(default = "default_true")]
+        frosted_glass_enabled: bool,
+        #[serde(default = "default_frosted_opacity")]
+        frosted_opacity_pct: u32,
+        #[serde(default = "default_frosted_blur")]
+        frosted_blur_px: u32,
+        #[serde(default)]
+        remove_windows_borders: bool,
+        #[serde(default)]
+        anchor_x: Option<f32>,
+        #[serde(default)]
+        anchor_y: Option<f32>,
+        #[serde(default = "default_true")]
+        notif_listener_enabled: bool,
+        #[serde(default)]
+        notif_exclusive_mode: bool,
+        #[serde(default)]
+        notif_auto_clear_action_center: bool,
+        #[serde(default)]
+        notif_over_fullscreen: bool,
+        /// Config schema revision; < 2 means saved before the bridge became default-on.
+        #[serde(default)]
+        config_rev: u32,
+    }
 
 fn default_true() -> bool {
     true
@@ -1083,6 +1192,10 @@ fn default_lyric_style() -> LyricStyle {
 }
 fn default_notif_secs() -> u32 {
     4
+}
+
+fn default_notif_volume() -> u32 {
+    80
 }
 fn default_frosted_opacity() -> u32 {
     68
@@ -1356,6 +1469,49 @@ impl AppState {
         self.frosted_glass_enabled && self.windows_transparency_enabled
     }
 
+    /// True when Windows Settings -> Accessibility -> Visual effects -> Animation
+    /// effects is enabled. Motion springs and choreographed transitions run
+    /// exclusively when this is true.
+    pub fn are_animations_active(&self) -> bool {
+        self.windows_animations_enabled
+    }
+
+    /// Live-updates frosted glass opacity during continuous slider drag without
+    /// hitting disk until the drag completes. Automatically enables `frosted_glass_enabled`
+    /// if the user drags the slider while the toggle was off.
+    pub fn set_frosted_opacity_live(&mut self, pct: u32) -> bool {
+        let clamped = pct.clamp(25, 95);
+        let mut changed = false;
+        if !self.frosted_glass_enabled {
+            self.frosted_glass_enabled = true;
+            self.switch_t[ToggleId::FrostedGlass as usize] = 1.0;
+            changed = true;
+        }
+        if self.frosted_opacity_pct != clamped {
+            self.frosted_opacity_pct = clamped;
+            changed = true;
+        }
+        changed
+    }
+
+    /// Live-updates frosted blur radius during continuous slider drag without
+    /// hitting disk until the drag completes. Automatically enables `frosted_glass_enabled`
+    /// if the user drags the slider while the toggle was off.
+    pub fn set_frosted_blur_live(&mut self, px: u32) -> bool {
+        let clamped = px.clamp(4, 40);
+        let mut changed = false;
+        if !self.frosted_glass_enabled {
+            self.frosted_glass_enabled = true;
+            self.switch_t[ToggleId::FrostedGlass as usize] = 1.0;
+            changed = true;
+        }
+        if self.frosted_blur_px != clamped {
+            self.frosted_blur_px = clamped;
+            changed = true;
+        }
+        changed
+    }
+
     /// Tint opacity actually used for the frosted shell. With a live blur
     /// backdrop the user's value applies; without one (blur unavailable or
     /// disabled) the glass is made denser so text stays readable.
@@ -1377,8 +1533,24 @@ impl AppState {
         self.settings_scroll[cat.index()]
     }
 
+    pub fn settings_scroll_target(&self, cat: SettingsCategory) -> f32 {
+        self.settings_scroll_target[cat.index()]
+    }
+
     pub fn set_settings_scroll(&mut self, cat: SettingsCategory, scroll: f32) {
-        self.settings_scroll[cat.index()] = scroll.max(0.0);
+        let v = scroll.max(0.0);
+        let idx = cat.index();
+        self.settings_scroll_target[idx] = v;
+        if !self.are_animations_active() {
+            self.settings_scroll[idx] = v;
+        }
+    }
+
+    pub fn set_settings_scroll_immediate(&mut self, cat: SettingsCategory, scroll: f32) {
+        let v = scroll.max(0.0);
+        let idx = cat.index();
+        self.settings_scroll[idx] = v;
+        self.settings_scroll_target[idx] = v;
     }
 
     pub fn dock_metrics(tab_count: usize) -> (f32, f32) {
@@ -1617,11 +1789,30 @@ impl AppState {
                     self.notification = None;
                     self.sync_collapsed_targets();
                 }
+                eff.sync_win_notif_sound_mute = Some(self.should_mute_windows_notif_sound());
                 self.save_config();
             }
             Action::SetNotificationSecs(secs) => {
                 self.notification_secs = secs.clamp(2, 10);
                 self.save_config();
+            }
+            Action::SetHoverDwellSpeed(spd) => {
+                self.hover_dwell_speed = spd;
+                self.save_config();
+                eff.redraw_notch = false;
+            }
+            Action::SetNotificationSound(sound) => {
+                self.notification_sound = sound;
+                self.save_config();
+                if sound != crate::sound::NotificationSound::Mute {
+                    eff.play_sound = Some(sound);
+                }
+                eff.sync_win_notif_sound_mute = Some(self.should_mute_windows_notif_sound());
+                eff.redraw_notch = false;
+            }
+            Action::TestNotificationSound => {
+                eff.play_sound = Some(crate::sound::NotificationSound::Snapchat);
+                eff.redraw_notch = false;
             }
             Action::ToggleFrostedGlass => {
                 self.frosted_glass_enabled = !self.frosted_glass_enabled;
@@ -1635,11 +1826,13 @@ impl AppState {
                 eff.redraw_notch = false;
             }
             Action::SetFrostedOpacity(pct) => {
+                self.frosted_glass_enabled = true;
                 self.frosted_opacity_pct = pct.clamp(25, 95);
                 self.save_config();
                 eff.sync_frosted_window = true;
             }
             Action::SetFrostedBlur(px) => {
+                self.frosted_glass_enabled = true;
                 self.frosted_blur_px = px.clamp(4, 40);
                 self.save_config();
                 eff.sync_frosted_window = true;
@@ -1656,6 +1849,7 @@ impl AppState {
                         eff.sync_exclusive_banners = Some(false);
                     }
                 }
+                eff.sync_win_notif_sound_mute = Some(self.should_mute_windows_notif_sound());
                 self.save_config();
             }
             Action::ToggleNotifExclusive => {
@@ -1670,6 +1864,7 @@ impl AppState {
                 } else {
                     eff.sync_exclusive_banners = Some(false);
                 }
+                eff.sync_win_notif_sound_mute = Some(self.should_mute_windows_notif_sound());
                 self.save_config();
             }
             Action::ToggleNotifAutoClear => {
@@ -1714,6 +1909,9 @@ impl AppState {
                 );
                 self.sync_collapsed_targets();
                 eff.redraw_notch = true;
+                if self.notifications_enabled && self.notification_sound != crate::sound::NotificationSound::Mute {
+                    eff.play_sound = Some(self.notification_sound);
+                }
             }
             Action::DismissNotification => {
                 self.advance_notification_queue();
@@ -1851,6 +2049,7 @@ impl AppState {
                 if was_exclusive {
                     eff.sync_exclusive_banners = Some(false);
                 }
+                eff.sync_win_notif_sound_mute = Some(self.should_mute_windows_notif_sound());
             }
             Action::Quit => {
                 eff.quit_app = true;
@@ -1874,10 +2073,7 @@ impl AppState {
         Self::appdata_dir().join("shelf.json")
     }
 
-    pub fn save_config(&self) {
-        if !self.persistence_enabled {
-            return;
-        }
+    pub fn to_config_json(&self) -> String {
         let cfg = PersistedConfig {
             chime_enabled: self.chime_enabled,
             clean_working_sets: self.mem_reduct.clean_working_sets,
@@ -1913,6 +2109,10 @@ impl AppState {
             equalizer_enabled: self.equalizer_enabled,
             notifications_enabled: self.notifications_enabled,
             notification_secs: self.notification_secs,
+            notification_sound: self.notification_sound,
+            notification_volume: self.notification_volume,
+            hover_dwell_speed: self.hover_dwell_speed,
+            seen_hotkey_hint: self.seen_hotkey_hint,
             modules: self.modules,
             lyrics_enabled: self.lyrics_enabled,
             clipboard_watch_enabled: self.clipboard_watch_enabled,
@@ -1932,13 +2132,22 @@ impl AppState {
             notif_over_fullscreen: self.notif_over_fullscreen,
             config_rev: CONFIG_REV,
         };
+        serde_json::to_string_pretty(&cfg).unwrap_or_default()
+    }
+
+    pub fn save_config(&self) {
+        if !self.persistence_enabled {
+            return;
+        }
+        let json = self.to_config_json();
+        if json.is_empty() {
+            return;
+        }
         let path = Self::config_path();
         if let Some(parent) = path.parent() {
             let _ = std::fs::create_dir_all(parent);
         }
-        if let Ok(json) = serde_json::to_string_pretty(&cfg) {
-            let _ = std::fs::write(path, json);
-        }
+        let _ = std::fs::write(path, json);
     }
 
     fn load_config() -> Option<PersistedConfig> {
@@ -1992,6 +2201,10 @@ impl AppState {
         self.equalizer_enabled = cfg.equalizer_enabled;
         self.notifications_enabled = cfg.notifications_enabled;
         self.notification_secs = cfg.notification_secs.clamp(2, 10);
+        self.notification_sound = cfg.notification_sound;
+        self.notification_volume = cfg.notification_volume.clamp(0, 100);
+        self.hover_dwell_speed = cfg.hover_dwell_speed;
+        self.seen_hotkey_hint = cfg.seen_hotkey_hint;
         self.modules = cfg.modules;
         self.lyrics_enabled = cfg.lyrics_enabled;
         self.clipboard_watch_enabled = cfg.clipboard_watch_enabled;
@@ -2118,6 +2331,10 @@ impl AppState {
         let mut equalizer_enabled = true;
         let mut notifications_enabled = true;
         let mut notification_secs = 4;
+        let mut notification_sound = crate::sound::NotificationSound::default();
+        let mut notification_volume = 80;
+                let mut hover_dwell_speed = HoverDwellSpeed::Normal;
+                let mut seen_hotkey_hint = false;
         let mut modules = ModuleVisibility::default();
         let mut lyrics_enabled = true;
         let mut clipboard_watch_enabled = true;
@@ -2179,6 +2396,10 @@ impl AppState {
             equalizer_enabled = cfg.equalizer_enabled;
             notifications_enabled = cfg.notifications_enabled;
             notification_secs = cfg.notification_secs.clamp(2, 10);
+            notification_sound = cfg.notification_sound;
+            notification_volume = cfg.notification_volume.clamp(0, 100);
+                        hover_dwell_speed = cfg.hover_dwell_speed;
+                        seen_hotkey_hint = cfg.seen_hotkey_hint;
             modules = cfg.modules;
             lyrics_enabled = cfg.lyrics_enabled;
             clipboard_watch_enabled = cfg.clipboard_watch_enabled;
@@ -2200,6 +2421,7 @@ impl AppState {
         }
 
         let windows_transparency_enabled = crate::notifications::is_windows_transparency_enabled();
+        let windows_animations_enabled = crate::notifications::is_windows_animations_enabled();
         let notif_suppressed_apps = crate::notifications::count_suppressed_apps();
         let notif_listener_status = if notif_listener_enabled {
             "Connecting...".to_string()
@@ -2264,9 +2486,13 @@ impl AppState {
         let target_anchor_y = loaded_anchor_y.unwrap_or(def_ay).clamp(0.0, 1.0);
 
         let mut st = Self {
-            mode: NotchMode::Home,
-            is_hovered: is_pinned,
-            is_pinned,
+                    mode: NotchMode::Home,
+                    is_hovered: is_pinned,
+                    is_hover_pending: false,
+                    hover_dwell_t: 0.0,
+                    anim_edge_glow_t: 0.0,
+                    hover_dwell_start: None,
+                    is_pinned,
             x_offset,
             y_offset,
             show_lyrics: false,
@@ -2288,12 +2514,18 @@ impl AppState {
             equalizer_enabled,
             notifications_enabled,
             notification_secs,
+                        notification_sound,
+                        notification_volume,
+                        hover_dwell_speed,
+                        seen_hotkey_hint,
+                        hotkey_hint_expand_count: 0,
             lyric_size,
             lyric_style,
             frosted_glass_enabled,
             frosted_opacity_pct,
             frosted_blur_px,
             windows_transparency_enabled,
+            windows_animations_enabled,
             remove_windows_borders,
             notif_listener_enabled,
             notif_exclusive_mode,
@@ -2309,19 +2541,30 @@ impl AppState {
             settings_open: false,
             settings_category: SettingsCategory::General,
             settings_scroll: [0.0; SettingsCategory::COUNT],
+            settings_scroll_target: [0.0; SettingsCategory::COUNT],
             current_width: if is_pinned { exp_w } else { idle_w },
             current_height: if is_pinned { exp_h } else { idle_h },
             target_width: if is_pinned { exp_w } else { idle_w },
             target_height: if is_pinned { exp_h } else { idle_h },
+            anim_width_vel: 0.0,
+            anim_height_vel: 0.0,
             anim_expand_t: if is_pinned { 1.0 } else { 0.0 },
+            anim_expand_vel: 0.0,
             anim_notif_t: 0.0,
+            anim_mode_t: 1.0,
+            anim_mode_dir: 1.0,
             target_anchor_x,
             target_anchor_y,
             anim_anchor_x: target_anchor_x,
             anim_anchor_y: target_anchor_y,
             anim_dock_x: 24.0,
             anim_dock_w: 32.0,
+            anim_dock_x_vel: 0.0,
+            anim_dock_w_vel: 0.0,
             anim_settings_cat_y: Self::settings_cat_pill_y(SettingsCategory::General),
+            anim_settings_cat_vel: 0.0,
+            anim_settings_pane_t: 1.0,
+            anim_settings_pane_dir: 1.0,
             anim_vol_pct: vol.clamp(0.0, 1.0),
             anim_ram_pct: ram_pct,
             hover_target_idx: None,
@@ -2371,6 +2614,10 @@ impl AppState {
         let mut st = Self {
             mode: NotchMode::Home,
             is_hovered: false,
+            is_hover_pending: false,
+            hover_dwell_t: 0.0,
+            anim_edge_glow_t: 0.0,
+            hover_dwell_start: None,
             is_pinned: false,
             x_offset: 0,
             y_offset: 0,
@@ -2393,12 +2640,18 @@ impl AppState {
             equalizer_enabled: true,
             notifications_enabled: true,
             notification_secs: 4,
+            notification_sound: crate::sound::NotificationSound::default(),
+            notification_volume: 80,
+            hover_dwell_speed: HoverDwellSpeed::Normal,
+            seen_hotkey_hint: true,
+            hotkey_hint_expand_count: 0,
             lyric_size: LyricSize::Standard,
             lyric_style: LyricStyle::ClassicList,
             frosted_glass_enabled: true,
             frosted_opacity_pct: 68,
             frosted_blur_px: 20,
             windows_transparency_enabled: false,
+            windows_animations_enabled: true,
             remove_windows_borders: false,
             notif_listener_enabled: true,
             notif_exclusive_mode: false,
@@ -2414,19 +2667,30 @@ impl AppState {
             settings_open: false,
             settings_category: SettingsCategory::General,
             settings_scroll: [0.0; SettingsCategory::COUNT],
+            settings_scroll_target: [0.0; SettingsCategory::COUNT],
             current_width: Self::IDLE_WIDTH,
             current_height: Self::IDLE_HEIGHT,
             target_width: Self::IDLE_WIDTH,
             target_height: Self::IDLE_HEIGHT,
+            anim_width_vel: 0.0,
+            anim_height_vel: 0.0,
             anim_expand_t: 0.0,
+            anim_expand_vel: 0.0,
             anim_notif_t: 0.0,
+            anim_mode_t: 1.0,
+            anim_mode_dir: 1.0,
             target_anchor_x: 0.5,
             target_anchor_y: 0.5,
             anim_anchor_x: 0.5,
             anim_anchor_y: 0.5,
             anim_dock_x: 24.0,
             anim_dock_w: 32.0,
+            anim_dock_x_vel: 0.0,
+            anim_dock_w_vel: 0.0,
             anim_settings_cat_y: Self::settings_cat_pill_y(SettingsCategory::General),
+            anim_settings_cat_vel: 0.0,
+            anim_settings_pane_t: 1.0,
+            anim_settings_pane_dir: 1.0,
             anim_vol_pct: 0.70,
             anim_ram_pct: 0.57,
             hover_target_idx: None,
@@ -2495,7 +2759,79 @@ impl AppState {
         st
     }
 
+    pub fn should_mute_windows_notif_sound(&self) -> bool {
+        self.notifications_enabled
+            && self.notif_listener_enabled
+            && self.notification_sound != crate::sound::NotificationSound::Mute
+    }
+
+    pub const HOVER_DWELL_MS: u64 = 240;
+
+    pub fn hover_dwell_ms(&self) -> u64 {
+        self.hover_dwell_speed.ms()
+    }
+
+        pub fn begin_hover_dwell(&mut self, now: std::time::Instant) {
+        self.is_hover_pending = true;
+        self.hover_dwell_start = Some(now);
+        self.hover_dwell_t = 0.0;
+        // Start smoothly from 0.0 without any snap or pop-in
+    }
+
+    pub fn cancel_hover_dwell(&mut self) {
+        self.is_hover_pending = false;
+        self.hover_dwell_start = None;
+        self.hover_dwell_t = 0.0;
+    }
+
+    /// Advances `hover_dwell_t` (`0.0..=1.0`, smoothstep) over `HOVER_DWELL_MS`.
+    /// Returns `true` when `hover_dwell_t` changes and requires a redraw.
+        pub fn update_hover_dwell(&mut self, now: std::time::Instant) -> bool {
+            if self.is_hover_pending && !self.is_hovered {
+                let start = *self.hover_dwell_start.get_or_insert(now);
+                let raw = (now.saturating_duration_since(start).as_secs_f32()
+                    / (self.hover_dwell_ms() as f32 / 1000.0))
+                    .clamp(0.0, 1.0);
+                let smooth = raw * raw * (3.0 - 2.0 * raw);
+                let changed = (smooth - self.hover_dwell_t).abs() > 0.001
+                    || (raw >= 1.0 && self.hover_dwell_t < 1.0);
+                self.hover_dwell_t = smooth;
+                changed
+            } else if self.hover_dwell_t > 0.0 || self.hover_dwell_start.is_some() {
+                self.hover_dwell_t = 0.0;
+                self.hover_dwell_start = None;
+                true
+            } else {
+                false
+            }
+        }
+
+    pub fn record_notch_expand_for_hint(&mut self) -> bool {
+        if !self.seen_hotkey_hint {
+            self.hotkey_hint_expand_count = self.hotkey_hint_expand_count.saturating_add(1);
+            if self.hotkey_hint_expand_count >= 3 {
+                self.seen_hotkey_hint = true;
+                return true;
+            }
+        }
+        false
+    }
+
+    pub fn dismiss_hotkey_hint(&mut self) -> bool {
+        if !self.seen_hotkey_hint {
+            self.seen_hotkey_hint = true;
+            return true;
+        }
+        false
+    }
+
     pub fn set_hovered(&mut self, hovered: bool) {
+        if hovered {
+            self.cancel_hover_dwell();
+        }
+        if self.is_hovered == hovered {
+            return;
+        }
         self.is_hovered = hovered;
         if hovered {
             self.target_width = self.expanded_width();
@@ -2508,18 +2844,37 @@ impl AppState {
 
     pub fn set_mode(&mut self, mode: NotchMode) {
         if self.mode != mode || self.show_notif_history {
+            let prev_idx = self.mode as isize;
+            let next_idx = mode as isize;
             self.mode = mode;
             self.show_notif_history = false;
             self.hover_target_idx = None;
             self.hover_slots = [0.0; 48];
+            if self.are_animations_active() {
+                self.anim_mode_t = 0.0;
+                self.anim_mode_dir = if next_idx >= prev_idx { 1.0 } else { -1.0 };
+            } else {
+                self.anim_mode_t = 1.0;
+                self.anim_mode_dir = 1.0;
+            }
         }
     }
 
     pub fn set_settings_category(&mut self, cat: SettingsCategory) {
         if self.settings_category != cat {
+            let prev_idx = self.settings_category.index() as isize;
+            let next_idx = cat.index() as isize;
             self.settings_category = cat;
             self.settings_hover_idx = None;
             self.settings_hover_slots = [0.0; 48];
+            if self.are_animations_active() {
+                self.anim_settings_pane_t = 0.0;
+                self.anim_settings_pane_dir = if next_idx >= prev_idx { 1.0 } else { -1.0 };
+            } else {
+                self.anim_settings_pane_t = 1.0;
+                self.anim_settings_cat_y = Self::settings_cat_pill_y(cat);
+                self.anim_settings_cat_vel = 0.0;
+            }
         }
     }
 
@@ -2601,6 +2956,9 @@ impl AppState {
         self.equalizer_enabled = true;
         self.notifications_enabled = true;
         self.notification_secs = 4;
+        self.notification_sound = crate::sound::NotificationSound::default();
+        self.notification_volume = 80;
+        self.hover_dwell_speed = HoverDwellSpeed::Normal;
         self.lyric_size = LyricSize::Standard;
         self.lyric_style = LyricStyle::ClassicList;
         self.frosted_glass_enabled = true;
@@ -2614,6 +2972,7 @@ impl AppState {
             self.notif_listener_status = "Connecting...".to_string();
         }
         self.settings_scroll = [0.0; SettingsCategory::COUNT];
+        self.settings_scroll_target = [0.0; SettingsCategory::COUNT];
         self.modules = ModuleVisibility::default();
         self.lyrics_enabled = true;
         self.clipboard_watch_enabled = true;
@@ -2972,7 +3331,10 @@ impl AppState {
         let expand_target = if self.is_hovered { 1.0 } else { 0.0 };
         (self.target_width - self.current_width).abs() >= 0.5
             || (self.target_height - self.current_height).abs() >= 0.5
+            || (self.are_animations_active()
+                && (self.anim_width_vel.abs() >= 4.0 || self.anim_height_vel.abs() >= 4.0))
             || (expand_target - self.anim_expand_t).abs() >= 0.01
+            || (self.are_animations_active() && self.anim_mode_t < 0.992)
             || (self.notification.is_some()
                 && !self.is_hovered
                 && (1.0 - self.anim_notif_t).abs() >= 0.01)
@@ -2981,11 +3343,15 @@ impl AppState {
     }
 
     pub fn is_micro_animating(&self) -> bool {
-        if !self.micro_interactions {
+        if !self.micro_interactions || !self.are_animations_active() {
             return false;
         }
         let (dx, dw) = self.active_dock_target();
-        if (dx - self.anim_dock_x).abs() >= 0.35 || (dw - self.anim_dock_w).abs() >= 0.35 {
+        if (dx - self.anim_dock_x).abs() >= 0.35
+            || (dw - self.anim_dock_w).abs() >= 0.35
+            || self.anim_dock_x_vel.abs() >= 3.0
+            || self.anim_dock_w_vel.abs() >= 3.0
+        {
             return true;
         }
         let ram_t = (self.telemetry.memory_percent / 100.0).clamp(0.0, 1.0);
@@ -3008,6 +3374,20 @@ impl AppState {
     }
 
     pub fn is_settings_animating(&self) -> bool {
+        if !self.are_animations_active() {
+            return false;
+        }
+        let cat_tgt = Self::settings_cat_pill_y(self.settings_category);
+        if (cat_tgt - self.anim_settings_cat_y).abs() >= 0.35
+            || self.anim_settings_cat_vel.abs() >= 3.0
+            || self.anim_settings_pane_t < 0.992
+        {
+            return true;
+        }
+        let cidx = self.settings_category.index();
+        if (self.settings_scroll_target[cidx] - self.settings_scroll[cidx]).abs() >= 0.4 {
+            return true;
+        }
         for id in ToggleId::ALL {
             let tgt = if self.toggle_target(id) { 1.0 } else { 0.0 };
             if (tgt - self.switch_t[id as usize]).abs() >= 0.01 {
@@ -3038,7 +3418,7 @@ impl AppState {
     }
 
     pub fn is_equalizer_visible(&self) -> bool {
-        if !self.equalizer_enabled || !self.media.is_playing {
+        if !self.equalizer_enabled || !self.media.is_playing || !self.are_animations_active() {
             return false;
         }
         if !self.is_hovered {
@@ -3050,21 +3430,30 @@ impl AppState {
 
     /// Returns desired high-frequency timer interval (ms) or None when static.
     pub fn needs_animation_timer_ms(&self) -> Option<u32> {
+        if !self.are_animations_active() {
+            // Even with Windows Animation Effects disabled, keep a lightweight timer
+            // while hover dwell is counting down or RAM purge is running.
+            if (self.is_hover_pending && !self.is_hovered) || self.mem_reduct.is_purging {
+                return Some(25);
+            }
+            return None;
+        }
         let act = self.desired_active_interval_ms();
         if self.is_size_moving() || self.is_micro_animating() || self.mem_reduct.is_purging {
             Some(act)
+        } else if (self.is_hover_pending && !self.is_hovered) || self.anim_edge_glow_t > 0.003 {
+            Some(16)
         } else {
             let mascot_vis = self.is_mascot_visible();
             let mood = self.mascot_mood();
-            let high_refresh = act < 16;
             if mascot_vis && mood == MascotMood::Purging {
-                Some(act.min(16))
+                Some(20)
             } else if mascot_vis && mood == MascotMood::Capture {
-                Some(if high_refresh { act } else { 20 })
+                Some(25)
             } else if self.is_equalizer_visible() || (mascot_vis && mood == MascotMood::Music) {
-                Some(if high_refresh { act } else { act.max(20) })
+                Some(25)
             } else if mascot_vis {
-                Some(if high_refresh { act } else { 28 })
+                Some(33)
             } else {
                 None
             }
@@ -3072,49 +3461,165 @@ impl AppState {
     }
 
     pub fn update_animation(&mut self, dt: f32) -> bool {
-        self.anim_time += dt;
+        let anim_on = self.are_animations_active();
+        if anim_on {
+            self.anim_time += dt;
+        }
         let expired = self.expire_notification();
 
-        let (k_size, k_fast) = (22.0, 26.0);
+        let mut moved = self.update_hover_dwell(std::time::Instant::now());
+        let expand_tgt = if self.is_hovered { 1.0 } else { 0.0 };
+        let (dx_tgt, dw_tgt) = self.active_dock_target();
 
-        let mut moved = false;
+        if !anim_on {
+            // Exclusive Windows Animation Effects gate: snap every motion cleanly with zero animation.
+            let target_glow = if self.is_hover_pending && !self.is_hovered {
+                1.0
+            } else {
+                0.0
+            };
+            let snapped = (self.anim_edge_glow_t - target_glow).abs() > 0.001
+                || (self.current_width - self.target_width).abs() > 0.5
+                || (self.current_height - self.target_height).abs() > 0.5
+                || (self.anim_expand_t - expand_tgt).abs() > 0.005
+                || (self.anim_mode_t - 1.0).abs() > 0.005
+                || (self.anim_anchor_x - self.target_anchor_x).abs() > 0.005
+                || (self.anim_anchor_y - self.target_anchor_y).abs() > 0.005
+                || (self.anim_dock_x - dx_tgt).abs() > 0.35
+                || (self.anim_dock_w - dw_tgt).abs() > 0.35;
+            self.anim_edge_glow_t = target_glow;
+            self.current_width = self.target_width;
+            self.current_height = self.target_height;
+            self.anim_width_vel = 0.0;
+            self.anim_height_vel = 0.0;
+            self.anim_expand_t = expand_tgt;
+            self.anim_expand_vel = 0.0;
+            self.anim_mode_t = 1.0;
+            self.anim_notif_t = if self.notification.is_some() { 1.0 } else { 0.0 };
+            self.anim_anchor_x = self.target_anchor_x;
+            self.anim_anchor_y = self.target_anchor_y;
+            self.anim_dock_x = dx_tgt;
+            self.anim_dock_w = dw_tgt;
+            self.anim_dock_x_vel = 0.0;
+            self.anim_dock_w_vel = 0.0;
+            self.anim_vol_pct = self.volume_pct.clamp(0.0, 1.0);
+            self.anim_ram_pct = (self.telemetry.memory_percent / 100.0).clamp(0.0, 1.0);
+            for (i, slot) in self.hover_slots.iter_mut().enumerate() {
+                *slot = if self.hover_target_idx == Some(i) { 1.0 } else { 0.0 };
+            }
+            return moved || snapped || expired || self.mem_reduct.is_purging;
+        }
+
+        let k_fast = 26.0;
+
+        if self.is_hover_pending && !self.is_hovered {
+            let t = self.hover_dwell_t.clamp(0.0, 1.0);
+            // Smootherstep: t^3 * (t * (t * 6 - 15) + 10) for portal opening effect
+            let smooth_t = t * t * t * (t * (t * 6.0 - 15.0) + 10.0);
+            let (ng, mg) = ease_exp(self.anim_edge_glow_t, smooth_t, 10.5, dt, 0.002);
+            self.anim_edge_glow_t = ng;
+            moved |= mg;
+        } else if self.anim_edge_glow_t > 0.0 {
+            // Slow, silky, atmospheric fade-out (~1.2s luxurious dissipation)
+            let (ng, mg) = ease_exp(self.anim_edge_glow_t, 0.0, 1.6, dt, 0.002);
+            self.anim_edge_glow_t = if ng <= 0.002 { 0.0 } else { ng };
+            moved |= mg;
+        }
+
         let banner_sliding = self.notification.is_some() && !self.is_hovered;
         let (nw, mw, nh, mh) = if banner_sliding {
             // Snap to full banner size immediately so the banner slides in from the
             // notch's edge instead of scaling from small to large.
             let w_chg = (self.target_width - self.current_width).abs() > 0.5;
             let h_chg = (self.target_height - self.current_height).abs() > 0.5;
+            self.anim_width_vel = 0.0;
+            self.anim_height_vel = 0.0;
             (self.target_width, w_chg, self.target_height, h_chg)
         } else {
-            let (nw, mw) = ease_exp(self.current_width, self.target_width, k_size, dt, 0.5);
-            let (nh, mh) = ease_exp(self.current_height, self.target_height, k_size, dt, 0.5);
+            // Framer-Motion critically/slightly-underdamped spring for silky organic morphs
+            let (nw, vw, mw) = spring_step(
+                self.current_width,
+                self.anim_width_vel,
+                self.target_width,
+                360.0,
+                33.0,
+                dt,
+                0.45,
+                4.0,
+            );
+            let (nh, vh, mh) = spring_step(
+                self.current_height,
+                self.anim_height_vel,
+                self.target_height,
+                360.0,
+                33.0,
+                dt,
+                0.45,
+                4.0,
+            );
+            self.anim_width_vel = vw;
+            self.anim_height_vel = vh;
             (nw, mw, nh, mh)
         };
         self.current_width = nw;
         self.current_height = nh;
+
         let mut m_notif = false;
         if banner_sliding {
-            let (nn, mn) = ease_exp(self.anim_notif_t, 1.0, k_fast, dt, 0.005);
+            let (nn, mn) = ease_exp(self.anim_notif_t, 1.0, 20.0, dt, 0.005);
             self.anim_notif_t = nn;
             m_notif = mn;
         } else if self.notification.is_none() {
             self.anim_notif_t = 0.0;
         }
-        let expand_tgt = if self.is_hovered { 1.0 } else { 0.0 };
-        let (nt, mt) = ease_exp(self.anim_expand_t, expand_tgt, k_size, dt, 0.008);
-        self.anim_expand_t = nt;
+
+        let (nt, vt, mt) = spring_step(
+            self.anim_expand_t,
+            self.anim_expand_vel,
+            expand_tgt,
+            340.0,
+            32.0,
+            dt,
+            0.006,
+            0.05,
+        );
+        self.anim_expand_t = nt.clamp(0.0, 1.0);
+        self.anim_expand_vel = vt;
+
+        let (nmt, mmt) = ease_exp(self.anim_mode_t, 1.0, 14.5, dt, 0.006);
+        self.anim_mode_t = nmt;
+
         let (nax, max_chg) = ease_exp(self.anim_anchor_x, self.target_anchor_x, k_fast, dt, 0.005);
         let (nay, may_chg) = ease_exp(self.anim_anchor_y, self.target_anchor_y, k_fast, dt, 0.005);
         self.anim_anchor_x = nax;
         self.anim_anchor_y = nay;
-        moved |= mw || mh || mt || m_notif || max_chg || may_chg;
+        moved |= mw || mh || mt || mmt || m_notif || max_chg || may_chg;
 
-        let (dx_tgt, dw_tgt) = self.active_dock_target();
         if self.micro_interactions {
-            let (ndx, mdx) = ease_exp(self.anim_dock_x, dx_tgt, k_fast, dt, 0.35);
-            let (ndw, mdw) = ease_exp(self.anim_dock_w, dw_tgt, k_fast, dt, 0.35);
+            let (ndx, vdx, mdx) = spring_step(
+                self.anim_dock_x,
+                self.anim_dock_x_vel,
+                dx_tgt,
+                420.0,
+                34.0,
+                dt,
+                0.35,
+                3.0,
+            );
+            let (ndw, vdw, mdw) = spring_step(
+                self.anim_dock_w,
+                self.anim_dock_w_vel,
+                dw_tgt,
+                420.0,
+                34.0,
+                dt,
+                0.35,
+                3.0,
+            );
             self.anim_dock_x = ndx;
             self.anim_dock_w = ndw;
+            self.anim_dock_x_vel = vdx;
+            self.anim_dock_w_vel = vdw;
 
             let (nv, mv) = ease_exp(
                 self.anim_vol_pct,
@@ -3142,6 +3647,8 @@ impl AppState {
         } else {
             self.anim_dock_x = dx_tgt;
             self.anim_dock_w = dw_tgt;
+            self.anim_dock_x_vel = 0.0;
+            self.anim_dock_w_vel = 0.0;
             self.anim_vol_pct = self.volume_pct.clamp(0.0, 1.0);
             self.anim_ram_pct = (self.telemetry.memory_percent / 100.0).clamp(0.0, 1.0);
         }
@@ -3152,15 +3659,71 @@ impl AppState {
     }
 
     pub fn update_settings_animation(&mut self, dt: f32) -> bool {
+        let cat_tgt = Self::settings_cat_pill_y(self.settings_category);
+        let cidx = self.settings_category.index();
+
+        if !self.are_animations_active() {
+            let mut changed = (self.anim_settings_cat_y - cat_tgt).abs() > 0.25
+                || (self.anim_settings_pane_t - 1.0).abs() > 0.005
+                || (self.settings_scroll[cidx] - self.settings_scroll_target[cidx]).abs() > 0.25;
+            self.anim_settings_cat_y = cat_tgt;
+            self.anim_settings_cat_vel = 0.0;
+            self.anim_settings_pane_t = 1.0;
+            self.settings_scroll[cidx] = self.settings_scroll_target[cidx];
+            for id in ToggleId::ALL {
+                let tgt = if self.toggle_target(id) { 1.0 } else { 0.0 };
+                if (self.switch_t[id as usize] - tgt).abs() > 0.005 {
+                    self.switch_t[id as usize] = tgt;
+                    changed = true;
+                }
+            }
+            for (i, slot) in self.settings_hover_slots.iter_mut().enumerate() {
+                let tgt = if self.settings_hover_idx == Some(i) { 1.0 } else { 0.0 };
+                if (*slot - tgt).abs() > 0.005 {
+                    *slot = tgt;
+                    changed = true;
+                }
+            }
+            return changed;
+        }
+
         let k = 25.0;
         let mut changed = false;
-        let cat_tgt = Self::settings_cat_pill_y(self.settings_category);
 
-        self.anim_settings_cat_y = cat_tgt;
+        // Shared-element spring glide for sidebar category highlight pill
+        let (ncy, vcy, mcy) = spring_step(
+            self.anim_settings_cat_y,
+            self.anim_settings_cat_vel,
+            cat_tgt,
+            440.0,
+            34.0,
+            dt,
+            0.35,
+            3.0,
+        );
+        self.anim_settings_cat_y = ncy;
+        self.anim_settings_cat_vel = vcy;
+        changed |= mcy;
+
+        // Smooth directional fade/glide for settings detail pane
+        let (npt, mpt) = ease_exp(self.anim_settings_pane_t, 1.0, 14.0, dt, 0.006);
+        self.anim_settings_pane_t = npt;
+        changed |= mpt;
+
+        // Smooth wheel scroll interpolation
+        let (nsc, msc) = ease_exp(
+            self.settings_scroll[cidx],
+            self.settings_scroll_target[cidx],
+            18.5,
+            dt,
+            0.35,
+        );
+        self.settings_scroll[cidx] = nsc;
+        changed |= msc;
 
         for id in ToggleId::ALL {
             let tgt = if self.toggle_target(id) { 1.0 } else { 0.0 };
-            let (nt, mt) = ease_exp(self.switch_t[id as usize], tgt, k * 1.35, dt, 0.008);
+            let (nt, mt) = ease_exp(self.switch_t[id as usize], tgt, k * 1.25, dt, 0.008);
             self.switch_t[id as usize] = nt;
             changed |= mt;
         }
@@ -3193,7 +3756,11 @@ impl AppState {
         };
         self.current_width = self.target_width;
         self.current_height = self.target_height;
+        self.anim_width_vel = 0.0;
+        self.anim_height_vel = 0.0;
         self.anim_expand_t = if self.is_hovered { 1.0 } else { 0.0 };
+        self.anim_expand_vel = 0.0;
+        self.anim_mode_t = 1.0;
         self.anim_notif_t = if self.notification.is_some() {
             1.0
         } else {
@@ -3204,7 +3771,12 @@ impl AppState {
         let (dx, dw) = self.active_dock_target();
         self.anim_dock_x = dx;
         self.anim_dock_w = dw;
+        self.anim_dock_x_vel = 0.0;
+        self.anim_dock_w_vel = 0.0;
         self.anim_settings_cat_y = Self::settings_cat_pill_y(self.settings_category);
+        self.anim_settings_cat_vel = 0.0;
+        self.anim_settings_pane_t = 1.0;
+        self.settings_scroll_target = self.settings_scroll;
         self.anim_vol_pct = self.volume_pct.clamp(0.0, 1.0);
         self.anim_ram_pct = (self.telemetry.memory_percent / 100.0).clamp(0.0, 1.0);
         self.sync_switches_immediate();
@@ -3243,10 +3815,57 @@ impl AppState {
             );
         }
     }
-}
-
-impl Default for AppState {
-    fn default() -> Self {
-        Self::new()
     }
-}
+
+    impl Default for AppState {
+        fn default() -> Self {
+            Self::new()
+        }
+    }
+
+    #[cfg(test)]
+    mod tests {
+        use super::*;
+
+        #[test]
+        fn test_hover_pending_cleared_on_set_hovered_true() {
+            let mut state = AppState::default();
+            state.is_hover_pending = true;
+            assert!(state.is_hover_pending);
+        
+            state.set_hovered(true);
+        
+            assert!(state.is_hovered);
+            assert!(!state.is_hover_pending, "is_hover_pending should be cleared when set_hovered(true) is called");
+        }
+
+        #[test]
+        fn test_hover_pending_not_cleared_on_set_hovered_false() {
+            let mut state = AppState::default();
+            state.is_hover_pending = true;
+        
+            state.set_hovered(false);
+        
+            assert!(!state.is_hovered);
+            assert!(state.is_hover_pending, "is_hover_pending should remain true when set_hovered(false) is called");
+        }
+
+        #[test]
+        fn test_hotkey_hint_dismisses_after_three_expands_or_hotkey() {
+            let mut state = AppState::new_for_preview();
+            state.seen_hotkey_hint = false;
+            assert!(!state.record_notch_expand_for_hint());
+            assert!(!state.seen_hotkey_hint);
+            assert!(!state.record_notch_expand_for_hint());
+            assert!(!state.seen_hotkey_hint);
+            assert!(state.record_notch_expand_for_hint());
+            assert!(state.seen_hotkey_hint);
+            assert!(!state.record_notch_expand_for_hint());
+
+            let mut state2 = AppState::new_for_preview();
+            state2.seen_hotkey_hint = false;
+            assert!(state2.dismiss_hotkey_hint());
+            assert!(state2.seen_hotkey_hint);
+            assert!(!state2.dismiss_hotkey_hint());
+        }
+    }

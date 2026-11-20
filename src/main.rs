@@ -1,10 +1,7 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
-use chrono::Timelike;
-use cynotch::models::{
-    self, AppState, ExpandedSizePreset, IdleMetric, LyricSize, LyricStyle, NotchMode,
-    NotchPlacement,
-};
+use cynotch::localtime::{format_rfc3339, local_now};
+use cynotch::models::{self, AppState, IdleMetric, NotchMode};
 use cynotch::screentime::ScreenTimeTracker;
 use cynotch::telemetry::TelemetryCollector;
 use cynotch::window::NotchWindow;
@@ -34,410 +31,6 @@ macro_rules! log_err {
     };
 }
 
-fn save_notch_snapshot(dir: &str, name: &str, s: &AppState) {
-    let (w, h) = (
-        s.current_width.round().max(1.0) as u32,
-        s.current_height.round().max(1.0) as u32,
-    );
-    let mut r = renderer::Renderer::new(w, h);
-    r.render(s);
-    let pad = 40;
-    let mut bg = tiny_skia::Pixmap::new(w + pad * 2, h + pad * 2).unwrap();
-    bg.fill(tiny_skia::Color::from_rgba8(236, 233, 248, 255));
-    bg.draw_pixmap(
-        pad as i32,
-        pad as i32,
-        r.pixmap.as_ref(),
-        &tiny_skia::PixmapPaint::default(),
-        tiny_skia::Transform::identity(),
-        None,
-    );
-    bg.save_png(format!("{dir}/{name}.png")).unwrap();
-}
-
-fn save_frosted_notch_snapshot(dir: &str, name: &str, s: &AppState) {
-    let (w, h) = (
-        s.current_width.round().max(1.0) as u32,
-        s.current_height.round().max(1.0) as u32,
-    );
-    let mut r = renderer::Renderer::new(w, h);
-    r.render(s);
-    let pad = 40;
-    let total_w = w + pad * 2;
-    let total_h = h + pad * 2;
-    let mut bg = tiny_skia::Pixmap::new(total_w, total_h).unwrap();
-    let paint = tiny_skia::Paint {
-        shader: tiny_skia::LinearGradient::new(
-            tiny_skia::Point::from_xy(0.0, 0.0),
-            tiny_skia::Point::from_xy(total_w as f32, total_h as f32),
-            vec![
-                tiny_skia::GradientStop::new(0.0, tiny_skia::Color::from_rgba8(124, 58, 237, 255)),
-                tiny_skia::GradientStop::new(0.5, tiny_skia::Color::from_rgba8(14, 116, 144, 255)),
-                tiny_skia::GradientStop::new(1.0, tiny_skia::Color::from_rgba8(217, 119, 6, 255)),
-            ],
-            tiny_skia::SpreadMode::Pad,
-            tiny_skia::Transform::identity(),
-        )
-        .unwrap(),
-        ..Default::default()
-    };
-    let rect = tiny_skia::Rect::from_xywh(0.0, 0.0, total_w as f32, total_h as f32).unwrap();
-    bg.fill_rect(rect, &paint, tiny_skia::Transform::identity(), None);
-    bg.draw_pixmap(
-        pad as i32,
-        pad as i32,
-        r.pixmap.as_ref(),
-        &tiny_skia::PixmapPaint::default(),
-        tiny_skia::Transform::identity(),
-        None,
-    );
-    bg.save_png(format!("{dir}/{name}.png")).unwrap();
-}
-
-fn snapshot(dir: &str) {
-    use models::NotchMode;
-    std::fs::create_dir_all(dir).ok();
-    let mut s = AppState::new_for_preview();
-    s.telemetry.memory_percent = 57.0;
-    s.telemetry.memory_used_gb = 18.2;
-    s.telemetry.memory_total_gb = 31.9;
-    s.telemetry.pagefile_used_gb = 21.4;
-    s.telemetry.pagefile_total_gb = 36.0;
-    s.telemetry.pagefile_percent = 59.4;
-    s.telemetry.sys_cache_mb = 842.0;
-    s.telemetry.sys_cache_peak_mb = 1240.0;
-    s.telemetry.sys_cache_percent = 67.9;
-    s.telemetry.has_admin_privileges = true;
-    s.telemetry.cpu_usage = 12.4;
-    s.telemetry.net_down_kbps = 1480.0;
-    s.telemetry.net_up_kbps = 264.0;
-    s.capture.last_path =
-        Some("C:\\Users\\muhna\\Pictures\\CyNotch\\cyshot_desktop_20261111_184000.png".to_string());
-    s.capture.last_filename = "cyshot_desktop_20261111_184000.png".to_string();
-    s.capture.last_dims = "2560 × 1440".to_string();
-    s.capture.clipboard_ok = true;
-
-    // Minimized micro-capsule idle preview (86×18, MascotMood::Idle)
-    {
-        s.minimized_island = true;
-        s.mode = NotchMode::Home;
-        s.is_pinned = false;
-        s.notification = None;
-        s.media.is_playing = false;
-        s.mem_reduct.is_purging = false;
-        s.anim_time = 1.25;
-        s.set_hovered(false);
-        s.sync_preview_settled();
-        save_notch_snapshot(dir, "minimized_idle", &s);
-        s.minimized_island = false;
-        s.media.is_playing = true;
-    }
-
-    // Dedicated mascot animation mood showcases (Purging / Music / MemReduct-Purging)
-    let mood_shots: [(&str, bool, NotchMode, bool, bool, f32); 3] = [
-        ("purge_anim", false, NotchMode::Home, false, true, 0.35),
-        ("music_idle", false, NotchMode::Home, true, false, 0.42),
-        (
-            "memreduct_purging",
-            true,
-            NotchMode::MemReduct,
-            false,
-            true,
-            0.35,
-        ),
-    ];
-    for (name, hovered, mode, playing, purging, atime) in mood_shots {
-        s.mode = mode;
-        s.show_lyrics = false;
-        s.is_pinned = hovered;
-        s.set_hovered(hovered);
-        s.notification = None;
-        s.media.is_playing = playing;
-        s.mem_reduct.is_purging = purging;
-        s.anim_time = atime;
-        if purging {
-            s.mem_reduct.last_cleaned_status = "Cleaning RAM...".to_string();
-        }
-        s.sync_preview_settled();
-        save_notch_snapshot(dir, name, &s);
-    }
-    s.mem_reduct.is_purging = false;
-    s.mem_reduct.last_cleaned_status = "Ready • Click to clean".to_string();
-    s.anim_time = 0.0;
-
-    let shots: [(&str, bool, NotchMode, bool, Option<&str>); 12] = [
-        ("idle", false, NotchMode::Home, false, None),
-        ("pasted", false, NotchMode::Home, false, Some("pasted")),
-        ("home", true, NotchMode::Home, false, None),
-        ("music", true, NotchMode::Music, false, None),
-        ("lyrics", true, NotchMode::Music, true, None),
-        ("volume", true, NotchMode::Volume, false, None),
-        ("memreduct", true, NotchMode::MemReduct, false, None),
-        ("stats", true, NotchMode::Telemetry, false, None),
-        ("tasks", true, NotchMode::Tasks, false, None),
-        ("shelf", true, NotchMode::Shelf, false, None),
-        ("capture", true, NotchMode::Capture, false, None),
-        ("settings", true, NotchMode::Settings, false, None),
-    ];
-    for (name, hovered, mode, show_lyrics, notif_opt) in shots {
-        s.mode = mode;
-        s.show_lyrics = show_lyrics;
-        s.is_pinned = name == "home";
-        s.media.is_playing = name != "idle";
-        s.anim_time = if name == "music" { 0.42 } else { 0.25 };
-        s.set_hovered(hovered);
-        s.notification = None;
-        if notif_opt == Some("pasted") {
-            s.set_notification(
-                "Pasted".to_string(),
-                "14 words · Chrome".to_string(),
-                models::NotificationKind::Pasted,
-                true,
-            );
-        }
-        s.sync_preview_settled();
-        save_notch_snapshot(dir, name, &s);
-    }
-
-    // v1.8 showcases: IdleMetric::NetSpeed, Large expanded preset, Vertical Left & Right docks
-    {
-        s.notification = None;
-        s.show_lyrics = false;
-        s.mem_reduct.is_purging = false;
-
-        // 1. Idle Net Speed badge
-        s.placement = NotchPlacement::Top;
-        s.minimized_island = false;
-        s.expanded_size = ExpandedSizePreset::Standard;
-        s.idle_metric = IdleMetric::NetSpeed;
-        s.media.is_playing = false;
-        s.is_pinned = false;
-        s.mode = NotchMode::Home;
-        s.anim_time = 0.25;
-        s.set_hovered(false);
-        s.sync_preview_settled();
-        save_notch_snapshot(dir, "idle_netspeed", &s);
-
-        // 2. Expanded Large hover size preset (1.15x)
-        s.media.is_playing = true;
-        s.is_pinned = true;
-        s.idle_metric = IdleMetric::Ram;
-        s.set_hovered(true);
-        s.expanded_size = ExpandedSizePreset::Large;
-        s.sync_preview_settled();
-        save_notch_snapshot(dir, "expanded_large", &s);
-
-        // 4. Vertical Left minimized micro-pill (18×86)
-        s.expanded_size = ExpandedSizePreset::Standard;
-        s.placement = NotchPlacement::Left;
-        s.minimized_island = true;
-        s.media.is_playing = false;
-        s.is_pinned = false;
-        s.set_hovered(false);
-        s.sync_preview_settled();
-        save_notch_snapshot(dir, "vertical_left_minimized", &s);
-
-        // 5. Vertical Left standard idle (52×204)
-        s.minimized_island = false;
-        s.idle_metric = IdleMetric::NetSpeed;
-        s.sync_preview_settled();
-        save_notch_snapshot(dir, "vertical_left_idle", &s);
-
-        // 6. Vertical Left expanded Home (316×480)
-        s.idle_metric = IdleMetric::Ram;
-        s.media.is_playing = true;
-        s.is_pinned = true;
-        s.mode = NotchMode::Home;
-        s.set_hovered(true);
-        s.sync_preview_settled();
-        save_notch_snapshot(dir, "vertical_left_home", &s);
-
-        // 7. Vertical Right expanded Music (316×480)
-        s.placement = NotchPlacement::Right;
-        s.mode = NotchMode::Music;
-        s.anim_time = 0.42;
-        s.sync_preview_settled();
-        save_notch_snapshot(dir, "vertical_right_music", &s);
-
-        // 8. Vertical Right expanded MemReduct (316×480)
-        s.mode = NotchMode::MemReduct;
-        s.anim_time = 0.25;
-        s.sync_preview_settled();
-        save_notch_snapshot(dir, "vertical_right_memreduct", &s);
-
-        // v1.9 / v2.0 showcases: Lyrics size/style variants, Vertical Lyrics, System Toast, Frosted alpha backdrop
-        s.placement = NotchPlacement::Top;
-        s.mode = NotchMode::Music;
-        s.show_lyrics = true;
-        s.media.is_playing = true;
-        s.is_pinned = true;
-        s.set_hovered(true);
-        if s.lyrics.len() >= 3 {
-            s.lyrics[2].text =
-                "Nowhere else we need to go when violet lightning lights the desert road"
-                    .to_string();
-        }
-
-        s.lyric_style = LyricStyle::KaraokeGlow;
-        s.lyric_size = LyricSize::Large;
-        s.sync_preview_settled();
-        save_notch_snapshot(dir, "lyrics_karaoke_large", &s);
-
-        s.lyric_style = LyricStyle::MinimalSingle;
-        s.lyric_size = LyricSize::Compact;
-        s.sync_preview_settled();
-        save_notch_snapshot(dir, "lyrics_minimal_compact", &s);
-
-        s.lyric_style = LyricStyle::CompactStream;
-        s.lyric_size = LyricSize::Standard;
-        s.sync_preview_settled();
-        save_notch_snapshot(dir, "lyrics_stream_standard", &s);
-
-        s.placement = NotchPlacement::Right;
-        s.lyric_style = LyricStyle::KaraokeGlow;
-        s.lyric_size = LyricSize::Standard;
-        s.sync_preview_settled();
-        save_notch_snapshot(dir, "vertical_music_karaoke", &s);
-
-        s.placement = NotchPlacement::Top;
-        s.show_lyrics = false;
-        s.lyric_size = LyricSize::Standard;
-        s.lyric_style = LyricStyle::ClassicList;
-        s.mode = NotchMode::Home;
-        s.is_pinned = false;
-        s.media.is_playing = false;
-        s.set_hovered(false);
-        s.set_system_toast(
-            "Discord".to_string(),
-            "Kai (#dev-sync)".to_string(),
-            "PR #42 merged — ready for QA".to_string(),
-        );
-        s.sync_preview_settled();
-        save_notch_snapshot(dir, "notif_system_toast", &s);
-
-        s.type_scale = models::TypeScale::Compact;
-        s.sync_preview_settled();
-        save_notch_snapshot(dir, "notif_compact", &s);
-
-        s.type_scale = models::TypeScale::ExtraLarge;
-        s.sync_preview_settled();
-        save_notch_snapshot(dir, "notif_xlarge", &s);
-        s.type_scale = models::TypeScale::Standard;
-
-        s.placement = NotchPlacement::Right;
-        s.minimized_island = true;
-        s.sync_preview_settled();
-        save_notch_snapshot(dir, "notif_vertical_right_minimized", &s);
-        s.minimized_island = false;
-        s.placement = NotchPlacement::Top;
-
-        s.notification = None;
-        s.mode = NotchMode::Home;
-        s.is_pinned = true;
-        s.set_hovered(true);
-        s.frosted_glass_enabled = true;
-        s.windows_transparency_enabled = true;
-        s.sync_preview_settled();
-        save_frosted_notch_snapshot(dir, "frosted_alpha_preview", &s);
-        s.windows_transparency_enabled = false;
-
-        // Reset defaults before Settings window capture
-        s.placement = NotchPlacement::Top;
-        s.expanded_size = ExpandedSizePreset::Standard;
-        s.idle_metric = IdleMetric::Ram;
-        s.minimized_island = false;
-        s.is_pinned = false;
-        s.mode = NotchMode::Home;
-        s.show_lyrics = false;
-    }
-
-    let cat_shots = [
-        ("settings_general", models::SettingsCategory::General),
-        ("settings_motion", models::SettingsCategory::Motion),
-        ("settings_modules", models::SettingsCategory::Modules),
-        (
-            "settings_notifications",
-            models::SettingsCategory::Notifications,
-        ),
-        ("settings_system", models::SettingsCategory::System),
-    ];
-    let (sw, sh, _) = settings_window::settings_dims_for_state(&s);
-    let mut pm = tiny_skia::Pixmap::new(sw, sh).unwrap();
-    let mut mask = tiny_skia::Mask::new(sw, sh).unwrap();
-    let mut fonts = font::FontRenderer::new();
-    s.media.is_playing = false;
-    s.mem_reduct.is_purging = false;
-    s.notification = None;
-    s.anim_time = 0.25;
-    for (name, cat) in cat_shots {
-        s.settings_open = true;
-        s.set_settings_category(cat);
-        s.set_settings_scroll(cat, 0.0);
-        s.sync_preview_settled();
-        let (_hits, max_scroll) = settings_window::render_settings_pixmap_with_meta(
-            &s, None, &mut pm, &mut mask, &mut fonts,
-        );
-        let pad = 40;
-        let mut bg = tiny_skia::Pixmap::new(sw + pad * 2, sh + pad * 2).unwrap();
-        bg.fill(tiny_skia::Color::from_rgba8(236, 233, 248, 255));
-        bg.draw_pixmap(
-            pad as i32,
-            pad as i32,
-            pm.as_ref(),
-            &tiny_skia::PixmapPaint::default(),
-            tiny_skia::Transform::identity(),
-            None,
-        );
-        bg.save_png(format!("{dir}/{name}.png")).unwrap();
-
-        if max_scroll > 20.0 {
-            s.set_settings_scroll(cat, max_scroll);
-            settings_window::render_settings_pixmap(&s, None, &mut pm, &mut mask, &mut fonts);
-            let mut bg_bot = tiny_skia::Pixmap::new(sw + pad * 2, sh + pad * 2).unwrap();
-            bg_bot.fill(tiny_skia::Color::from_rgba8(236, 233, 248, 255));
-            bg_bot.draw_pixmap(
-                pad as i32,
-                pad as i32,
-                pm.as_ref(),
-                &tiny_skia::PixmapPaint::default(),
-                tiny_skia::Transform::identity(),
-                None,
-            );
-            bg_bot.save_png(format!("{dir}/{name}_bottom.png")).unwrap();
-        }
-    }
-
-    s.type_scale = models::TypeScale::ExtraLarge;
-    s.set_settings_category(models::SettingsCategory::General);
-    s.set_settings_scroll(models::SettingsCategory::General, 0.0);
-    s.sync_preview_settled();
-    let (xl_w, xl_h, _) = settings_window::settings_dims_for_state(&s);
-    let mut xl_pm = tiny_skia::Pixmap::new(xl_w, xl_h).unwrap();
-    let mut xl_mask = tiny_skia::Mask::new(xl_w, xl_h).unwrap();
-    let _ = settings_window::render_settings_pixmap_with_meta(
-        &s,
-        None,
-        &mut xl_pm,
-        &mut xl_mask,
-        &mut fonts,
-    );
-    let pad = 40;
-    let mut xl_bg = tiny_skia::Pixmap::new(xl_w + pad * 2, xl_h + pad * 2).unwrap();
-    xl_bg.fill(tiny_skia::Color::from_rgba8(236, 233, 248, 255));
-    xl_bg.draw_pixmap(
-        pad as i32,
-        pad as i32,
-        xl_pm.as_ref(),
-        &tiny_skia::PixmapPaint::default(),
-        tiny_skia::Transform::identity(),
-        None,
-    );
-    xl_bg
-        .save_png(format!("{dir}/settings_general_xlarge.png"))
-        .unwrap();
-    log_info!("snapshots written to {dir}");
-}
-
 fn main() {
     std::panic::set_hook(Box::new(|info| {
         use std::io::Write;
@@ -454,18 +47,13 @@ fn main() {
             let _ = writeln!(
                 f,
                 "--- {} ---\nPANIC: {}\n{}",
-                chrono::Local::now().to_rfc3339(),
+                format_rfc3339(local_now()),
                 info,
                 bt
             );
         }
     }));
 
-    let args: Vec<String> = std::env::args().collect();
-    if let Some(i) = args.iter().position(|a| a == "--snapshot") {
-        snapshot(args.get(i + 1).map(String::as_str).unwrap_or("snapshots"));
-        return;
-    }
     unsafe {
         let skip_single_instance =
             std::env::var_os("CYNOTCH_SKIP_SINGLE_INSTANCE").is_some_and(|v| v == "1");
@@ -502,6 +90,10 @@ fn main() {
 
     let mut init_state = AppState::new();
     init_state.detected_hz = cynotch::window::detect_monitor_hz();
+    notifications::recover_windows_sound_mute_on_startup(init_state.should_mute_windows_notif_sound());
+    if init_state.should_mute_windows_notif_sound() {
+        notifications::sync_windows_notification_sound_mute(true);
+    }
     let state = Arc::new(Mutex::new(init_state));
 
     let poll_state = state.clone();
@@ -521,17 +113,17 @@ fn main() {
         let mut last_interval_clean = Instant::now();
         let mut last_sec_tick = Instant::now();
         let mut last_song_title = String::new();
-        let mut last_gsmtc_pos_ms: u64 = 0;
-        let mut last_clock_minute: u32 = chrono::Local::now().minute();
-        let mut first_pass = true;
-        let mut notif_poll_tick: u32 = 0;
-        let mut notif_db_sig: Option<notifications::NotifDbSignature> = None;
-        let mut last_notif_poll = Instant::now();
+                let mut last_gsmtc_pos_ms: u64 = 0;
+                let mut first_pass = true;
+                let mut notif_poll_tick: u32 = 0;
+                let mut notif_db_sig: Option<notifications::NotifDbSignature> = None;
+                let mut last_notif_poll = Instant::now();
+                let mut last_clock_minute: u32 = local_now().minute;
 
-        loop {
-            if first_pass {
-                first_pass = false;
-                let init_hour = (chrono::Local::now().hour() as usize).min(23);
+                loop {
+                    if first_pass {
+                        first_pass = false;
+                        let init_hour = (local_now().hour as usize).min(23);
                 let init_stats = tracker.stats(init_hour);
                 if let Ok(mut s) = poll_state.lock() {
                     s.screen_time = init_stats;
@@ -643,16 +235,16 @@ fn main() {
             }
 
             let (telem_opt, screen_stats) = if last_sec_tick.elapsed() >= Duration::from_millis(950)
-            {
-                last_sec_tick = Instant::now();
-                let st_opt = {
-                    if screentime_enabled {
-                        Some(tracker.tick())
-                    } else {
-                        let hour = (chrono::Local::now().hour() as usize).min(23);
-                        Some(tracker.stats(hour))
-                    }
-                };
+                        {
+                            last_sec_tick = Instant::now();
+                            let st_opt = {
+                                if screentime_enabled {
+                                    Some(tracker.tick())
+                                } else {
+                                    let hour = (local_now().hour as usize).min(23);
+                                    Some(tracker.stats(hour))
+                                }
+                            };
                 let telem = { collector.poll() };
                 (Some(telem), st_opt)
             } else {
@@ -661,6 +253,7 @@ fn main() {
 
             let mut auto_clean_params: Option<cynotch::memreduct::CleanAreas> = None;
             let mut song_to_fetch: Option<(String, String)> = None;
+            let mut notif_audio: Option<(cynotch::sound::NotificationSound, bool, bool, bool)> = None;
             let mut ui_changed = false;
             let mut settings_changed = false;
 
@@ -673,6 +266,14 @@ fn main() {
                 }
                 for (app, title, sub, aumid) in incoming_toasts.drain(..) {
                     s.push_system_toast(app, title, sub, aumid);
+                    if s.notifications_enabled {
+                        notif_audio = Some((
+                            s.notification_sound,
+                            s.notifications_enabled,
+                            s.hide_in_fullscreen,
+                            s.notif_over_fullscreen,
+                        ));
+                    }
                     ui_changed = true;
                 }
 
@@ -727,9 +328,9 @@ fn main() {
                     }
                 }
 
-                let cur_min = chrono::Local::now().minute();
-                if cur_min != last_clock_minute {
-                    last_clock_minute = cur_min;
+                let cur_min = local_now().minute;
+                                if cur_min != last_clock_minute {
+                                    last_clock_minute = cur_min;
                     if !s.is_hovered
                         && !s.minimized_island
                         && s.notification.is_none()
@@ -841,6 +442,11 @@ fn main() {
                 }
             }
 
+            if let Some((sound, enabled, hide_fs, over_fs)) = notif_audio {
+                let suppressed =
+                    cynotch::window::is_fullscreen_suppressing_notifications(hide_fs, over_fs);
+                cynotch::sound::play_notification_sound(sound, enabled, suppressed);
+            }
             if ui_changed {
                 cynotch::window::post_redraw();
             }
@@ -888,6 +494,15 @@ fn main() {
         }
     });
 
+    let is_smoke = std::env::var_os("CYNOTCH_SMOKE_EXIT_MS").is_some();
+    if !is_smoke {
+        let mute_win_sound = state
+            .lock()
+            .map(|s| s.should_mute_windows_notif_sound())
+            .unwrap_or(false);
+        notifications::sync_windows_notification_sound_mute(mute_win_sound);
+    }
+
     match NotchWindow::create(state) {
         Ok(window) => {
             log_info!("CyNotch initialized successfully at screen top-center!");
@@ -903,5 +518,9 @@ fn main() {
             let _ = std::fs::write(&path, format!("Failed to create window: {:?}", e));
             log_err!("Failed to create CyNotch window: {:?}", e);
         }
+    }
+
+    if !is_smoke {
+        notifications::sync_windows_notification_sound_mute(false);
     }
 }

@@ -13,18 +13,28 @@ use windows::Win32::Graphics::Direct3D::{
     D3D_DRIVER_TYPE_HARDWARE, D3D_DRIVER_TYPE_WARP, D3D_FEATURE_LEVEL_10_0, D3D_FEATURE_LEVEL_11_0,
     D3D_FEATURE_LEVEL_11_1,
 };
-use windows::Win32::Graphics::Direct3D11::{
-    D3D11_BOX, D3D11_CREATE_DEVICE_BGRA_SUPPORT, D3D11_SDK_VERSION, D3D11CreateDevice,
-    ID3D11Device, ID3D11DeviceContext, ID3D11Resource, ID3D11Texture2D,
+use windows::Win32::Graphics::Direct2D::{
+    D2D1CreateFactory, D2D1_FACTORY_TYPE_SINGLE_THREADED, D2D1_BITMAP_PROPERTIES1,
+    D2D1_BITMAP_OPTIONS_CANNOT_DRAW, D2D1_BITMAP_OPTIONS_TARGET,
+    ID2D1Bitmap1, ID2D1Device, ID2D1DeviceContext, ID2D1Factory1,
+};
+use windows::Win32::Graphics::Direct2D::Common::{
+    D2D1_ALPHA_MODE_PREMULTIPLIED, D2D1_COLOR_F, D2D1_PIXEL_FORMAT,
 };
 use windows::Win32::Graphics::Dxgi::Common::{
     DXGI_ALPHA_MODE_PREMULTIPLIED, DXGI_FORMAT_B8G8R8A8_UNORM, DXGI_SAMPLE_DESC,
 };
 use windows::Win32::Graphics::Dxgi::{
-    DXGI_PRESENT, DXGI_SCALING_STRETCH, DXGI_SWAP_CHAIN_DESC1, DXGI_SWAP_CHAIN_FLAG,
-    DXGI_SWAP_EFFECT_FLIP_SEQUENTIAL, DXGI_USAGE_RENDER_TARGET_OUTPUT, IDXGIAdapter, IDXGIDevice,
-    IDXGIFactory2, IDXGISwapChain1,
+    DXGI_ERROR_DEVICE_REMOVED, DXGI_ERROR_DEVICE_RESET, DXGI_PRESENT, DXGI_SCALING_STRETCH,
+    DXGI_SWAP_CHAIN_DESC1, DXGI_SWAP_CHAIN_FLAG, DXGI_SWAP_EFFECT_FLIP_SEQUENTIAL,
+    DXGI_USAGE_RENDER_TARGET_OUTPUT, IDXGIAdapter, IDXGIDevice, IDXGIFactory2, IDXGISurface,
+    IDXGISwapChain1,
 };
+use windows::Win32::Graphics::Direct3D11::{
+    D3D11_BOX, D3D11_CREATE_DEVICE_BGRA_SUPPORT, D3D11_SDK_VERSION, D3D11CreateDevice,
+    ID3D11Device, ID3D11DeviceContext, ID3D11Resource, ID3D11Texture2D,
+};
+use windows::Win32::Foundation::D2DERR_RECREATE_TARGET;
 use windows::Win32::System::WinRT::Composition::{ICompositorDesktopInterop, ICompositorInterop};
 use windows::Win32::System::WinRT::{
     CreateDispatcherQueueController, DQTAT_COM_NONE, DQTYPE_THREAD_CURRENT, DispatcherQueueOptions,
@@ -37,6 +47,9 @@ struct SharedDComp {
     d3d_device: ID3D11Device,
     d3d_context: ID3D11DeviceContext,
     dxgi_factory: IDXGIFactory2,
+    #[allow(dead_code)]
+    d2d_factory: ID2D1Factory1,
+    d2d_device: ID2D1Device,
 }
 
 thread_local! {
@@ -54,11 +67,17 @@ fn shared_dcomp() -> Result<SharedDComp> {
         let dxgi_device: IDXGIDevice = d3d_device.cast()?;
         let adapter: IDXGIAdapter = unsafe { dxgi_device.GetAdapter()? };
         let dxgi_factory: IDXGIFactory2 = unsafe { adapter.GetParent()? };
+
+        let d2d_factory: ID2D1Factory1 = unsafe { D2D1CreateFactory(D2D1_FACTORY_TYPE_SINGLE_THREADED, None)? };
+        let d2d_device: ID2D1Device = unsafe { d2d_factory.CreateDevice(&dxgi_device)? };
+
         let shared = SharedDComp {
             compositor,
             d3d_device,
             d3d_context,
             dxgi_factory,
+            d2d_factory,
+            d2d_device,
         };
         *slot = Some(shared.clone());
         Ok(shared)
@@ -115,10 +134,12 @@ fn create_d3d11_device() -> Result<(ID3D11Device, ID3D11DeviceContext)> {
                 None,
                 Some(&mut context),
             );
-            if res.is_ok()
-                && let (Some(d), Some(c)) = (device, context)
-            {
-                return Ok((d, c));
+            if res.is_ok() {
+                if device.is_some() && context.is_some() {
+                    let d = device.unwrap();
+                    let c = context.unwrap();
+                    return Ok((d, c));
+                }
             }
         }
     }
@@ -136,11 +157,13 @@ pub struct DCompHost {
     _d3d_device: ID3D11Device,
     d3d_context: ID3D11DeviceContext,
     swap_chain: IDXGISwapChain1,
+    d2d_context: ID2D1DeviceContext,
     _surface_brush: CompositionSurfaceBrush,
     width: u32,
     height: u32,
     bgra_scratch: Vec<u8>,
     prev_dirty: Option<(u32, u32, u32, u32)>,
+    d2d_target: Option<ID2D1Bitmap1>,
 }
 
 impl DCompHost {
@@ -154,9 +177,15 @@ impl DCompHost {
             d3d_device,
             d3d_context,
             dxgi_factory: factory,
+            d2d_factory: _,
+            d2d_device,
         } = shared_dcomp()?;
         let desktop_interop: ICompositorDesktopInterop = compositor.cast()?;
         let target = unsafe { desktop_interop.CreateDesktopWindowTarget(hwnd, false)? };
+
+        let d2d_context = unsafe {
+            d2d_device.CreateDeviceContext(windows::Win32::Graphics::Direct2D::D2D1_DEVICE_CONTEXT_OPTIONS_NONE)?
+        };
 
         let root_visual = compositor.CreateContainerVisual()?;
         root_visual.SetSize(Vector2 {
@@ -199,7 +228,7 @@ impl DCompHost {
         content_visual.SetBrush(&surface_brush_base)?;
         root_visual.Children()?.InsertAtTop(&content_visual)?;
 
-        Ok(Self {
+        let mut host = Self {
             _compositor: compositor,
             _target: target,
             root_visual,
@@ -207,12 +236,75 @@ impl DCompHost {
             _d3d_device: d3d_device,
             d3d_context,
             swap_chain,
+            d2d_context,
             _surface_brush: surface_brush,
             width: w,
             height: h,
             bgra_scratch: vec![0u8; (w as usize) * (h as usize) * 4],
             prev_dirty: None,
-        })
+            d2d_target: None,
+        };
+        host.bind_d2d_target()?;
+        Ok(host)
+    }
+
+    fn bind_d2d_target(&mut self) -> Result<()> {
+        unsafe {
+            let surface: IDXGISurface = self.swap_chain.GetBuffer(0)?;
+            let props = D2D1_BITMAP_PROPERTIES1 {
+                pixelFormat: D2D1_PIXEL_FORMAT {
+                    format: DXGI_FORMAT_B8G8R8A8_UNORM,
+                    alphaMode: D2D1_ALPHA_MODE_PREMULTIPLIED,
+                },
+                dpiX: 96.0,
+                dpiY: 96.0,
+                bitmapOptions: D2D1_BITMAP_OPTIONS_TARGET | D2D1_BITMAP_OPTIONS_CANNOT_DRAW,
+                colorContext: std::mem::ManuallyDrop::new(None),
+            };
+            let bitmap: ID2D1Bitmap1 = self.d2d_context.CreateBitmapFromDxgiSurface(&surface, Some(&props))?;
+            self.d2d_context.SetTarget(&bitmap);
+            self.d2d_target = Some(bitmap);
+        }
+        Ok(())
+    }
+
+    pub fn d2d_context(&self) -> &ID2D1DeviceContext {
+        &self.d2d_context
+    }
+
+    pub fn begin_d2d_draw(&mut self) -> Result<&ID2D1DeviceContext> {
+        if self.d2d_target.is_none() {
+            self.bind_d2d_target()?;
+        }
+        unsafe {
+            self.d2d_context.BeginDraw();
+            self.d2d_context
+                .SetTransform(&windows::Foundation::Numerics::Matrix3x2::identity());
+            self.d2d_context.Clear(Some(&D2D1_COLOR_F {
+                r: 0.0,
+                g: 0.0,
+                b: 0.0,
+                a: 0.0,
+            }));
+        }
+        Ok(&self.d2d_context)
+    }
+
+    pub fn end_d2d_draw_and_present(&mut self) -> Result<()> {
+        unsafe {
+            if let Err(e) = self.d2d_context.EndDraw(None, None) {
+                if is_device_lost_hresult(e.code()) {
+                    SHARED_DCOMP.with_borrow_mut(|slot| *slot = None);
+                }
+                return Err(e);
+            }
+            let hr = self.swap_chain.Present(0, DXGI_PRESENT(0));
+            if is_device_lost_hresult(hr) {
+                SHARED_DCOMP.with_borrow_mut(|slot| *slot = None);
+                return Err(windows::core::Error::from(hr));
+            }
+        }
+        Ok(())
     }
 
     pub fn resize(&mut self, width: u32, height: u32) -> Result<()> {
@@ -221,7 +313,19 @@ impl DCompHost {
         if self.width == w && self.height == h {
             return Ok(());
         }
+        self.rebind_swap_chain(w, h)
+    }
+
+    /// Forces a clean D2D target release + DXGI `ResizeBuffers` + rebind (e.g. after `WM_DPICHANGED`)
+    /// so no stale DXGI surface references leak across monitor DPI transitions.
+    pub fn rebind_for_dpi_change(&mut self, width: u32, height: u32) -> Result<()> {
+        self.rebind_swap_chain(width.max(1), height.max(1))
+    }
+
+    fn rebind_swap_chain(&mut self, w: u32, h: u32) -> Result<()> {
         unsafe {
+            self.d2d_context.SetTarget(None);
+            self.d2d_target = None;
             self.swap_chain.ResizeBuffers(
                 2,
                 w,
@@ -246,6 +350,7 @@ impl DCompHost {
             }
         }
         self.prev_dirty = None;
+        self.bind_d2d_target()?;
         Ok(())
     }
 
@@ -357,14 +462,37 @@ impl DCompHost {
     }
 }
 
+impl Drop for DCompHost {
+    fn drop(&mut self) {
+        unsafe {
+            self.d2d_context.SetTarget(None);
+        }
+        self.d2d_target = None;
+    }
+}
+
+fn is_device_lost_hresult(hr: windows::core::HRESULT) -> bool {
+    hr == DXGI_ERROR_DEVICE_REMOVED || hr == DXGI_ERROR_DEVICE_RESET || hr == D2DERR_RECREATE_TARGET
+}
+
 fn swizzle_rgba_to_bgra(dst: &mut [u8], src: &[u8]) {
     for (d, s) in dst
-        .as_chunks_mut::<4>()
-        .0
-        .iter_mut()
-        .zip(src.as_chunks::<4>().0.iter())
+        .chunks_exact_mut(4)
+        .zip(src.chunks_exact(4))
     {
-        let px = u32::from_le_bytes(*s);
-        *d = ((px & 0xFF00_FF00) | ((px >> 16) & 0xFF) | ((px & 0xFF) << 16)).to_le_bytes();
+        let px = u32::from_le_bytes(s.try_into().unwrap());
+        d.copy_from_slice(&((px & 0xFF00_FF00) | ((px >> 16) & 0xFF) | ((px & 0xFF) << 16)).to_le_bytes());
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    #[test]
+    fn test_device_lost_handling() {
+        assert!(is_device_lost_hresult(DXGI_ERROR_DEVICE_REMOVED));
+        assert!(is_device_lost_hresult(DXGI_ERROR_DEVICE_RESET));
+        assert!(is_device_lost_hresult(D2DERR_RECREATE_TARGET));
+        assert!(!is_device_lost_hresult(windows::core::HRESULT(0)));
     }
 }

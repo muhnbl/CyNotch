@@ -107,9 +107,15 @@ impl MediaPoller {
                     }
                 };
                 self.last_source_id = source_id;
-                self.last_title = media_props.Title().unwrap_or_default().to_string();
-                self.last_artist = media_props.Artist().unwrap_or_default().to_string();
-                self.last_album = media_props.AlbumTitle().unwrap_or_default().to_string();
+                self.last_title = crate::notifications::sanitize_notification_text(
+                    &media_props.Title().unwrap_or_default().to_string(),
+                );
+                self.last_artist = crate::notifications::sanitize_notification_text(
+                    &media_props.Artist().unwrap_or_default().to_string(),
+                );
+                self.last_album = crate::notifications::sanitize_notification_text(
+                    &media_props.AlbumTitle().unwrap_or_default().to_string(),
+                );
                 self.props_refresh_tick = 0;
             }
             self.last_end_ms = duration_ms;

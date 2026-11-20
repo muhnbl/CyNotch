@@ -1,14 +1,20 @@
-#![allow(unsafe_op_in_unsafe_fn)]
-
+use crate::localtime::{format_capture_stamp, local_now};
 use std::ffi::c_void;
 use std::path::PathBuf;
 use std::sync::Mutex;
-use tiny_skia::{ColorU8, Pixmap};
-use windows::Win32::Foundation::{HWND, RECT};
+use windows::Win32::Foundation::{GENERIC_WRITE, HWND, RECT};
 use windows::Win32::Graphics::Gdi::{
     BI_RGB, BITMAPINFO, BITMAPINFOHEADER, BitBlt, CreateCompatibleBitmap, CreateCompatibleDC,
     DIB_RGB_COLORS, DeleteDC, DeleteObject, GetDC, GetDIBits, ReleaseDC, SRCCOPY, SelectObject,
 };
+use windows::Win32::Graphics::Imaging::{
+    CLSID_WICImagingFactory, GUID_ContainerFormatPng, GUID_WICPixelFormat32bppBGRA,
+    IWICImagingFactory, WICBitmapEncoderNoCache,
+};
+use windows::Win32::System::Com::{
+    CLSCTX_INPROC_SERVER, COINIT_APARTMENTTHREADED, CoCreateInstance, CoInitializeEx,
+};
+use windows::core::{GUID, HSTRING};
 use windows::Win32::UI::WindowsAndMessaging::{
     GW_HWNDNEXT, GWL_EXSTYLE, GetForegroundWindow, GetSystemMetrics, GetTopWindow, GetWindow,
     GetWindowLongW, GetWindowRect, IsIconic, IsWindowVisible, SM_CXSCREEN, SM_CXVIRTUALSCREEN,
@@ -214,22 +220,85 @@ pub fn grab_rect_frame(x: i32, y: i32, w: i32, h: i32, prefix: &str) -> Option<G
     }
 }
 
+pub fn save_bgra_png(path: &std::path::Path, w: u32, h: u32, bgra: &[u8]) -> bool {
+    if w == 0 || h == 0 || bgra.len() < (w as usize) * (h as usize) * 4 {
+        return false;
+    }
+    let mut opaque = bgra[..(w as usize) * (h as usize) * 4].to_vec();
+    for px in opaque.chunks_exact_mut(4) {
+        px[3] = 255;
+    }
+    unsafe {
+        let _ = CoInitializeEx(None, COINIT_APARTMENTTHREADED);
+        let Ok(factory): windows::core::Result<IWICImagingFactory> =
+            CoCreateInstance(&CLSID_WICImagingFactory, None, CLSCTX_INPROC_SERVER)
+        else {
+            return false;
+        };
+        let Ok(stream) = factory.CreateStream() else {
+            return false;
+        };
+        let wide_path = HSTRING::from(path.as_os_str());
+        if stream
+            .InitializeFromFilename(&wide_path, GENERIC_WRITE.0)
+            .is_err()
+        {
+            return false;
+        }
+        let Ok(encoder) =
+            factory.CreateEncoder(&GUID_ContainerFormatPng, std::ptr::null::<GUID>())
+        else {
+            return false;
+        };
+        if encoder
+            .Initialize(&stream, WICBitmapEncoderNoCache)
+            .is_err()
+        {
+            return false;
+        }
+        let mut frame = None;
+        let mut bag = None;
+        if encoder.CreateNewFrame(&mut frame, &mut bag).is_err() {
+            return false;
+        }
+        let Some(frame) = frame else {
+            return false;
+        };
+        if frame.Initialize(bag.as_ref()).is_err() {
+            return false;
+        }
+        if frame.SetSize(w, h).is_err() {
+            return false;
+        }
+        let mut fmt = GUID_WICPixelFormat32bppBGRA;
+        if frame.SetPixelFormat(&mut fmt).is_err() {
+            return false;
+        }
+        let stride = w * 4;
+        if frame.WritePixels(h, stride, &opaque).is_err() {
+            return false;
+        }
+        if frame.Commit().is_err() {
+            return false;
+        }
+        encoder.Commit().is_ok()
+    }
+}
+
 pub fn save_frame(frame: GrabbedFrame, copy_to_clipboard: bool) -> Option<CaptureResult> {
     let w = frame.w;
     let h = frame.h;
-    let mut pm = Pixmap::new(w as u32, h as u32)?;
-    let pixels = pm.pixels_mut();
-    for (dst, src) in pixels.iter_mut().zip(frame.bgra.as_chunks::<4>().0.iter()) {
-        *dst = ColorU8::from_rgba(src[2], src[1], src[0], 255).premultiply();
+    if w <= 0 || h <= 0 {
+        return None;
     }
 
     let dir = pictures_capture_dir();
     let _ = std::fs::create_dir_all(&dir);
-    let stamp = chrono::Local::now().format("%Y%m%d_%H%M%S_%3f").to_string();
+    let stamp = format_capture_stamp(local_now());
     let filename = format!("cyshot_{}_{}.png", frame.prefix, stamp);
     let full_path = dir.join(&filename);
 
-    if pm.save_png(&full_path).is_ok() {
+    if save_bgra_png(&full_path, w as u32, h as u32, &frame.bgra) {
         let clip_ok = if copy_to_clipboard {
             unsafe { copy_bgra_dib_to_clipboard(w, h, &frame.bgra) }
         } else {
@@ -259,58 +328,60 @@ unsafe fn copy_bgra_dib_to_clipboard(w: i32, h: i32, bgra_top_down: &[u8]) -> bo
     let _clip_guard = CLIPBOARD_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     let hdr_size = std::mem::size_of::<BITMAPINFOHEADER>();
     let total_size = hdr_size + bgra_top_down.len();
-    let h_mem = GlobalAlloc(0x0002, total_size);
-    if h_mem.is_null() {
-        return false;
-    }
-    let ptr = GlobalLock(h_mem) as *mut u8;
-    if ptr.is_null() {
-        let _ = GlobalFree(h_mem);
-        return false;
-    }
-
-    // Bottom-up positive height DIB is universally accepted across Paint, Discord, WhatsApp, Edge, Word
-    let hdr = BITMAPINFOHEADER {
-        biSize: hdr_size as u32,
-        biWidth: w,
-        biHeight: h,
-        biPlanes: 1,
-        biBitCount: 32,
-        biCompression: BI_RGB.0,
-        biSizeImage: bgra_top_down.len() as u32,
-        ..Default::default()
-    };
-    std::ptr::copy_nonoverlapping(&hdr as *const BITMAPINFOHEADER as *const u8, ptr, hdr_size);
-
-    let row_bytes = (w as usize) * 4;
-    let dst_pixels = ptr.add(hdr_size);
-    for row in 0..(h as usize) {
-        let src_row = (h as usize - 1 - row) * row_bytes;
-        std::ptr::copy_nonoverlapping(
-            bgra_top_down.as_ptr().add(src_row),
-            dst_pixels.add(row * row_bytes),
-            row_bytes,
-        );
-    }
-    let _ = GlobalUnlock(h_mem);
-
-    for attempt in 0..3 {
-        if OpenClipboard(HWND::default()) != 0 {
-            let _ = EmptyClipboard();
-            let placed = SetClipboardData(CF_DIB, h_mem);
-            let _ = CloseClipboard();
-            if !placed.is_null() {
-                return true;
-            }
+    unsafe {
+        let h_mem = GlobalAlloc(0x0002, total_size);
+        if h_mem.is_null() {
+            return false;
+        }
+        let ptr = GlobalLock(h_mem) as *mut u8;
+        if ptr.is_null() {
             let _ = GlobalFree(h_mem);
             return false;
         }
-        if attempt < 2 {
-            std::thread::sleep(std::time::Duration::from_millis(10));
+
+        // Bottom-up positive height DIB is universally accepted across Paint, Discord, WhatsApp, Edge, Word
+        let hdr = BITMAPINFOHEADER {
+            biSize: hdr_size as u32,
+            biWidth: w,
+            biHeight: h,
+            biPlanes: 1,
+            biBitCount: 32,
+            biCompression: BI_RGB.0,
+            biSizeImage: bgra_top_down.len() as u32,
+            ..Default::default()
+        };
+        std::ptr::copy_nonoverlapping(&hdr as *const BITMAPINFOHEADER as *const u8, ptr, hdr_size);
+
+        let row_bytes = (w as usize) * 4;
+        let dst_pixels = ptr.add(hdr_size);
+        for row in 0..(h as usize) {
+            let src_row = (h as usize - 1 - row) * row_bytes;
+            std::ptr::copy_nonoverlapping(
+                bgra_top_down.as_ptr().add(src_row),
+                dst_pixels.add(row * row_bytes),
+                row_bytes,
+            );
         }
+        let _ = GlobalUnlock(h_mem);
+
+        for attempt in 0..3 {
+            if OpenClipboard(HWND::default()) != 0 {
+                let _ = EmptyClipboard();
+                let placed = SetClipboardData(CF_DIB, h_mem);
+                let _ = CloseClipboard();
+                if !placed.is_null() {
+                    return true;
+                }
+                let _ = GlobalFree(h_mem);
+                return false;
+            }
+            if attempt < 2 {
+                std::thread::sleep(std::time::Duration::from_millis(10));
+            }
+        }
+        let _ = GlobalFree(h_mem);
+        false
     }
-    let _ = GlobalFree(h_mem);
-    false
 }
 
 pub fn copy_text_to_clipboard(owner: HWND, text: &str) -> bool {

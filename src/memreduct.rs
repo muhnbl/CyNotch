@@ -648,3 +648,32 @@ unsafe fn flush_fixed_volume_caches() -> usize {
     }
     flushed
 }
+
+/// Human-readable 1-line tooltip description for each Mem Reduct clean area chip (`0..=7`).
+pub fn clean_area_description(idx: usize) -> Option<&'static str> {
+    match idx {
+        0 => Some("Working Set • Private app RAM"),
+        1 => Some("System WS • Kernel & driver RAM"),
+        2 => Some("Standby • Cached unused RAM"),
+        3 => Some("Modified Pg • Pending disk writes"),
+        4 => Some("Standby Lo • Priority 0-4 cache"),
+        5 => Some("Modified File • Unflushed cache"),
+        6 => Some("Registry • Loaded config hives"),
+        7 => Some("Combine • Deduplicate RAM pages"),
+        _ => None,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::clean_area_description;
+
+    #[test]
+    fn clean_area_descriptions_cover_all_8_chips() {
+        for i in 0..8 {
+            let desc = clean_area_description(i).expect("chip description missing");
+            assert!(desc.contains('•'));
+        }
+        assert!(clean_area_description(8).is_none());
+    }
+}

@@ -176,7 +176,7 @@ impl TelemetryCollector {
         }
     }
 
-    pub fn poll(&mut self) -> HardwareTelemetry {
+    pub fn poll_with_network(&mut self, include_network: bool) -> HardwareTelemetry {
         let (idle, kernel, user) = sample_cpu_times();
         let idle_diff = idle.saturating_sub(self.prev_idle);
         let kernel_diff = kernel.saturating_sub(self.prev_kernel);
@@ -185,7 +185,6 @@ impl TelemetryCollector {
         self.prev_kernel = kernel;
         self.prev_user = user;
 
-        // Note: on Windows GetSystemTimes, kernel_time already includes idle_time.
         let total = kernel_diff.saturating_add(user_diff);
         let cpu = if total > 0 {
             let busy = total.saturating_sub(idle_diff);
@@ -194,22 +193,23 @@ impl TelemetryCollector {
             0.0
         };
 
-        let now = Instant::now();
-        let dt_s = now.duration_since(self.last_net_at).as_secs_f64();
-        let (in_oct, out_oct) = sample_network_octets();
-        let (down_kbps, up_kbps) = if dt_s >= 0.05 && self.prev_in_octets > 0 {
-            let d_in = in_oct.saturating_sub(self.prev_in_octets);
-            let d_out = out_oct.saturating_sub(self.prev_out_octets);
-            (
-                (d_in as f64 / 1024.0 / dt_s).clamp(0.0, 9_999_999.0) as f32,
-                (d_out as f64 / 1024.0 / dt_s).clamp(0.0, 9_999_999.0) as f32,
-            )
-        } else {
-            (0.0, 0.0)
-        };
-        self.prev_in_octets = in_oct;
-        self.prev_out_octets = out_oct;
-        self.last_net_at = now;
+        let mut down_kbps = 0.0;
+        let mut up_kbps = 0.0;
+
+        if include_network {
+            let now = Instant::now();
+            let dt_s = now.duration_since(self.last_net_at).as_secs_f64();
+            let (in_oct, out_oct) = sample_network_octets();
+            if dt_s >= 0.05 && self.prev_in_octets > 0 {
+                let d_in = in_oct.saturating_sub(self.prev_in_octets);
+                let d_out = out_oct.saturating_sub(self.prev_out_octets);
+                down_kbps = (d_in as f64 / 1024.0 / dt_s).clamp(0.0, 9_999_999.0) as f32;
+                up_kbps = (d_out as f64 / 1024.0 / dt_s).clamp(0.0, 9_999_999.0) as f32;
+            }
+            self.prev_in_octets = in_oct;
+            self.prev_out_octets = out_oct;
+            self.last_net_at = now;
+        }
 
         let (pools, on_ac, battery_pct) = poll_memory_and_power();
 
@@ -230,6 +230,10 @@ impl TelemetryCollector {
             on_ac,
             battery_pct,
         }
+    }
+
+    pub fn poll(&mut self) -> HardwareTelemetry {
+        self.poll_with_network(true)
     }
 }
 

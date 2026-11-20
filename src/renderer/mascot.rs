@@ -1,4 +1,5 @@
 use super::*;
+use crate::painter_d2d::{PainterD2D, Color, rgba, Path, PathBuilder, Point, Transform, BlendMode};
 use std::sync::OnceLock;
 
 struct MascotSidePaths {
@@ -209,7 +210,7 @@ fn mascot_paths() -> &'static MascotPaths {
 
 impl Renderer {
     pub(crate) fn draw_cyno_mascot(
-        p: &mut Painter,
+        p: &mut PainterD2D,
         cx: f32,
         cy: f32,
         scale: f32,

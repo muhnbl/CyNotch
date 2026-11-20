@@ -1,5 +1,5 @@
+use crate::localtime::{format_ymd, local_now};
 use crate::models::ScreenTimeStats;
-use chrono::{Datelike, Local, Timelike};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::ffi::c_void;
@@ -148,10 +148,10 @@ impl ScreenTimeTracker {
     }
 
     pub fn new() -> Self {
-        let now = Local::now();
-        let ymd = (now.year(), now.month(), now.day());
-        let today = now.format("%Y-%m-%d").to_string();
-        let path = Self::appdata_storage_path();
+            let now = local_now();
+            let ymd = (now.year, now.month, now.day);
+            let today = format_ymd(now);
+            let path = Self::appdata_storage_path();
 
         if let Ok(content) = std::fs::read_to_string(&path)
             && let Ok(saved) = serde_json::from_str::<SavedScreenTimeV2>(&content)
@@ -222,40 +222,62 @@ impl ScreenTimeTracker {
         }
     }
 
-    pub fn reset_today(&mut self) {
-        let now = Local::now();
-        self.last_ymd = (now.year(), now.month(), now.day());
-        self.current_date = now.format("%Y-%m-%d").to_string();
-        self.app_seconds.clear();
-        self.total_seconds = 0;
-        self.hourly_seconds = [0u64; 24];
-        self.save();
-    }
-
-    pub fn tick(&mut self) -> ScreenTimeStats {
-        let now = Local::now();
-        let ymd = (now.year(), now.month(), now.day());
-        if ymd != self.last_ymd {
-            self.last_ymd = ymd;
-            let today = now.format("%Y-%m-%d").to_string();
-            self.rollover_if_needed(&today);
+        pub fn reset_today(&mut self) {
+            let now = local_now();
+            self.last_ymd = (now.year, now.month, now.day);
+            self.current_date = format_ymd(now);
+            self.app_seconds.clear();
+            self.total_seconds = 0;
+            self.hourly_seconds = [0u64; 24];
+            self.save();
         }
-        let hour = (now.hour() as usize).min(23);
 
-        if is_user_active_recently()
-            && let Some(app) = get_active_app_name()
-        {
-            self.total_seconds += 1;
-            self.hourly_seconds[hour] += 1;
-            *self.app_seconds.entry(app).or_insert(0) += 1;
+        fn should_periodic_save(total_seconds: u64) -> bool {
+            total_seconds == 1 || total_seconds % 60 == 0
+        }
 
-            if self.total_seconds == 1 || self.total_seconds.is_multiple_of(15) {
-                self.save();
+        pub fn tick_quiet(&mut self, include_top_apps: bool) -> ScreenTimeStats {
+            let now = local_now();
+            let ymd = (now.year, now.month, now.day);
+            if ymd != self.last_ymd {
+                self.last_ymd = ymd;
+                let today = format_ymd(now);
+                self.rollover_if_needed(&today);
+            }
+            let hour = (now.hour as usize).min(23);
+
+            if is_user_active_recently()
+                && let Some(app) = get_active_app_name()
+            {
+                self.total_seconds += 1;
+                self.hourly_seconds[hour] += 1;
+                *self.app_seconds.entry(app).or_insert(0) += 1;
+
+                if Self::should_periodic_save(self.total_seconds) {
+                    self.save();
+                }
+            }
+
+            if include_top_apps {
+                self.stats(hour)
+            } else {
+                ScreenTimeStats {
+                    today_secs: self.total_seconds,
+                    top_app_name: "--".to_string(),
+                    top_app_secs: 0,
+                    top_apps: vec![],
+                    seven_day_avg_secs: 0,
+                    tracked_days: 0,
+                    peak_hour: hour,
+                    peak_hour_str: "--".to_string(),
+                    hourly_secs: self.hourly_seconds,
+                }
             }
         }
 
-        self.stats(hour)
-    }
+        pub fn tick(&mut self) -> ScreenTimeStats {
+            self.tick_quiet(true)
+        }
 
     pub fn stats(&self, current_hour: usize) -> ScreenTimeStats {
         let mut sorted: Vec<(&str, u64)> = self
@@ -293,9 +315,18 @@ impl ScreenTimeTracker {
     }
 }
 
-impl Default for ScreenTimeTracker {
-    fn default() -> Self {
-        Self::new()
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_should_periodic_save() {
+        assert!(ScreenTimeTracker::should_periodic_save(1));
+        assert!(ScreenTimeTracker::should_periodic_save(60));
+        assert!(ScreenTimeTracker::should_periodic_save(120));
+        assert!(!ScreenTimeTracker::should_periodic_save(15));
+        assert!(!ScreenTimeTracker::should_periodic_save(30));
+        assert!(!ScreenTimeTracker::should_periodic_save(45));
     }
 }
 

@@ -1,8 +1,7 @@
 //! Stroke icons drawn as vector paths on a 24×24 grid (Lucide-style geometry).
 //! Segoe UI has no emoji/symbol glyphs, so text icons rendered as tofu boxes.
 
-use crate::painter::{Painter, rrect_path};
-use tiny_skia::{Color, PathBuilder};
+use crate::painter_d2d::{PainterD2D, Color, Path, PathBuilder, rrect_path};
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum Icon {
@@ -108,7 +107,7 @@ impl G {
     }
 }
 
-fn poly(g: &G, pts: &[(f32, f32)], close: bool) -> Option<tiny_skia::Path> {
+fn poly(g: &G, pts: &[(f32, f32)], close: bool) -> Option<Path> {
     let mut pb = PathBuilder::new();
     for (i, &(u, v)) in pts.iter().enumerate() {
         let (x, y) = g.p(u, v);
@@ -125,7 +124,7 @@ fn poly(g: &G, pts: &[(f32, f32)], close: bool) -> Option<tiny_skia::Path> {
 }
 
 /// Draw `icon` with its 24-grid box at (x, y) scaled to `size`.
-pub fn draw(p: &mut Painter, icon: Icon, x: f32, y: f32, size: f32, c: Color) {
+pub fn draw(p: &mut PainterD2D, icon: Icon, x: f32, y: f32, size: f32, c: Color) {
     let g = G {
         x,
         y,
