@@ -3676,19 +3676,56 @@ unsafe fn wnd_proc_inner(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPARAM) -
                 tick_notch_animation(hwnd);
             } else if wparam.0 == TIMER_HOVER_OPEN_ID {
                 let _ = KillTimer(hwnd, TIMER_HOVER_OPEN_ID);
+                let mut cur_pt = POINT::default();
+                let cursor_ok = GetCursorPos(&mut cur_pt).is_ok() && IsWindowVisible(hwnd).as_bool();
+                let mut client_pt = cur_pt;
+                if cursor_ok {
+                    let _ = ScreenToClient(hwnd, &mut client_pt);
+                }
+                let (cw, ch) = NOTCH_UI.with_borrow(|ui| (ui.prev_dib_w, ui.prev_dib_h));
                 let mut should_redraw = false;
+                let mut cursor_left = false;
                 if let Some(state_mutex) = get_global_state()
                     && let Ok(mut state) = state_mutex.lock()
                     && state.is_hover_pending
                 {
+                    let still_inside = cursor_ok && {
+                        let (w, h) = if cw > 0 && ch > 0 {
+                            (cw as f32, ch as f32)
+                        } else {
+                            (state.canvas_width() as f32, state.canvas_height() as f32)
+                        };
+                        Renderer::point_in_capsule(
+                            &state,
+                            w,
+                            h,
+                            client_pt.x as f32,
+                            client_pt.y as f32,
+                        )
+                    };
                     state.cancel_hover_dwell();
-                    if !state.click_to_open && state.notification.is_none() && !state.is_hovered {
+                    if still_inside
+                        && !state.click_to_open
+                        && state.notification.is_none()
+                        && !state.is_hovered
+                    {
                         state.set_hovered(true);
                         if state.record_notch_expand_for_hint() {
                             state.save_config();
                         }
                         should_redraw = true;
+                    } else if !still_inside {
+                        state.hover_target_idx = None;
+                        cursor_left = true;
+                        should_redraw = true;
                     }
+                }
+                if cursor_left {
+                    NOTCH_UI.with_borrow_mut(|ui| {
+                        ui.is_tracking_mouse = false;
+                        ui.pointer_pos = None;
+                        ui.hover_hit_idx = None;
+                    });
                 }
                 if should_redraw {
                     redraw_window(hwnd);

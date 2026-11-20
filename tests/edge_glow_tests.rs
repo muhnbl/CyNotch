@@ -273,3 +273,45 @@ fn corner_edge_glow_radiates_from_corner_with_zero_cutoff() {
     assert_eq!(tr_far_left, 0, "TopRight far left edge must be 0 alpha");
     assert_eq!(tr_far_bottom, 0, "TopRight far bottom edge must be 0 alpha");
 }
+
+#[test]
+fn edge_glow_overlay_is_truly_click_through_cross_process() {
+    use cynotch::edge_glow::EdgeGlowOverlay;
+    use windows::Win32::Foundation::POINT;
+    use windows::Win32::UI::WindowsAndMessaging::{
+        GWL_EXSTYLE, GetWindowLongW, HWND_TOPMOST, IsWindowVisible, WS_EX_LAYERED,
+        WS_EX_TRANSPARENT, WindowFromPoint,
+    };
+
+    let rect = (120, 40, 240, 120);
+    let mut overlay =
+        EdgeGlowOverlay::create(rect).expect("EdgeGlowOverlay::create should succeed");
+    overlay.sync(HWND_TOPMOST, rect, EdgeGlowAnchor::Top, 0.85);
+    let hwnd = overlay.hwnd();
+
+    unsafe {
+        assert!(
+            IsWindowVisible(hwnd).as_bool(),
+            "EdgeGlowOverlay should be visible after sync with intensity > 0.003"
+        );
+        let ex = GetWindowLongW(hwnd, GWL_EXSTYLE) as u32;
+        assert_ne!(
+            ex & WS_EX_TRANSPARENT.0,
+            0,
+            "EdgeGlowOverlay must have WS_EX_TRANSPARENT"
+        );
+        assert_ne!(
+            ex & WS_EX_LAYERED.0,
+            0,
+            "EdgeGlowOverlay must have WS_EX_LAYERED so WS_EX_TRANSPARENT passes clicks through cross-process"
+        );
+        let hit = WindowFromPoint(POINT {
+            x: rect.0 + 60,
+            y: rect.1 + 40,
+        });
+        assert_ne!(
+            hit, hwnd,
+            "WindowFromPoint must pass through EdgeGlowOverlay instead of intercepting clicks near the notch"
+        );
+    }
+}

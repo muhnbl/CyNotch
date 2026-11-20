@@ -4,7 +4,7 @@ use cynotch::models::AppState;
 use cynotch::window::is_idle_collapsed;
 
 #[test]
-fn hover_dwell_smoothstep_advances_to_one_at_240ms_and_fades_out_cleanly() {
+fn hover_dwell_smoothstep_advances_to_one_at_400ms_and_fades_out_cleanly() {
     let mut state = AppState::new_for_preview();
     state.show_mascot = false;
     state.equalizer_enabled = false;
@@ -22,26 +22,26 @@ fn hover_dwell_smoothstep_advances_to_one_at_240ms_and_fades_out_cleanly() {
     assert_eq!(state.anim_edge_glow_t, 0.0);
     assert_eq!(state.needs_animation_timer_ms(), Some(16));
 
-    // Halfway (120ms): smoothstep(0.5) == 0.5
-    let changed_mid = state.update_hover_dwell(t0 + Duration::from_millis(120));
+    // Halfway (200ms): smoothstep(0.5) == 0.5
+    let changed_mid = state.update_hover_dwell(t0 + Duration::from_millis(AppState::HOVER_DWELL_MS / 2));
     assert!(changed_mid);
     assert!(
         (state.hover_dwell_t - 0.5).abs() < 0.01,
-        "expected ~0.5 at 120ms, got {}",
+        "expected ~0.5 at 200ms, got {}",
         state.hover_dwell_t
     );
 
-    // Quarter (60ms -> smoothstep(0.25) = 0.15625)
+    // Quarter (100ms -> smoothstep(0.25) = 0.15625)
     let mut state_q = AppState::new_for_preview();
     state_q.begin_hover_dwell(t0);
-    state_q.update_hover_dwell(t0 + Duration::from_millis(60));
+    state_q.update_hover_dwell(t0 + Duration::from_millis(AppState::HOVER_DWELL_MS / 4));
     assert!(
         (state_q.hover_dwell_t - 0.15625).abs() < 0.01,
         "expected smoothstep(0.25)=0.15625, got {}",
         state_q.hover_dwell_t
     );
 
-    // Full 240ms: reaches 1.0
+    // Full 400ms: reaches 1.0
     let changed_end = state.update_hover_dwell(t0 + Duration::from_millis(AppState::HOVER_DWELL_MS));
     assert!(changed_end);
     assert!((state.hover_dwell_t - 1.0).abs() < f32::EPSILON);
@@ -63,7 +63,7 @@ fn hover_dwell_resets_when_expanded() {
     let mut state = AppState::new_for_preview();
     let t0 = Instant::now();
     state.begin_hover_dwell(t0);
-    state.update_hover_dwell(t0 + Duration::from_millis(180));
+    state.update_hover_dwell(t0 + Duration::from_millis(300));
     assert!(state.hover_dwell_t > 0.5);
 
     state.set_hovered(true);
@@ -95,8 +95,8 @@ fn edge_glow_fades_out_slowly_and_seamlessly_without_abrupt_cut() {
     state.windows_animations_enabled = true;
     state.sync_preview_settled();
 
-    // Start dwell 240ms in the past so hover_dwell_t is 1.0 (full portal bloom)
-    state.begin_hover_dwell(Instant::now() - Duration::from_millis(240));
+    // Start dwell 400ms in the past so hover_dwell_t is 1.0 (full portal bloom)
+    state.begin_hover_dwell(Instant::now() - Duration::from_millis(AppState::HOVER_DWELL_MS));
     for _ in 0..15 {
         state.update_animation(0.016);
     }

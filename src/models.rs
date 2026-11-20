@@ -163,24 +163,24 @@ pub enum TypeScale {
 pub enum HoverDwellSpeed {
     Quick,  // 120ms
     #[default]
-    Normal, // 240ms
-    Slow,   // 450ms
+    Normal, // 400ms
+    Slow,   // 700ms
 }
 
 impl HoverDwellSpeed {
     pub fn ms(self) -> u64 {
         match self {
             Self::Quick => 120,
-            Self::Normal => 240,
-            Self::Slow => 450,
+            Self::Normal => 400,
+            Self::Slow => 700,
         }
     }
 
     pub fn label(self) -> &'static str {
         match self {
             Self::Quick => "Quick (120ms)",
-            Self::Normal => "Normal (240ms)",
-            Self::Slow => "Slow (450ms)",
+            Self::Normal => "Normal (400ms)",
+            Self::Slow => "Slow (700ms)",
         }
     }
 
@@ -2852,7 +2852,7 @@ impl AppState {
             && self.notification_sound != crate::sound::NotificationSound::Mute
     }
 
-    pub const HOVER_DWELL_MS: u64 = 240;
+    pub const HOVER_DWELL_MS: u64 = 400;
 
     pub fn hover_dwell_ms(&self) -> u64 {
         self.hover_dwell_speed.ms()

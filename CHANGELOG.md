@@ -8,7 +8,7 @@
 ### 2. Physical Screen-Edge & Corner Portal Glow + Framer-Motion Spring Choreography
 - Added an independent click-through DirectComposition screen-edge portal glow window (`src/edge_glow.rs`) hugging the physical monitor bezel (`Top`, `Left`, `Right`) and **originating directly from the physical top-left / top-right corner (`TopLeft`, `TopRight`) when corner-docked**, with a 32-stop 16bpc float `C^2`-continuous radial violet aura, 5th-order smootherstep opening (`t³(6t² − 15t + 10)`), and a seamless ~1.2s atmospheric dissipation fade-out.
 - Upgraded notch expansion, dock active pill gliding, and Preferences category switching to critically-damped Framer-Motion spring physics (`spring_step` in `src/models.rs`), exclusively gated behind Windows *Animation Effects* (`SPI_GETCLIENTAREAANIMATION` — snaps instantaneously when Windows animations are disabled).
-- Added configurable **Hover Delay** presets (`Quick 120ms`, `Normal 240ms`, `Slow 450ms`) in `Motion & Perf`.
+- Added configurable **Hover Delay** presets (`Quick 120ms`, `Normal 400ms`, `Slow 700ms`) in `Motion & Perf`, plus true cross-process click-through (`WS_EX_LAYERED | WS_EX_TRANSPARENT`) on `EdgeGlowOverlay` and physical cursor re-verification on dwell expiry so accidental brush-throughs never swallow nearby clicks.
 
 ### 3. Notification Audio Deduplication & Unicode Bidi Box Fix
 - Replaced legacy sound variants with a gentle **fixed 25% volume Snapchat Pop chime** (`src/sound.rs`) with burst deduplication (plays once per simultaneous notification batch) and automatic native Windows toast sound muting/restoration (`sync_windows_notification_sound_mute`).

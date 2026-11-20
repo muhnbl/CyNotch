@@ -325,6 +325,7 @@ impl EdgeGlowOverlay {
             let ex_style = WS_EX_TOPMOST
                 | WS_EX_TOOLWINDOW
                 | WS_EX_NOACTIVATE
+                | WS_EX_LAYERED
                 | WS_EX_TRANSPARENT
                 | WS_EX_NOREDIRECTIONBITMAP;
             let hwnd = CreateWindowExW(
@@ -360,6 +361,10 @@ impl EdgeGlowOverlay {
                 last_rect: Some((x, y, w, h)),
             })
         }
+    }
+
+    pub fn hwnd(&self) -> HWND {
+        self.hwnd
     }
 
     pub fn hide(&mut self) {
