@@ -1151,13 +1151,16 @@ unsafe fn settings_wnd_proc_inner(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: 
                     if let Some(exclusive) = eff.sync_exclusive_banners
                         && let Some(st_arc) = get_settings_state()
                     {
-                        std::thread::spawn(move || {
-                            let count = notifications::set_exclusive_windows_banners(exclusive);
-                            if let Ok(mut st) = st_arc.lock() {
-                                st.notif_suppressed_apps = count;
-                            }
-                            post_redraw();
-                        });
+                        notifications::enqueue_exclusive_windows_banners(
+                            exclusive,
+                            Box::new(move |suppressed_count| {
+                                if let Ok(mut st) = st_arc.lock() {
+                                    st.notif_suppressed_apps = suppressed_count;
+                                }
+                                post_redraw();
+                                crate::window::post_redraw();
+                            }),
+                        );
                     }
                     if let Some(rm_borders) = eff.sync_windows_borders {
                         crate::borders::set_enabled(rm_borders);

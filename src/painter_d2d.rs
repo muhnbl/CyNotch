@@ -3421,11 +3421,11 @@ impl<'a> PainterD2D<'a> {
         if let Ok(geom) = self.cache.path_geom(path) {
             let col = c.to_d2d(ga);
             if let Ok(brush) = self.cache.solid(self.ctx, col) {
-                let style = self.stroke_style_round();
+                let style = self.cache.stroke_style_round();
                 let tf = self.tf().to_d2d_matrix3x2();
                 unsafe {
                     self.ctx.SetTransform(&tf);
-                    self.ctx.DrawGeometry(&geom, &brush, width, Some(&*style));
+                    self.ctx.DrawGeometry(&geom, &brush, width, style.as_ref());
                     self.ctx.SetTransform(&windows::Foundation::Numerics::Matrix3x2::identity());
                 }
             }
@@ -3437,12 +3437,12 @@ impl<'a> PainterD2D<'a> {
         if let Ok(geom) = self.cache.path_geom(path) {
             let col = c.to_d2d(ga);
             if let Ok(brush) = self.cache.solid(self.ctx, col) {
-                let style = self.stroke_style_round();
+                let style = self.cache.stroke_style_round();
                 let combined = self.tf().pre_concat(local_tf);
                 let tf = combined.to_d2d_matrix3x2();
                 unsafe {
                     self.ctx.SetTransform(&tf);
-                    self.ctx.DrawGeometry(&geom, &brush, width, Some(&*style));
+                    self.ctx.DrawGeometry(&geom, &brush, width, style.as_ref());
                     self.ctx.SetTransform(&windows::Foundation::Numerics::Matrix3x2::identity());
                 }
             }
@@ -3522,36 +3522,5 @@ impl<'a> PainterD2D<'a> {
                 }
             }
         }
-    }
-
-    fn stroke_style_round(&self) -> std::rc::Rc<windows::Win32::Graphics::Direct2D::ID2D1StrokeStyle> {
-        use std::cell::RefCell;
-        use std::rc::Rc;
-        thread_local! {
-            static STROKE_STYLE: RefCell<Option<Rc<windows::Win32::Graphics::Direct2D::ID2D1StrokeStyle>>> = RefCell::new(None);
-        }
-        STROKE_STYLE.with(|cell| {
-            let mut borrow = cell.borrow_mut();
-            if let Some(s) = borrow.as_ref() {
-                return s.clone();
-            }
-            let props = windows::Win32::Graphics::Direct2D::D2D1_STROKE_STYLE_PROPERTIES1 {
-                startCap: windows::Win32::Graphics::Direct2D::D2D1_CAP_STYLE_ROUND,
-                endCap: windows::Win32::Graphics::Direct2D::D2D1_CAP_STYLE_ROUND,
-                dashCap: windows::Win32::Graphics::Direct2D::D2D1_CAP_STYLE_ROUND,
-                lineJoin: windows::Win32::Graphics::Direct2D::D2D1_LINE_JOIN_ROUND,
-                miterLimit: 10.0,
-                dashOffset: 0.0,
-                dashStyle: windows::Win32::Graphics::Direct2D::D2D1_DASH_STYLE_SOLID,
-                transformType: windows::Win32::Graphics::Direct2D::D2D1_STROKE_TRANSFORM_TYPE_NORMAL,
-            };
-            let factory = self.cache.factory();
-            let style: windows::Win32::Graphics::Direct2D::ID2D1StrokeStyle = unsafe {
-                factory.CreateStrokeStyle(&props, None).unwrap().into()
-            };
-            let rc = Rc::new(style);
-            *borrow = Some(rc.clone());
-            rc
-        })
     }
 }

@@ -1,10 +1,17 @@
 use crate::models::LyricLine;
 use windows::Win32::Networking::WinHttp::{
     WinHttpCloseHandle, WinHttpConnect, WinHttpOpen, WinHttpOpenRequest, WinHttpReadData,
-    WinHttpReceiveResponse, WinHttpSendRequest, WinHttpSetTimeouts, WINHTTP_ACCESS_TYPE_DEFAULT_PROXY,
-    WINHTTP_FLAG_SECURE, WINHTTP_OPEN_REQUEST_FLAGS,
+    WinHttpReceiveResponse, WinHttpSendRequest, WinHttpSetTimeouts,
+    WINHTTP_ACCESS_TYPE_DEFAULT_PROXY, WINHTTP_FLAG_SECURE, WINHTTP_OPEN_REQUEST_FLAGS,
 };
-use windows_core::PCWSTR;
+use windows::core::{PCWSTR, w};
+
+const WINHTTP_USER_AGENT: PCWSTR = w!("CyNotch/0.3.0");
+const WINHTTP_METHOD_GET: PCWSTR = w!("GET");
+
+fn encode_utf16_z(s: &str) -> Vec<u16> {
+    s.encode_utf16().chain(std::iter::once(0)).collect()
+}
 
 pub fn fetch_lyrics(track_title: &str, artist_name: &str) -> Vec<LyricLine> {
     if track_title.is_empty()
@@ -51,11 +58,11 @@ pub fn parse_lrclib_response(json_str: &str) -> Vec<LyricLine> {
 
 fn http_get_string(host: &str, path_and_query: &str, timeout_ms: u32) -> Option<String> {
     unsafe {
-        let host_wide: Vec<u16> = host.encode_utf16().chain(std::iter::once(0)).collect();
-        let path_wide: Vec<u16> = path_and_query.encode_utf16().chain(std::iter::once(0)).collect();
+        let host_wide = encode_utf16_z(host);
+        let path_wide = encode_utf16_z(path_and_query);
 
         let session = WinHttpOpen(
-            PCWSTR::from_raw("CyNotch/0.3.0\0".as_ptr() as *const u16),
+            WINHTTP_USER_AGENT,
             WINHTTP_ACCESS_TYPE_DEFAULT_PROXY,
             None,
             None,
@@ -73,7 +80,7 @@ fn http_get_string(host: &str, path_and_query: &str, timeout_ms: u32) -> Option<
 
         let request = WinHttpOpenRequest(
             connect,
-            PCWSTR::from_raw("GET\0".as_ptr() as *const u16),
+            WINHTTP_METHOD_GET,
             PCWSTR(path_wide.as_ptr()),
             PCWSTR::null(),
             PCWSTR::null(),
@@ -185,4 +192,27 @@ fn urlencoding(s: &str) -> String {
         }
     }
     encoded
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn winhttp_constants_are_valid_utf16_null_terminated() {
+        let ua = unsafe { WINHTTP_USER_AGENT.as_wide() };
+        assert_eq!(String::from_utf16(ua).unwrap(), "CyNotch/0.3.0");
+        assert_eq!(unsafe { *WINHTTP_USER_AGENT.0.add(ua.len()) }, 0);
+
+        let method = unsafe { WINHTTP_METHOD_GET.as_wide() };
+        assert_eq!(String::from_utf16(method).unwrap(), "GET");
+        assert_eq!(unsafe { *WINHTTP_METHOD_GET.0.add(method.len()) }, 0);
+    }
+
+    #[test]
+    fn encode_utf16_z_produces_null_terminated_utf16() {
+        let wide = encode_utf16_z("lrclib.net");
+        assert_eq!(*wide.last().unwrap(), 0u16);
+        assert_eq!(String::from_utf16(&wide[..wide.len() - 1]).unwrap(), "lrclib.net");
+    }
 }

@@ -148,13 +148,19 @@ impl ScreenTimeTracker {
     }
 
     pub fn new() -> Self {
-            let now = local_now();
-            let ymd = (now.year, now.month, now.day);
-            let today = format_ymd(now);
-            let path = Self::appdata_storage_path();
+        Self::load_from_path(Self::appdata_storage_path())
+    }
 
-        if let Ok(content) = std::fs::read_to_string(&path)
-            && let Ok(saved) = serde_json::from_str::<SavedScreenTimeV2>(&content)
+    pub fn load_from_path(path: PathBuf) -> Self {
+        let now = local_now();
+        let ymd = (now.year, now.month, now.day);
+        let today = format_ymd(now);
+
+        if let Some(saved) = crate::persistence::load_json_with_recovery::<SavedScreenTimeV2, _>(
+            &path,
+            |s| s.hourly_seconds.len() <= 24,
+        )
+        .into_option()
         {
             let mut hours = [0u64; 24];
             for (i, v) in saved.hourly_seconds.iter().take(24).enumerate() {
@@ -207,9 +213,6 @@ impl ScreenTimeTracker {
         if self.total_seconds == 0 && self.daily_totals.is_empty() && !self.storage_path.exists() {
             return;
         }
-        if let Some(parent) = self.storage_path.parent() {
-            let _ = std::fs::create_dir_all(parent);
-        }
         let saved = SaveScreenTimeRef {
             current_date: &self.current_date,
             app_seconds: &self.app_seconds,
@@ -217,9 +220,7 @@ impl ScreenTimeTracker {
             hourly_seconds: &self.hourly_seconds,
             daily_totals: &self.daily_totals,
         };
-        if let Ok(json) = serde_json::to_string_pretty(&saved) {
-            let _ = std::fs::write(&self.storage_path, json);
-        }
+        let _ = crate::persistence::atomic_write_json(&self.storage_path, &saved, true);
     }
 
         pub fn reset_today(&mut self) {

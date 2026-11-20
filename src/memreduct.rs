@@ -153,7 +153,7 @@ unsafe extern "system" {
     ) -> i32;
     fn NtSetSystemInformation(
         system_information_class: u32,
-        system_information: *const c_void,
+        system_information: *mut c_void,
         system_information_length: u32,
     ) -> i32;
 }
@@ -443,7 +443,7 @@ pub fn execute_memory_clean_areas(areas: &CleanAreas) -> Option<CleanResult> {
                 &mut bytes_needed,
             );
             if ok != 0 {
-                let count = (bytes_needed as usize) / size_of::<u32>();
+                let count = ((bytes_needed as usize) / size_of::<u32>()).min(pids.len());
                 for &pid in &pids[..count] {
                     if pid == 0 || pid == self_pid {
                         continue;
@@ -458,10 +458,11 @@ pub fn execute_memory_clean_areas(areas: &CleanAreas) -> Option<CleanResult> {
                 }
             }
 
+            let mut cmd = CMD_EMPTY_WORKING_SETS;
             if is_elevated
                 && NtSetSystemInformation(
                     SYS_MEMORY_LIST_INFO,
-                    &CMD_EMPTY_WORKING_SETS as *const u32 as *const c_void,
+                    &mut cmd as *mut u32 as *mut c_void,
                     size_of::<u32>() as u32,
                 ) >= 0
             {
@@ -473,14 +474,14 @@ pub fn execute_memory_clean_areas(areas: &CleanAreas) -> Option<CleanResult> {
         if areas.system_file_cache {
             areas_attempted += 1;
             SetProcessWorkingSetSize(GetCurrentProcess(), usize::MAX, usize::MAX);
-            let sfci = SystemFileCacheInfo {
+            let mut sfci = SystemFileCacheInfo {
                 minimum_working_set: usize::MAX,
                 maximum_working_set: usize::MAX,
                 ..Default::default()
             };
             if NtSetSystemInformation(
                 SYS_FILE_CACHE_INFO,
-                &sfci as *const SystemFileCacheInfo as *const c_void,
+                &mut sfci as *mut SystemFileCacheInfo as *mut c_void,
                 size_of::<SystemFileCacheInfo>() as u32,
             ) >= 0
             {
@@ -491,9 +492,10 @@ pub fn execute_memory_clean_areas(areas: &CleanAreas) -> Option<CleanResult> {
         // 3. Modified Page List
         if areas.modified_page_list {
             areas_attempted += 1;
+            let mut cmd = CMD_FLUSH_MODIFIED_LIST;
             if NtSetSystemInformation(
                 SYS_MEMORY_LIST_INFO,
-                &CMD_FLUSH_MODIFIED_LIST as *const u32 as *const c_void,
+                &mut cmd as *mut u32 as *mut c_void,
                 size_of::<u32>() as u32,
             ) >= 0
             {
@@ -504,9 +506,10 @@ pub fn execute_memory_clean_areas(areas: &CleanAreas) -> Option<CleanResult> {
         // 4. Standby List
         if areas.standby_list {
             areas_attempted += 1;
+            let mut cmd = CMD_PURGE_STANDBY_LIST;
             if NtSetSystemInformation(
                 SYS_MEMORY_LIST_INFO,
-                &CMD_PURGE_STANDBY_LIST as *const u32 as *const c_void,
+                &mut cmd as *mut u32 as *mut c_void,
                 size_of::<u32>() as u32,
             ) >= 0
             {
@@ -517,9 +520,10 @@ pub fn execute_memory_clean_areas(areas: &CleanAreas) -> Option<CleanResult> {
         // 5. Standby List (Low Priority)
         if areas.standby_list_low {
             areas_attempted += 1;
+            let mut cmd = CMD_PURGE_LOW_PRIORITY_STANDBY_LIST;
             if NtSetSystemInformation(
                 SYS_MEMORY_LIST_INFO,
-                &CMD_PURGE_LOW_PRIORITY_STANDBY_LIST as *const u32 as *const c_void,
+                &mut cmd as *mut u32 as *mut c_void,
                 size_of::<u32>() as u32,
             ) >= 0
             {
@@ -539,7 +543,7 @@ pub fn execute_memory_clean_areas(areas: &CleanAreas) -> Option<CleanResult> {
         // 7. Registry Cache (Win 8.1+)
         if areas.registry_cache {
             areas_attempted += 1;
-            if NtSetSystemInformation(SYS_REGISTRY_RECONCILIATION_INFO, std::ptr::null(), 0) >= 0 {
+            if NtSetSystemInformation(SYS_REGISTRY_RECONCILIATION_INFO, std::ptr::null_mut(), 0) >= 0 {
                 kernel_caches_purged = true;
             }
         }
@@ -547,10 +551,10 @@ pub fn execute_memory_clean_areas(areas: &CleanAreas) -> Option<CleanResult> {
         // 8. Combine Memory Lists (Win 10+)
         if areas.combine_memory_lists {
             areas_attempted += 1;
-            let mci = MemoryCombineInformationEx::default();
+            let mut mci = MemoryCombineInformationEx::default();
             if NtSetSystemInformation(
                 SYS_COMBINE_PHYSICAL_MEMORY_INFO,
-                &mci as *const MemoryCombineInformationEx as *const c_void,
+                &mut mci as *mut MemoryCombineInformationEx as *mut c_void,
                 size_of::<MemoryCombineInformationEx>() as u32,
             ) >= 0
             {
@@ -666,7 +670,11 @@ pub fn clean_area_description(idx: usize) -> Option<&'static str> {
 
 #[cfg(test)]
 mod tests {
-    use super::clean_area_description;
+    use super::{
+        MemoryCombineInformationEx, MemoryStatusEx, SystemFileCacheInfo, TokenPrivilegesOne,
+        clean_area_description,
+    };
+    use std::mem::{align_of, size_of};
 
     #[test]
     fn clean_area_descriptions_cover_all_8_chips() {
@@ -675,5 +683,20 @@ mod tests {
             assert!(desc.contains('•'));
         }
         assert!(clean_area_description(8).is_none());
+    }
+
+    #[test]
+    fn nt_ffi_struct_layouts_match_windows_abi() {
+        assert_eq!(size_of::<MemoryStatusEx>(), 64);
+        assert_eq!(align_of::<MemoryStatusEx>(), 8);
+        assert_eq!(size_of::<TokenPrivilegesOne>(), 16);
+        assert_eq!(align_of::<TokenPrivilegesOne>(), 4);
+        #[cfg(target_pointer_width = "64")]
+        {
+            assert_eq!(size_of::<SystemFileCacheInfo>(), 64);
+            assert_eq!(align_of::<SystemFileCacheInfo>(), 8);
+            assert_eq!(size_of::<MemoryCombineInformationEx>(), 24);
+            assert_eq!(align_of::<MemoryCombineInformationEx>(), 8);
+        }
     }
 }

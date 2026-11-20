@@ -2143,16 +2143,15 @@ impl AppState {
         if json.is_empty() {
             return;
         }
-        let path = Self::config_path();
-        if let Some(parent) = path.parent() {
-            let _ = std::fs::create_dir_all(parent);
-        }
-        let _ = std::fs::write(path, json);
+        let _ = crate::persistence::atomic_write_json_str(&Self::config_path(), &json, true);
     }
 
     fn load_config() -> Option<PersistedConfig> {
-        let text = std::fs::read_to_string(Self::config_path()).ok()?;
-        serde_json::from_str::<PersistedConfig>(&text).ok()
+        crate::persistence::load_json_with_recovery::<PersistedConfig, _>(
+            &Self::config_path(),
+            |_| true,
+        )
+        .into_option()
     }
 
     pub fn apply_config_json(&mut self, json: &str) -> bool {
@@ -2237,11 +2236,7 @@ impl AppState {
         if !self.persistence_enabled {
             return;
         }
-        let dir = Self::appdata_dir();
-        let _ = std::fs::create_dir_all(&dir);
-        if let Ok(json) = serde_json::to_string_pretty(&self.tasks) {
-            let _ = std::fs::write(Self::tasks_path(), json);
-        }
+        let _ = crate::persistence::atomic_write_json(&Self::tasks_path(), &self.tasks, true);
         // Mirror TSV backup for interoperability with Nusa if present
         let mut lines = Vec::new();
         for t in &self.tasks {
@@ -2251,7 +2246,11 @@ impl AppState {
         let content = lines.join("\n");
         let nusa_path = "C:\\Users\\muhna\\AppData\\Local\\Packages\\citoxstd.Nusa_r9cmnhct3ptgm\\LocalCache\\Roaming\\Nusa\\tasks.txt";
         if std::path::Path::new(nusa_path).exists() {
-            let _ = std::fs::write(nusa_path, &content);
+            let _ = crate::persistence::atomic_write_bytes(
+                std::path::Path::new(nusa_path),
+                content.as_bytes(),
+                false,
+            );
         }
     }
 
@@ -2274,8 +2273,11 @@ impl AppState {
     }
 
     fn load_initial_tasks() -> Vec<TaskItem> {
-        if let Ok(json) = std::fs::read_to_string(Self::tasks_path())
-            && let Ok(items) = serde_json::from_str::<Vec<TaskItem>>(&json)
+        if let Some(items) = crate::persistence::load_json_with_recovery::<Vec<TaskItem>, _>(
+            &Self::tasks_path(),
+            |_| true,
+        )
+        .into_option()
         {
             return items;
         }
@@ -2293,20 +2295,16 @@ impl AppState {
         if !self.persistence_enabled {
             return;
         }
-        let dir = Self::appdata_dir();
-        let _ = std::fs::create_dir_all(&dir);
-        if let Ok(json) = serde_json::to_string_pretty(&self.shelf_items) {
-            let _ = std::fs::write(Self::shelf_path(), json);
-        }
+        let _ = crate::persistence::atomic_write_json(&Self::shelf_path(), &self.shelf_items, true);
     }
 
     fn load_initial_shelf() -> Vec<ShelfItem> {
-        if let Ok(json) = std::fs::read_to_string(Self::shelf_path())
-            && let Ok(items) = serde_json::from_str::<Vec<ShelfItem>>(&json)
-        {
-            return items;
-        }
-        Vec::new()
+        crate::persistence::load_json_with_recovery::<Vec<ShelfItem>, _>(
+            &Self::shelf_path(),
+            |_| true,
+        )
+        .into_option()
+        .unwrap_or_default()
     }
 
     pub fn new() -> Self {
