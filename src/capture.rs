@@ -477,19 +477,90 @@ pub fn read_clipboard_text(owner: HWND) -> Option<String> {
     }
 }
 
+const BLOCKED_SHELL_EXTENSIONS: &[&str] = &[
+    "exe", "com", "bat", "cmd", "ps1", "psm1", "psd1", "vbs", "vbe", "js", "jse", "wsf", "wsh",
+    "scr", "pif", "msi", "msp", "hta", "cpl", "msc", "reg", "lnk", "url", "jar", "inf", "scf",
+    "dll", "sys", "drv", "ocx",
+];
+
+/// Explicit security policy for `ShellExecuteW("open", ...)` targets originating from
+/// serialized shelf data or drag-and-drop payloads (BH-14):
+/// - Rejects empty strings, control characters, and UNC/network paths (`\\host\...`, `//host/...`, `\\?\UNC\...`).
+/// - Permits only `http://` and `https://` URI schemes (blocks `ms-msdt:`, `search-ms:`, `file:`, etc.).
+/// - For local filesystem targets, requires an existing local file/directory whose extension
+///   is not an executable, script, or shell shortcut.
+pub fn validate_shell_open_target(raw: &str) -> Result<String, &'static str> {
+    let trimmed = raw.trim();
+    if trimmed.is_empty() || trimmed.chars().any(|c| c.is_control()) {
+        return Err("empty or control characters in target");
+    }
+
+    let lower = trimmed.to_ascii_lowercase();
+    // Block UNC and extended-UNC network paths to prevent NTLM leaks & remote execution.
+    if trimmed.starts_with(r"\\") || trimmed.starts_with("//") || lower.starts_with(r"\\?\unc\") {
+        return Err("UNC network paths are blocked");
+    }
+
+    // Detect URI scheme (anything with `:` other than Windows drive letter like `C:\...` or `C:/...`).
+    if let Some(colon_idx) = trimmed.find(':') {
+        let is_drive_letter = colon_idx == 1
+            && trimmed
+                .as_bytes()
+                .first()
+                .is_some_and(|b| b.is_ascii_alphabetic())
+            && trimmed
+                .as_bytes()
+                .get(2)
+                .is_some_and(|&b| b == b'\\' || b == b'/');
+        if !is_drive_letter {
+            if lower.starts_with("https://") || lower.starts_with("http://") {
+                return Ok(trimmed.to_string());
+            }
+            return Err("URI scheme is not permitted");
+        }
+    }
+
+    let path = std::path::Path::new(trimmed);
+    if !path.exists() {
+        return Err("local target does not exist");
+    }
+    if path.is_file()
+        && let Some(ext) = path.extension().and_then(|e| e.to_str())
+        && BLOCKED_SHELL_EXTENSIONS.contains(&ext.to_ascii_lowercase().as_str())
+    {
+        return Err("executable or script file type is blocked");
+    }
+    Ok(trimmed.to_string())
+}
+
+struct ShellComGuard(bool);
+
+impl Drop for ShellComGuard {
+    fn drop(&mut self) {
+        if self.0 {
+            unsafe {
+                windows::Win32::System::Com::CoUninitialize();
+            }
+        }
+    }
+}
+
 pub fn shell_open_path(path: &str) {
-    let path_owned = path.to_string();
+    let Ok(safe_target) = validate_shell_open_target(path) else {
+        return;
+    };
     std::thread::spawn(move || {
         let wide_op: Vec<u16> = "open\0".encode_utf16().collect();
-        let wide_path: Vec<u16> = path_owned
+        let wide_path: Vec<u16> = safe_target
             .encode_utf16()
             .chain(std::iter::once(0))
             .collect();
         unsafe {
-            let _ = windows::Win32::System::Com::CoInitializeEx(
+            let hr = windows::Win32::System::Com::CoInitializeEx(
                 None,
                 windows::Win32::System::Com::COINIT_APARTMENTTHREADED,
             );
+            let _com = ShellComGuard(hr.is_ok());
             ShellExecuteW(
                 HWND::default(),
                 wide_op.as_ptr(),
@@ -500,4 +571,42 @@ pub fn shell_open_path(path: &str) {
             );
         }
     });
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn bh14_blocks_unc_dangerous_schemes_and_executables() {
+        assert!(validate_shell_open_target("").is_err());
+        assert!(validate_shell_open_target(r"\\attacker\share\doc.pdf").is_err());
+        assert!(validate_shell_open_target("//attacker/share/doc.pdf").is_err());
+        assert!(validate_shell_open_target(r"\\?\UNC\attacker\share\a.txt").is_err());
+        assert!(validate_shell_open_target("ms-msdt:/id PCWDiagnostic").is_err());
+        assert!(validate_shell_open_target("search-ms:query=test").is_err());
+        assert!(validate_shell_open_target("file:///C:/Windows/System32/cmd.exe").is_err());
+        assert!(validate_shell_open_target("javascript:alert(1)").is_err());
+        assert!(validate_shell_open_target("https://example.com/docs").is_ok());
+        assert!(validate_shell_open_target("http://localhost:8080/").is_ok());
+
+        let dir = std::env::temp_dir().join(format!("cynotch_shell_test_{}", std::process::id()));
+        let _ = std::fs::create_dir_all(&dir);
+        let safe_txt = dir.join("notes.txt");
+        let evil_bat = dir.join("run.bat");
+        let evil_lnk = dir.join("shortcut.lnk");
+        std::fs::write(&safe_txt, "hello").unwrap();
+        std::fs::write(&evil_bat, "@echo hi").unwrap();
+        std::fs::write(&evil_lnk, "fake").unwrap();
+
+        assert!(validate_shell_open_target(safe_txt.to_str().unwrap()).is_ok());
+        assert!(validate_shell_open_target(dir.to_str().unwrap()).is_ok());
+        assert!(validate_shell_open_target(evil_bat.to_str().unwrap()).is_err());
+        assert!(validate_shell_open_target(evil_lnk.to_str().unwrap()).is_err());
+        assert!(
+            validate_shell_open_target(dir.join("nonexistent.txt").to_str().unwrap()).is_err()
+        );
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 }

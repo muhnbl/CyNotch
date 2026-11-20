@@ -8,9 +8,21 @@ use windows::core::{PCWSTR, w};
 
 const WINHTTP_USER_AGENT: PCWSTR = w!("CyNotch/0.3.0");
 const WINHTTP_METHOD_GET: PCWSTR = w!("GET");
+/// Strict upper bound (512 KiB) on HTTP lyrics response body to prevent OOM DoS.
+const MAX_LYRICS_RESPONSE_BYTES: usize = 512 * 1024;
 
 fn encode_utf16_z(s: &str) -> Vec<u16> {
     s.encode_utf16().chain(std::iter::once(0)).collect()
+}
+
+/// Accumulates raw HTTP response chunks up to `max_bytes` and decodes UTF-8 once
+/// at the end so multi-byte UTF-8 characters split across read boundaries are never corrupted.
+fn append_bounded_chunk(raw: &mut Vec<u8>, chunk: &[u8], max_bytes: usize) -> bool {
+    if raw.len().saturating_add(chunk.len()) > max_bytes {
+        return false;
+    }
+    raw.extend_from_slice(chunk);
+    true
 }
 
 pub fn fetch_lyrics(track_title: &str, artist_name: &str) -> Vec<LyricLine> {
@@ -113,8 +125,9 @@ fn http_get_string(host: &str, path_and_query: &str, timeout_ms: u32) -> Option<
             return None;
         }
 
-        let mut body = String::new();
+        let mut raw_body: Vec<u8> = Vec::new();
         let mut buffer = [0u8; 8192];
+        let mut exceeded_limit = false;
         loop {
             let mut bytes_read: u32 = 0;
             let result = WinHttpReadData(
@@ -126,17 +139,21 @@ fn http_get_string(host: &str, path_and_query: &str, timeout_ms: u32) -> Option<
             if result.is_err() || bytes_read == 0 {
                 break;
             }
-            body.push_str(&String::from_utf8_lossy(&buffer[..bytes_read as usize]));
+            let n = (bytes_read as usize).min(buffer.len());
+            if !append_bounded_chunk(&mut raw_body, &buffer[..n], MAX_LYRICS_RESPONSE_BYTES) {
+                exceeded_limit = true;
+                break;
+            }
         }
 
         let _ = WinHttpCloseHandle(request);
         let _ = WinHttpCloseHandle(connect);
         let _ = WinHttpCloseHandle(session);
 
-        if body.is_empty() {
+        if exceeded_limit || raw_body.is_empty() {
             None
         } else {
-            Some(body)
+            Some(String::from_utf8_lossy(&raw_body).into_owned())
         }
     }
 }
@@ -214,5 +231,23 @@ mod tests {
         let wide = encode_utf16_z("lrclib.net");
         assert_eq!(*wide.last().unwrap(), 0u16);
         assert_eq!(String::from_utf16(&wide[..wide.len() - 1]).unwrap(), "lrclib.net");
+    }
+
+    #[test]
+    fn bh12_bounded_chunks_preserve_split_utf8_and_enforce_size_limit() {
+        // Multi-byte Japanese + emoji split across arbitrary chunk boundaries
+        let text = "夢の続き 🎵 ありがとう";
+        let bytes = text.as_bytes();
+        let mut acc = Vec::new();
+        for ch in bytes.chunks(2) {
+            assert!(append_bounded_chunk(&mut acc, ch, 1024));
+        }
+        assert_eq!(String::from_utf8(acc).unwrap(), text);
+
+        // Enforce strict upper bound (prevent OOM DoS)
+        let mut capped = Vec::new();
+        assert!(append_bounded_chunk(&mut capped, &[b'a'; 100], 128));
+        assert!(!append_bounded_chunk(&mut capped, &[b'b'; 50], 128));
+        assert_eq!(capped.len(), 100);
     }
 }

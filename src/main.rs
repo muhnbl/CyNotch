@@ -88,11 +88,13 @@ fn main() {
     log_info!("  Hotkeys: Ctrl+Shift+C (Toggle), M (Purge RAM), S (Capture)");
     log_info!("============================================================");
 
+    let is_smoke = std::env::var_os("CYNOTCH_SMOKE_EXIT_MS").is_some();
     let mut init_state = AppState::new();
     init_state.detected_hz = cynotch::window::detect_monitor_hz();
-    notifications::recover_windows_sound_mute_on_startup(init_state.should_mute_windows_notif_sound());
-    if init_state.should_mute_windows_notif_sound() {
-        notifications::sync_windows_notification_sound_mute(true);
+    if !is_smoke {
+        notifications::recover_windows_sound_mute_on_startup(
+            init_state.should_mute_windows_notif_sound(),
+        );
     }
     let state = Arc::new(Mutex::new(init_state));
 
@@ -494,13 +496,14 @@ fn main() {
         }
     });
 
-    let is_smoke = std::env::var_os("CYNOTCH_SMOKE_EXIT_MS").is_some();
     if !is_smoke {
         let mute_win_sound = state
             .lock()
             .map(|s| s.should_mute_windows_notif_sound())
             .unwrap_or(false);
-        notifications::sync_windows_notification_sound_mute(mute_win_sound);
+        if mute_win_sound {
+            notifications::sync_windows_notification_sound_mute(true);
+        }
     }
 
     match NotchWindow::create(state) {

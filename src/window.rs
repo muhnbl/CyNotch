@@ -1569,9 +1569,24 @@ impl NotchWindow {
     }
 }
 
-static TRAY_HICON: AtomicIsize = AtomicIsize::new(0);
+/// Stores `(raw_hicon, owned)`. Only `owned == true` handles (created via `CreateIconIndirect`)
+/// may ever be destroyed via `DestroyIcon`; shared handles from `LR_SHARED` / `IDI_APPLICATION`
+/// must never be destroyed (BH-24).
+static TRAY_HICON: Mutex<(isize, bool)> = Mutex::new((0, false));
 static LAST_TRAY_RAM_PCT: AtomicI32 = AtomicI32::new(-1);
 static LAST_TRAY_USED_TENTH: AtomicI32 = AtomicI32::new(-1);
+
+unsafe fn swap_tray_hicon(new_hicon: HICON, owned: bool) {
+    let prev = {
+        let mut guard = TRAY_HICON.lock().unwrap_or_else(|e| e.into_inner());
+        let old = *guard;
+        *guard = (new_hicon.0 as isize, owned);
+        old
+    };
+    if prev.1 && prev.0 != 0 {
+        let _ = DestroyIcon(HICON(prev.0 as *mut core::ffi::c_void));
+    }
+}
 
 const DIGIT_5X7: [[u8; 7]; 10] = [
     [
@@ -1738,11 +1753,11 @@ unsafe fn add_tray_icon(hwnd: HWND) {
     let pct = pct_f.round().clamp(0.0, 100.0) as i32;
     let used_tenth = (used_gb * 10.0).round() as i32;
     let icon_sz = GetSystemMetrics(SM_CXSMICON).clamp(16, 48);
-    let hicon = create_ram_tray_icon(pct as u32, icon_sz).unwrap_or_else(|| load_app_icon(icon_sz));
-    let old = TRAY_HICON.swap(hicon.0 as isize, Ordering::AcqRel);
-    if old != 0 {
-        let _ = DestroyIcon(HICON(old as *mut core::ffi::c_void));
-    }
+    let (hicon, owned) = match create_ram_tray_icon(pct as u32, icon_sz) {
+        Some(ic) => (ic, true),
+        None => (load_app_icon(icon_sz), false),
+    };
+    swap_tray_hicon(hicon, owned);
     LAST_TRAY_RAM_PCT.store(pct, Ordering::Release);
     LAST_TRAY_USED_TENTH.store(used_tenth, Ordering::Release);
 
@@ -1805,10 +1820,7 @@ unsafe fn update_tray_icon(hwnd: HWND) {
         LAST_TRAY_RAM_PCT.store(pct, Ordering::Release);
         LAST_TRAY_USED_TENTH.store(used_tenth, Ordering::Release);
         if let Some(ic) = new_icon {
-            let old = TRAY_HICON.swap(ic.0 as isize, Ordering::AcqRel);
-            if old != 0 {
-                let _ = DestroyIcon(HICON(old as *mut core::ffi::c_void));
-            }
+            swap_tray_hicon(ic, true);
         }
     } else if let Some(ic) = new_icon {
         let _ = DestroyIcon(ic);
@@ -1879,10 +1891,7 @@ unsafe fn remove_tray_icon(hwnd: HWND) {
         ..Default::default()
     };
     let _ = Shell_NotifyIconW(NIM_DELETE, &nid);
-    let old = TRAY_HICON.swap(0, Ordering::AcqRel);
-    if old != 0 {
-        let _ = DestroyIcon(HICON(old as *mut core::ffi::c_void));
-    }
+    swap_tray_hicon(HICON::default(), false);
 }
 
 unsafe fn track_last_foreground(exclude_hwnd: HWND) {

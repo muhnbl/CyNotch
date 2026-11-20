@@ -2232,25 +2232,35 @@ impl AppState {
         true
     }
 
+    fn nusa_tasks_path() -> Option<std::path::PathBuf> {
+        let local = std::env::var_os("LOCALAPPDATA")?;
+        Some(
+            std::path::PathBuf::from(local)
+                .join("Packages")
+                .join("citoxstd.Nusa_r9cmnhct3ptgm")
+                .join("LocalCache")
+                .join("Roaming")
+                .join("Nusa")
+                .join("tasks.txt"),
+        )
+    }
+
     pub fn save_tasks(&self) {
         if !self.persistence_enabled {
             return;
         }
         let _ = crate::persistence::atomic_write_json(&Self::tasks_path(), &self.tasks, true);
-        // Mirror TSV backup for interoperability with Nusa if present
+        // Mirror TSV backup for interoperability with Nusa if present in current user's profile
         let mut lines = Vec::new();
         for t in &self.tasks {
             let flag = if t.completed { "1" } else { "0" };
             lines.push(format!("{}\t{}", flag, t.text));
         }
         let content = lines.join("\n");
-        let nusa_path = "C:\\Users\\muhna\\AppData\\Local\\Packages\\citoxstd.Nusa_r9cmnhct3ptgm\\LocalCache\\Roaming\\Nusa\\tasks.txt";
-        if std::path::Path::new(nusa_path).exists() {
-            let _ = crate::persistence::atomic_write_bytes(
-                std::path::Path::new(nusa_path),
-                content.as_bytes(),
-                false,
-            );
+        if let Some(nusa_path) = Self::nusa_tasks_path()
+            && nusa_path.exists()
+        {
+            let _ = crate::persistence::atomic_write_bytes(&nusa_path, content.as_bytes(), false);
         }
     }
 
@@ -2281,8 +2291,9 @@ impl AppState {
         {
             return items;
         }
-        let nusa_path = "C:\\Users\\muhna\\AppData\\Local\\Packages\\citoxstd.Nusa_r9cmnhct3ptgm\\LocalCache\\Roaming\\Nusa\\tasks.txt";
-        if let Ok(content) = std::fs::read_to_string(nusa_path) {
+        if let Some(nusa_path) = Self::nusa_tasks_path()
+            && let Ok(content) = std::fs::read_to_string(&nusa_path)
+        {
             let parsed = Self::parse_tsv_tasks(&content);
             if !parsed.is_empty() {
                 return parsed;
@@ -2724,7 +2735,7 @@ impl AppState {
                 ShelfItem {
                     kind: ShelfKind::File,
                     label: "CyNotch_Design_Spec.pdf".to_string(),
-                    payload: "C:\\Users\\muhna\\Documents\\CyNotch_Design_Spec.pdf".to_string(),
+                    payload: "Documents\\CyNotch_Design_Spec.pdf".to_string(),
                 },
             ],
             shelf_scroll: 0,
