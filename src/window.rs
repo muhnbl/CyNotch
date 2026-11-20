@@ -4088,9 +4088,14 @@ unsafe fn redraw_window(hwnd: HWND) {
             if dpi > 0 { dpi as f32 / 96.0 } else { 1.0 }
         };
         let glow_scale = (state_snapshot.type_scale.ui_scale() * dpi_scale).max(0.5);
+        let glow_anchor = crate::edge_glow::EdgeGlowAnchor::from_placement_and_corners(
+            state_snapshot.placement,
+            state_snapshot.is_top_left_corner_docked(),
+            state_snapshot.is_top_right_corner_docked(),
+        );
         let glow_rect = crate::edge_glow::compute_edge_glow_rect(
             mon,
-            state_snapshot.placement,
+            glow_anchor,
             notch_cx,
             notch_cy,
             glow_scale,
@@ -4100,7 +4105,7 @@ unsafe fn redraw_window(hwnd: HWND) {
             glow_slot = crate::edge_glow::EdgeGlowOverlay::create(glow_rect);
         }
         if let Some(ref mut overlay) = glow_slot {
-            overlay.sync(hwnd, glow_rect, state_snapshot.placement, glow_intensity);
+            overlay.sync(hwnd, glow_rect, glow_anchor, glow_intensity);
         }
         NOTCH_UI.with_borrow_mut(|ui| {
             ui.edge_glow = glow_slot;

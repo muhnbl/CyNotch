@@ -239,34 +239,46 @@ fn main() -> Result<()> {
         notch(&ctx, &dir, name, &s)?;
     }
 
-    // v0.3.0 Polish visual snapshots: physical screen-edge glow (Top/Left/Right), hotkey hint, MemReduct chip hover
+    // v0.3.0 Polish visual snapshots: physical screen-edge & corner glow, hotkey hint, MemReduct chip hover
     let mut glow_cache = D2DResourceCache::new(&ctx)?;
-    for (name, placement, gw, gh) in [
+    for (name, anchor, gw, gh) in [
         (
             "edge_glow_top",
-            models::NotchPlacement::Top,
+            cynotch::edge_glow::EdgeGlowAnchor::Top,
             cynotch::edge_glow::EDGE_GLOW_TOP_SPAN,
             cynotch::edge_glow::EDGE_GLOW_DEPTH,
         ),
         (
             "edge_glow_left",
-            models::NotchPlacement::Left,
+            cynotch::edge_glow::EdgeGlowAnchor::Left,
             cynotch::edge_glow::EDGE_GLOW_DEPTH,
             cynotch::edge_glow::EDGE_GLOW_SIDE_SPAN,
         ),
         (
             "edge_glow_right",
-            models::NotchPlacement::Right,
+            cynotch::edge_glow::EdgeGlowAnchor::Right,
             cynotch::edge_glow::EDGE_GLOW_DEPTH,
             cynotch::edge_glow::EDGE_GLOW_SIDE_SPAN,
         ),
+        (
+            "edge_glow_top_left",
+            cynotch::edge_glow::EdgeGlowAnchor::TopLeft,
+            cynotch::edge_glow::EDGE_GLOW_CORNER_SPAN,
+            cynotch::edge_glow::EDGE_GLOW_CORNER_SPAN,
+        ),
+        (
+            "edge_glow_top_right",
+            cynotch::edge_glow::EdgeGlowAnchor::TopRight,
+            cynotch::edge_glow::EDGE_GLOW_CORNER_SPAN,
+            cynotch::edge_glow::EDGE_GLOW_CORNER_SPAN,
+        ),
     ] {
         snap_bg(&ctx, &dir, name, gw, gh, [6, 3, 10, 255], |c| {
-            cynotch::edge_glow::render_edge_glow_d2d(c, &mut glow_cache, placement, gw, gh, 0.96);
+            cynotch::edge_glow::render_edge_glow_d2d(c, &mut glow_cache, anchor, gw, gh, 0.96);
         })?;
         let white_name = format!("{name}_white");
         snap_bg(&ctx, &dir, &white_name, gw, gh, [255, 255, 255, 255], |c| {
-            cynotch::edge_glow::render_edge_glow_d2d(c, &mut glow_cache, placement, gw, gh, 0.96);
+            cynotch::edge_glow::render_edge_glow_d2d(c, &mut glow_cache, anchor, gw, gh, 0.96);
         })?;
     }
 

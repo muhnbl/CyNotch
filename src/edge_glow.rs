@@ -37,15 +37,47 @@ pub const EDGE_GLOW_DEPTH: u32 = 160;
 pub const EDGE_GLOW_TOP_SPAN: u32 = 580;
 /// Vertical span (px) along the left/right screen edge.
 pub const EDGE_GLOW_SIDE_SPAN: u32 = 480;
+/// Radial span (px) from a physical top-left / top-right monitor corner inward.
+pub const EDGE_GLOW_CORNER_SPAN: u32 = 340;
+
+/// Physical monitor edge or corner from which the ambient edge glow originates.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum EdgeGlowAnchor {
+    Top,
+    Left,
+    Right,
+    TopLeft,
+    TopRight,
+}
+
+impl EdgeGlowAnchor {
+    pub fn from_placement_and_corners(
+        placement: NotchPlacement,
+        top_left_corner: bool,
+        top_right_corner: bool,
+    ) -> Self {
+        if top_left_corner {
+            Self::TopLeft
+        } else if top_right_corner {
+            Self::TopRight
+        } else {
+            match placement {
+                NotchPlacement::Top => Self::Top,
+                NotchPlacement::Left => Self::Left,
+                NotchPlacement::Right => Self::Right,
+            }
+        }
+    }
+}
 
 static CLASS_REGISTERED: AtomicBool = AtomicBool::new(false);
 
-/// Computes the screen-space `(x, y, width, height)` for the monitor-edge glow strip.
-/// Strictly flush with the monitor bezel (`mon.top` / `mon.left` / `mon.right`)
-/// and centered around the notch's screen center, clamped to monitor bounds.
+/// Computes the screen-space `(x, y, width, height)` for the monitor-edge or corner glow overlay.
+/// Strictly flush with the monitor bezel (`mon.top` / `mon.left` / `mon.right` or top corners)
+/// and centered around the notch's screen center (or anchored at the corner), clamped to monitor bounds.
 pub fn compute_edge_glow_rect(
     mon: RECT,
-    placement: NotchPlacement,
+    anchor: EdgeGlowAnchor,
     notch_cx: i32,
     notch_cy: i32,
     scale_factor: f32,
@@ -55,29 +87,40 @@ pub fn compute_edge_glow_rect(
     let mon_h = (mon.bottom - mon.top).max(1);
     let top_span = (EDGE_GLOW_TOP_SPAN as f32 * s).round() as i32;
     let side_span = (EDGE_GLOW_SIDE_SPAN as f32 * s).round() as i32;
+    let corner_span = (EDGE_GLOW_CORNER_SPAN as f32 * s).round() as i32;
     let depth = (EDGE_GLOW_DEPTH as f32 * s).round().max(8.0) as i32;
 
-    match placement {
-        NotchPlacement::Top => {
+    match anchor {
+        EdgeGlowAnchor::Top => {
             let w = top_span.min(mon_w).max(1);
             let h = depth.min(mon_h).max(1);
             let max_x = (mon.right - w).max(mon.left);
             let x = (notch_cx - w / 2).clamp(mon.left, max_x);
             (x, mon.top, w as u32, h as u32)
         }
-        NotchPlacement::Left => {
+        EdgeGlowAnchor::Left => {
             let w = depth.min(mon_w).max(1);
             let h = side_span.min(mon_h).max(1);
             let max_y = (mon.bottom - h).max(mon.top);
             let y = (notch_cy - h / 2).clamp(mon.top, max_y);
             (mon.left, y, w as u32, h as u32)
         }
-        NotchPlacement::Right => {
+        EdgeGlowAnchor::Right => {
             let w = depth.min(mon_w).max(1);
             let h = side_span.min(mon_h).max(1);
             let max_y = (mon.bottom - h).max(mon.top);
             let y = (notch_cy - h / 2).clamp(mon.top, max_y);
             (mon.right - w, y, w as u32, h as u32)
+        }
+        EdgeGlowAnchor::TopLeft => {
+            let w = corner_span.min(mon_w).max(1);
+            let h = corner_span.min(mon_h).max(1);
+            (mon.left, mon.top, w as u32, h as u32)
+        }
+        EdgeGlowAnchor::TopRight => {
+            let w = corner_span.min(mon_w).max(1);
+            let h = corner_span.min(mon_h).max(1);
+            (mon.right - w, mon.top, w as u32, h as u32)
         }
     }
 }
@@ -129,7 +172,7 @@ fn create_radial_brush(
 pub fn render_edge_glow_d2d(
     ctx: &ID2D1DeviceContext,
     _cache: &mut D2DResourceCache,
-    placement: NotchPlacement,
+    anchor: EdgeGlowAnchor,
     width: u32,
     height: u32,
     intensity: f32,
@@ -157,20 +200,42 @@ pub fn render_edge_glow_d2d(
     let depth_t = (0.70 + 0.30 * (1.0 - (1.0 - e).powi(2))).min(1.0);
     let alpha_t = (e.powf(1.12) * 0.56).clamp(0.0, 1.0);
 
-    let (edge_len, max_depth) = match placement {
-        NotchPlacement::Top => (w, h),
-        NotchPlacement::Left | NotchPlacement::Right => (h, w),
-    };
-
-    // Keep elliptical radii well inside the HWND bounds (<= 90% depth, <= 45% span)
-    // so alpha reaches 0.000 several pixels before the window edge (zero rectangular cut-off).
-    let span_radius = (edge_len * 0.45 * span_t).min(edge_len * 0.47 - 4.0).max(8.0);
-    let depth_radius = (max_depth * 0.90 * depth_t).min(max_depth - 6.0).max(6.0);
-
-    let center = match placement {
-        NotchPlacement::Top => D2D_POINT_2F { x: w * 0.5, y: 0.0 },
-        NotchPlacement::Left => D2D_POINT_2F { x: 0.0, y: h * 0.5 },
-        NotchPlacement::Right => D2D_POINT_2F { x: w, y: h * 0.5 },
+    // Keep elliptical radii well inside the HWND bounds so alpha reaches 0.000
+    // several pixels before the inner window edges (zero rectangular cut-off).
+    let (center, o_rx, o_ry) = match anchor {
+        EdgeGlowAnchor::Top => {
+            let span_radius = (w * 0.45 * span_t).min(w * 0.47 - 4.0).max(8.0);
+            let depth_radius = (h * 0.90 * depth_t).min(h - 6.0).max(6.0);
+            (
+                D2D_POINT_2F { x: w * 0.5, y: 0.0 },
+                span_radius,
+                depth_radius,
+            )
+        }
+        EdgeGlowAnchor::Left => {
+            let span_radius = (h * 0.45 * span_t).min(h * 0.47 - 4.0).max(8.0);
+            let depth_radius = (w * 0.90 * depth_t).min(w - 6.0).max(6.0);
+            (
+                D2D_POINT_2F { x: 0.0, y: h * 0.5 },
+                depth_radius,
+                span_radius,
+            )
+        }
+        EdgeGlowAnchor::Right => {
+            let span_radius = (h * 0.45 * span_t).min(h * 0.47 - 4.0).max(8.0);
+            let depth_radius = (w * 0.90 * depth_t).min(w - 6.0).max(6.0);
+            (D2D_POINT_2F { x: w, y: h * 0.5 }, depth_radius, span_radius)
+        }
+        EdgeGlowAnchor::TopLeft => {
+            let rx = (w * 0.90 * span_t).min(w - 6.0).max(6.0);
+            let ry = (h * 0.90 * span_t).min(h - 6.0).max(6.0);
+            (D2D_POINT_2F { x: 0.0, y: 0.0 }, rx, ry)
+        }
+        EdgeGlowAnchor::TopRight => {
+            let rx = (w * 0.90 * span_t).min(w - 6.0).max(6.0);
+            let ry = (h * 0.90 * span_t).min(h - 6.0).max(6.0);
+            (D2D_POINT_2F { x: w, y: 0.0 }, rx, ry)
+        }
     };
 
     let bounds = D2D_RECT_F {
@@ -199,11 +264,6 @@ pub fn render_edge_glow_d2d(
             color: d2d_rgba(red, grn, blu, bell * alpha_t),
         };
     }
-
-    let (o_rx, o_ry) = match placement {
-        NotchPlacement::Top => (span_radius, depth_radius),
-        NotchPlacement::Left | NotchPlacement::Right => (depth_radius, span_radius),
-    };
 
     unsafe {
         if let Ok(brush) = create_radial_brush(ctx, center, o_rx, o_ry, &stops) {
@@ -317,7 +377,7 @@ impl EdgeGlowOverlay {
         &mut self,
         notch_hwnd: HWND,
         rect: (i32, i32, u32, u32),
-        placement: NotchPlacement,
+        anchor: EdgeGlowAnchor,
         intensity: f32,
     ) {
         if intensity <= 0.003 {
@@ -340,7 +400,7 @@ impl EdgeGlowOverlay {
                 if let Some(ref mut cache) = self.cache
                     && let Ok(ctx) = host.begin_d2d_draw()
                 {
-                    render_edge_glow_d2d(ctx, cache, placement, w, h, intensity);
+                    render_edge_glow_d2d(ctx, cache, anchor, w, h, intensity);
                     rendered = host.end_d2d_draw_and_present().is_ok();
                 }
             }
@@ -355,7 +415,7 @@ impl EdgeGlowOverlay {
                     if let Some(ref mut c) = cache
                         && let Ok(ctx) = host.begin_d2d_draw()
                     {
-                        render_edge_glow_d2d(ctx, c, placement, w, h, intensity);
+                        render_edge_glow_d2d(ctx, c, anchor, w, h, intensity);
                         rendered = host.end_d2d_draw_and_present().is_ok();
                     }
                     self.cache = cache;
