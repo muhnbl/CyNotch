@@ -133,12 +133,7 @@ impl MediaPoller {
                         let ft = unsafe { GetSystemTimeAsFileTime() };
                         let now_100ns =
                             ((ft.dwHighDateTime as i64) << 32) | (ft.dwLowDateTime as u32 as i64);
-                        let delta_ms = (now_100ns - dt.UniversalTime) / 10_000;
-                        if (0..=3_600_000).contains(&delta_ms) {
-                            delta_ms as u64
-                        } else {
-                            0
-                        }
+                        compute_playback_extra_ms(now_100ns, dt.UniversalTime)
                     })
                     .unwrap_or(0)
             } else {
@@ -160,6 +155,20 @@ impl MediaPoller {
             })
         }));
         res.ok().flatten()
+    }
+}
+
+/// Safely computes elapsed playback milliseconds since WinRT `LastUpdatedTime`
+/// without overflowing on sentinel or out-of-range timestamps (BH-27).
+fn compute_playback_extra_ms(now_100ns: i64, updated_100ns: i64) -> u64 {
+    let Some(diff) = now_100ns.checked_sub(updated_100ns) else {
+        return 0;
+    };
+    let delta_ms = diff / 10_000;
+    if (0..=3_600_000).contains(&delta_ms) {
+        delta_ms as u64
+    } else {
+        0
     }
 }
 
@@ -359,5 +368,13 @@ mod tests {
             assert!(w[1] > w[0], "seeks must never regress out-of-order: {:?}", *vals);
         }
         assert_eq!(*vals.last().unwrap(), 200);
+    }
+
+    #[test]
+    fn bh27_playback_extra_ms_handles_sentinel_and_overflow_timestamps() {
+        assert_eq!(compute_playback_extra_ms(1_000_000, i64::MIN), 0);
+        assert_eq!(compute_playback_extra_ms(i64::MIN, i64::MAX), 0);
+        assert_eq!(compute_playback_extra_ms(10_000_000, 15_000_000), 0);
+        assert_eq!(compute_playback_extra_ms(50_000_000, 20_000_000), 3_000);
     }
 }

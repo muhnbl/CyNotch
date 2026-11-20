@@ -175,9 +175,10 @@ fn main() {
                 if notif_enabled {
                     if !notif_bridge.is_connected() {
                         let st_now = notif_bridge.status();
+                        let perm_needed = st_now.eq_ignore_ascii_case("permission needed");
                         let should_try = st_now == "Off"
-                            || (st_now != "Permission needed" && notif_retry_ticks >= 10)
-                            || (st_now == "Permission needed" && notif_retry_ticks >= 20);
+                            || (!perm_needed && notif_retry_ticks >= 10)
+                            || (perm_needed && notif_retry_ticks >= 20);
                         if should_try {
                             notif_retry_ticks = 0;
                             let st_str = notif_bridge.try_init();

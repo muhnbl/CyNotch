@@ -77,7 +77,7 @@ pub fn is_user_active_recently() -> bool {
 pub fn format_hour_label(hour: usize) -> String {
     match hour % 24 {
         0 => "12 AM".to_string(),
-        1..=11 => format!("{} AM", hour),
+        h @ 1..=11 => format!("{} AM", h),
         12 => "12 PM".to_string(),
         h => format!("{} PM", h - 12),
     }
@@ -317,7 +317,7 @@ impl ScreenTimeTracker {
 }
 
 #[cfg(test)]
-mod tests {
+mod label_tests {
     use super::*;
 
     #[test]
@@ -402,5 +402,22 @@ pub fn get_active_app_name() -> Option<String> {
         }
 
         None
+    }
+}
+
+#[cfg(test)]
+mod hour_label_tests {
+    use super::*;
+
+    #[test]
+    fn bh27_format_hour_label_wraps_modulo_24() {
+        assert_eq!(format_hour_label(0), "12 AM");
+        assert_eq!(format_hour_label(1), "1 AM");
+        assert_eq!(format_hour_label(12), "12 PM");
+        assert_eq!(format_hour_label(23), "11 PM");
+        assert_eq!(format_hour_label(24), "12 AM");
+        assert_eq!(format_hour_label(25), "1 AM");
+        assert_eq!(format_hour_label(35), "11 AM");
+        assert_eq!(format_hour_label(37), "1 PM");
     }
 }

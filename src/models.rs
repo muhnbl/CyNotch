@@ -2039,6 +2039,7 @@ impl AppState {
                 let prev_frosted = self.is_frosted_active();
                 let was_exclusive = self.notif_exclusive_mode;
                 let was_listening = self.notif_listener_enabled;
+                let was_rm_borders = self.remove_windows_borders;
                 self.reset_all_settings();
                 if !was_listening && self.notif_listener_enabled {
                     eff.request_notif_access = true;
@@ -2048,6 +2049,9 @@ impl AppState {
                 }
                 if was_exclusive {
                     eff.sync_exclusive_banners = Some(false);
+                }
+                if was_rm_borders {
+                    eff.sync_windows_borders = Some(false);
                 }
                 eff.sync_win_notif_sound_mute = Some(self.should_mute_windows_notif_sound());
             }
@@ -2245,18 +2249,59 @@ impl AppState {
         )
     }
 
+    fn escape_tsv_field(raw: &str) -> String {
+        let mut out = String::with_capacity(raw.len());
+        for ch in raw.chars() {
+            match ch {
+                '\\' => out.push_str("\\\\"),
+                '\t' => out.push_str("\\t"),
+                '\n' => out.push_str("\\n"),
+                '\r' => out.push_str("\\r"),
+                c => out.push(c),
+            }
+        }
+        out
+    }
+
+    fn unescape_tsv_field(raw: &str) -> String {
+        let mut out = String::with_capacity(raw.len());
+        let mut chars = raw.chars();
+        while let Some(ch) = chars.next() {
+            if ch == '\\' {
+                match chars.next() {
+                    Some('t') => out.push('\t'),
+                    Some('n') => out.push('\n'),
+                    Some('r') => out.push('\r'),
+                    Some('\\') => out.push('\\'),
+                    Some(other) => {
+                        out.push('\\');
+                        out.push(other);
+                    }
+                    None => out.push('\\'),
+                }
+            } else {
+                out.push(ch);
+            }
+        }
+        out
+    }
+
+    pub fn format_tsv_tasks(tasks: &[TaskItem]) -> String {
+        let mut lines = Vec::with_capacity(tasks.len());
+        for t in tasks {
+            let flag = if t.completed { "1" } else { "0" };
+            lines.push(format!("{}\t{}", flag, Self::escape_tsv_field(&t.text)));
+        }
+        lines.join("\n")
+    }
+
     pub fn save_tasks(&self) {
         if !self.persistence_enabled {
             return;
         }
         let _ = crate::persistence::atomic_write_json(&Self::tasks_path(), &self.tasks, true);
         // Mirror TSV backup for interoperability with Nusa if present in current user's profile
-        let mut lines = Vec::new();
-        for t in &self.tasks {
-            let flag = if t.completed { "1" } else { "0" };
-            lines.push(format!("{}\t{}", flag, t.text));
-        }
-        let content = lines.join("\n");
+        let content = Self::format_tsv_tasks(&self.tasks);
         if let Some(nusa_path) = Self::nusa_tasks_path()
             && nusa_path.exists()
         {
@@ -2264,19 +2309,23 @@ impl AppState {
         }
     }
 
-    fn parse_tsv_tasks(content: &str) -> Vec<TaskItem> {
+    pub fn parse_tsv_tasks(content: &str) -> Vec<TaskItem> {
         let mut list = Vec::new();
         for line in content.lines() {
-            let parts: Vec<&str> = line.split('\t').collect();
-            if let Some(text) = parts.last() {
-                let trimmed = text.trim();
-                if !trimmed.is_empty() {
-                    let completed = parts.first().map(|s| s.trim() == "1").unwrap_or(false);
-                    list.push(TaskItem {
-                        text: trimmed.to_string(),
-                        completed,
-                    });
-                }
+            if line.trim().is_empty() {
+                continue;
+            }
+            let (completed, raw_text) = match line.split_once('\t') {
+                Some((flag, rest)) => (flag.trim() == "1", rest),
+                None => (false, line),
+            };
+            let decoded = Self::unescape_tsv_field(raw_text);
+            let trimmed = decoded.trim();
+            if !trimmed.is_empty() {
+                list.push(TaskItem {
+                    text: trimmed.to_string(),
+                    completed,
+                });
             }
         }
         list
@@ -2456,25 +2505,25 @@ impl AppState {
         let idle_s = type_scale.idle_ui_scale();
         let idle_w = if placement.is_vertical() {
             if minimized_island {
-                Self::MINIMIZED_VERT_WIDTH
+                size_preset.minimized_thickness()
             } else {
-                (Self::VERT_IDLE_WIDTH * idle_s).round()
+                (size_preset.idle_width_vertical() * idle_s).round()
             }
         } else if minimized_island {
-            Self::MINIMIZED_WIDTH
+            size_preset.minimized_length()
         } else {
             (size_preset.idle_width() * idle_s).round()
         };
         let idle_h = if placement.is_vertical() {
             if minimized_island {
-                Self::MINIMIZED_VERT_HEIGHT
+                size_preset.minimized_length()
             } else {
                 (size_preset.idle_height_vertical() * idle_s).round()
             }
         } else if minimized_island {
-            Self::MINIMIZED_HEIGHT
+            size_preset.minimized_thickness()
         } else {
-            (Self::IDLE_HEIGHT * idle_s).round()
+            (size_preset.idle_height_horizontal() * idle_s).round()
         };
         let exp_s = expanded_size.scale() * type_scale.ui_scale();
         let exp_w = (if placement.is_vertical() {
@@ -2973,6 +3022,7 @@ impl AppState {
         self.frosted_glass_enabled = true;
         self.frosted_opacity_pct = 68;
         self.frosted_blur_px = 20;
+        self.remove_windows_borders = false;
         self.notif_listener_enabled = true;
         self.notif_exclusive_mode = false;
         self.notif_auto_clear_action_center = false;
@@ -3007,8 +3057,7 @@ impl AppState {
             self.target_width = self.expanded_width();
             self.target_height = self.expanded_height();
         } else {
-            self.target_width = self.idle_width();
-            self.target_height = self.idle_height();
+            self.sync_collapsed_targets();
         }
         self.save_config();
     }
@@ -3876,5 +3925,56 @@ impl AppState {
             assert!(state2.dismiss_hotkey_hint());
             assert!(state2.seen_hotkey_hint);
             assert!(!state2.dismiss_hotkey_hint());
+        }
+
+        #[test]
+        fn bh22_tsv_tasks_preserve_tabs_newlines_and_legacy_lines() {
+            let tasks = vec![
+                TaskItem {
+                    text: "Line1\nLine2\tColB".to_string(),
+                    completed: true,
+                },
+                TaskItem {
+                    text: "Path C:\\temp\\file".to_string(),
+                    completed: false,
+                },
+            ];
+            let encoded = AppState::format_tsv_tasks(&tasks);
+            let decoded = AppState::parse_tsv_tasks(&encoded);
+            assert_eq!(decoded.len(), 2);
+            assert_eq!(decoded[0].text, tasks[0].text);
+            assert!(decoded[0].completed);
+            assert_eq!(decoded[1].text, tasks[1].text);
+            assert!(!decoded[1].completed);
+
+            // Backward compatibility: legacy unescaped TSV with raw tab inside text
+            let legacy = "1\tKeep first\tand second";
+            let parsed_legacy = AppState::parse_tsv_tasks(legacy);
+            assert_eq!(parsed_legacy.len(), 1);
+            assert!(parsed_legacy[0].completed);
+            assert_eq!(parsed_legacy[0].text, "Keep first\tand second");
+        }
+
+        #[test]
+        fn bh22_reset_all_settings_resets_borders_and_preserves_active_banner_geometry() {
+            let mut st = AppState::new_for_preview();
+            st.remove_windows_borders = true;
+            st.is_hovered = false;
+            st.set_notification(
+                "Alert".to_string(),
+                "Body".to_string(),
+                NotificationKind::General,
+                true,
+            );
+            let banner_w = st.target_width;
+            let eff = st
+                .apply_setting_action(Action::ResetAllSettings)
+                .expect("effect");
+            assert!(!st.remove_windows_borders);
+            assert_eq!(eff.sync_windows_borders, Some(false));
+            assert!(
+                (st.target_width - banner_w).abs() < 1.0,
+                "active collapsed banner width must not be clobbered to idle pill"
+            );
         }
     }

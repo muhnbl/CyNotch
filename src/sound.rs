@@ -47,12 +47,14 @@ impl NotificationSound {
 }
 
 /// Locates the `data` subchunk in a standard RIFF/WAVE container.
+/// Honors RIFF 2-byte word alignment for odd-sized subchunks and uses checked arithmetic
+/// so malformed chunk sizes cannot overflow or loop infinitely (BH-22).
 pub fn find_data_chunk(bytes: &[u8]) -> Option<(usize, usize)> {
     if bytes.len() < 12 || &bytes[0..4] != b"RIFF" || &bytes[8..12] != b"WAVE" {
         return None;
     }
-    let mut pos = 12;
-    while pos + 8 <= bytes.len() {
+    let mut pos: usize = 12;
+    while pos.checked_add(8).is_some_and(|hdr_end| hdr_end <= bytes.len()) {
         let chunk_id = &bytes[pos..pos + 4];
         let chunk_size = u32::from_le_bytes([
             bytes[pos + 4],
@@ -62,10 +64,11 @@ pub fn find_data_chunk(bytes: &[u8]) -> Option<(usize, usize)> {
         ]) as usize;
         let data_start = pos + 8;
         if chunk_id == b"data" {
-            let data_end = (data_start + chunk_size).min(bytes.len());
+            let data_end = data_start.saturating_add(chunk_size).min(bytes.len());
             return Some((data_start, data_end));
         }
-        pos = data_start + chunk_size;
+        let pad = chunk_size & 1;
+        pos = data_start.checked_add(chunk_size)?.checked_add(pad)?;
     }
     None
 }
@@ -199,4 +202,36 @@ pub fn play_notification_sound(
 
     play_sound(sound);
     true
+}
+
+#[cfg(test)]
+mod riff_edge_tests {
+    use super::*;
+
+    #[test]
+    fn bh22_find_data_chunk_handles_odd_subchunk_padding_and_overflow_size() {
+        // Build minimal RIFF/WAVE with an odd-sized 3-byte INFO chunk + 1 pad byte + 4-byte data chunk
+        let mut wav = Vec::new();
+        wav.extend_from_slice(b"RIFF");
+        wav.extend_from_slice(&32u32.to_le_bytes());
+        wav.extend_from_slice(b"WAVE");
+        wav.extend_from_slice(b"JUNK");
+        wav.extend_from_slice(&3u32.to_le_bytes()); // odd size
+        wav.extend_from_slice(&[1, 2, 3, 0]); // 3 data bytes + 1 RIFF pad byte
+        let data_hdr = wav.len();
+        wav.extend_from_slice(b"data");
+        wav.extend_from_slice(&4u32.to_le_bytes());
+        wav.extend_from_slice(&[0x10, 0x00, 0x20, 0x00]);
+
+        assert_eq!(find_data_chunk(&wav), Some((data_hdr + 8, data_hdr + 12)));
+
+        // Malformed chunk with u32::MAX size must return None without overflow or hang
+        let mut bad = Vec::new();
+        bad.extend_from_slice(b"RIFF");
+        bad.extend_from_slice(&20u32.to_le_bytes());
+        bad.extend_from_slice(b"WAVE");
+        bad.extend_from_slice(b"JUNK");
+        bad.extend_from_slice(&u32::MAX.to_le_bytes());
+        assert_eq!(find_data_chunk(&bad), None);
+    }
 }

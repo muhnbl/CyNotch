@@ -58,6 +58,18 @@ pub fn format_rfc3339(lt: LocalTime) -> String {
     )
 }
 
+fn compute_utc_offset_minutes(tz_id: u32, bias: i32, standard_bias: i32, daylight_bias: i32) -> i32 {
+    // Windows TIME_ZONE_INFORMATION:
+    // UTC = local + Bias + (StandardBias if TIME_ZONE_ID_STANDARD (1), DaylightBias if TIME_ZONE_ID_DAYLIGHT (2))
+    // RFC3339 offset is local - UTC = -total_bias.
+    let total_bias = match tz_id {
+        2 => bias.saturating_add(daylight_bias), // TIME_ZONE_ID_DAYLIGHT
+        1 => bias.saturating_add(standard_bias), // TIME_ZONE_ID_STANDARD
+        _ => bias,                               // TIME_ZONE_ID_UNKNOWN
+    };
+    -total_bias
+}
+
 fn get_utc_offset_minutes() -> i32 {
     unsafe {
         let mut tzi: TIME_ZONE_INFORMATION = TIME_ZONE_INFORMATION::default();
@@ -65,16 +77,7 @@ fn get_utc_offset_minutes() -> i32 {
         if result == 0xFFFFFFFF {
             return 0;
         }
-        // Bias is in minutes, positive = west of UTC (UTC = local + bias)
-        // RFC3339 offset is local = UTC + offset, so offset = -bias
-        // Also need to account for daylight bias if in DST
-        let bias = tzi.Bias as i32;
-        let daylight_bias = tzi.DaylightBias as i32;
-        // Standard bias applies when not in DST
-        // The result tells us if we're in daylight time
-        let in_daylight = matches!(result, 2); // TIME_ZONE_ID_DAYLIGHT
-        let total_bias = if in_daylight { bias + daylight_bias } else { bias };
-        -total_bias
+        compute_utc_offset_minutes(result, tzi.Bias, tzi.StandardBias, tzi.DaylightBias)
     }
 }
 
@@ -168,5 +171,14 @@ mod tests {
         assert!(now.minute <= 59);
         assert!(now.second <= 59);
         assert!(now.millis <= 999);
+    }
+
+    #[test]
+    fn bh22_utc_offset_includes_standard_bias_for_negative_dst() {
+        // Europe/Dublin: Bias = -60, StandardBias = +60 (winter = UTC+0), DaylightBias = 0 (summer = UTC+1)
+        assert_eq!(compute_utc_offset_minutes(1, -60, 60, 0), 0);
+        assert_eq!(compute_utc_offset_minutes(2, -60, 60, 0), 60);
+        // Asia/Jakarta: UTC+7 -> Bias = -420, StandardBias = 0, DaylightBias = 0
+        assert_eq!(compute_utc_offset_minutes(0, -420, 0, 0), 420);
     }
 }
