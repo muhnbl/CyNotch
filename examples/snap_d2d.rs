@@ -264,6 +264,10 @@ fn main() -> Result<()> {
         snap_bg(&ctx, &dir, name, gw, gh, [6, 3, 10, 255], |c| {
             cynotch::edge_glow::render_edge_glow_d2d(c, &mut glow_cache, placement, gw, gh, 0.96);
         })?;
+        let white_name = format!("{name}_white");
+        snap_bg(&ctx, &dir, &white_name, gw, gh, [255, 255, 255, 255], |c| {
+            cynotch::edge_glow::render_edge_glow_d2d(c, &mut glow_cache, placement, gw, gh, 0.96);
+        })?;
     }
 
     {

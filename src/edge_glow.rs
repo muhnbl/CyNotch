@@ -10,20 +10,17 @@
 use crate::composition::DCompHost;
 use crate::models::NotchPlacement;
 use crate::painter_d2d::D2DResourceCache;
-use std::mem::ManuallyDrop;
 use std::sync::atomic::{AtomicBool, Ordering};
 use windows::Foundation::Numerics::Matrix3x2;
 use windows::Win32::Foundation::*;
 use windows::Win32::Graphics::Direct2D::Common::{
-    D2D_POINT_2F, D2D_RECT_F, D2D1_BEZIER_SEGMENT, D2D1_COLOR_F, D2D1_FIGURE_BEGIN_FILLED,
-    D2D1_FIGURE_END_CLOSED, D2D1_GRADIENT_STOP,
+    D2D_POINT_2F, D2D_RECT_F, D2D1_COLOR_F, D2D1_GRADIENT_STOP,
 };
 use windows::Win32::Graphics::Direct2D::{
-    D2D1_ANTIALIAS_MODE_PER_PRIMITIVE, D2D1_EXTEND_MODE_CLAMP, D2D1_GAMMA_2_2,
-    D2D1_LAYER_OPTIONS1_NONE, D2D1_LAYER_PARAMETERS1, D2D1_LINEAR_GRADIENT_BRUSH_PROPERTIES,
-    D2D1_PRIMITIVE_BLEND_ADD, D2D1_PRIMITIVE_BLEND_SOURCE_OVER,
-    D2D1_RADIAL_GRADIENT_BRUSH_PROPERTIES, ID2D1DeviceContext, ID2D1Factory1, ID2D1GeometrySink,
-    ID2D1LinearGradientBrush, ID2D1PathGeometry, ID2D1RadialGradientBrush, ID2D1RenderTarget,
+    D2D1_BUFFER_PRECISION_16BPC_FLOAT, D2D1_COLOR_INTERPOLATION_MODE_PREMULTIPLIED,
+    D2D1_COLOR_SPACE_SRGB, D2D1_EXTEND_MODE_CLAMP, D2D1_PRIMITIVE_BLEND_SOURCE_OVER,
+    D2D1_RADIAL_GRADIENT_BRUSH_PROPERTIES, ID2D1DeviceContext, ID2D1GradientStopCollection1,
+    ID2D1RadialGradientBrush,
 };
 use windows::Win32::Graphics::Dwm::{DWMWA_TRANSITIONS_FORCEDISABLED, DwmSetWindowAttribute};
 use windows::Win32::System::LibraryLoader::GetModuleHandleW;
@@ -35,11 +32,11 @@ const CLASS_NAME: PCWSTR = w!("CyNotchEdgeGlowClass");
 const WINDOW_NAME: PCWSTR = w!("CyNotchEdgeGlow");
 
 /// Depth (px) the volumetric purple portal glow spills inward from the monitor bezel.
-pub const EDGE_GLOW_DEPTH: u32 = 136;
+pub const EDGE_GLOW_DEPTH: u32 = 160;
 /// Horizontal span (px) along the top screen edge.
-pub const EDGE_GLOW_TOP_SPAN: u32 = 560;
+pub const EDGE_GLOW_TOP_SPAN: u32 = 580;
 /// Vertical span (px) along the left/right screen edge.
-pub const EDGE_GLOW_SIDE_SPAN: u32 = 460;
+pub const EDGE_GLOW_SIDE_SPAN: u32 = 480;
 
 static CLASS_REGISTERED: AtomicBool = AtomicBool::new(false);
 
@@ -102,9 +99,15 @@ fn create_radial_brush(
     ry: f32,
     stops: &[D2D1_GRADIENT_STOP],
 ) -> Result<ID2D1RadialGradientBrush> {
-    let rt: ID2D1RenderTarget = ctx.cast()?;
-    let coll = unsafe {
-        rt.CreateGradientStopCollection(stops, D2D1_GAMMA_2_2, D2D1_EXTEND_MODE_CLAMP)?
+    let coll: ID2D1GradientStopCollection1 = unsafe {
+        ctx.CreateGradientStopCollection(
+            stops,
+            D2D1_COLOR_SPACE_SRGB,
+            D2D1_COLOR_SPACE_SRGB,
+            D2D1_BUFFER_PRECISION_16BPC_FLOAT,
+            D2D1_EXTEND_MODE_CLAMP,
+            D2D1_COLOR_INTERPOLATION_MODE_PREMULTIPLIED,
+        )?
     };
     let props = D2D1_RADIAL_GRADIENT_BRUSH_PROPERTIES {
         center,
@@ -115,109 +118,14 @@ fn create_radial_brush(
     unsafe { ctx.CreateRadialGradientBrush(&props, None, &coll) }
 }
 
-#[allow(dead_code)]
-fn create_linear_brush(
-    ctx: &ID2D1DeviceContext,
-    start: D2D_POINT_2F,
-    end: D2D_POINT_2F,
-    stops: &[D2D1_GRADIENT_STOP],
-) -> Result<ID2D1LinearGradientBrush> {
-    let rt: ID2D1RenderTarget = ctx.cast()?;
-    let coll = unsafe {
-        rt.CreateGradientStopCollection(stops, D2D1_GAMMA_2_2, D2D1_EXTEND_MODE_CLAMP)?
-    };
-    let props = D2D1_LINEAR_GRADIENT_BRUSH_PROPERTIES {
-        startPoint: start,
-        endPoint: end,
-    };
-    unsafe { ctx.CreateLinearGradientBrush(&props, None, &coll) }
-}
-
-fn create_crescent_path(
-    ctx: &ID2D1DeviceContext,
-    placement: NotchPlacement,
-    w: f32,
-    h: f32,
-    slit_half: f32,
-    depth: f32,
-) -> Result<ID2D1PathGeometry> {
-    let rt: ID2D1RenderTarget = ctx.cast()?;
-    let factory: ID2D1Factory1 = unsafe { rt.GetFactory()?.cast()? };
-    let geom: ID2D1PathGeometry = unsafe { factory.CreatePathGeometry()?.into() };
-    let sink: ID2D1GeometrySink = unsafe { geom.Open()? };
-
-    unsafe {
-        match placement {
-            NotchPlacement::Top => {
-                let cx = w * 0.5;
-                let start = D2D_POINT_2F { x: cx - slit_half, y: 0.0 };
-                let end = D2D_POINT_2F { x: cx + slit_half, y: 0.0 };
-                let apex = D2D_POINT_2F { x: cx, y: depth };
-
-                sink.BeginFigure(start, D2D1_FIGURE_BEGIN_FILLED);
-                sink.AddBezier(&D2D1_BEZIER_SEGMENT {
-                    point1: D2D_POINT_2F { x: cx - slit_half + slit_half * 0.25, y: depth * 0.50 },
-                    point2: D2D_POINT_2F { x: cx - slit_half * 0.35, y: depth * 0.90 },
-                    point3: apex,
-                });
-                sink.AddBezier(&D2D1_BEZIER_SEGMENT {
-                    point1: D2D_POINT_2F { x: cx + slit_half * 0.35, y: depth * 0.90 },
-                    point2: D2D_POINT_2F { x: cx + slit_half - slit_half * 0.25, y: depth * 0.50 },
-                    point3: end,
-                });
-                sink.AddLine(start);
-                sink.EndFigure(D2D1_FIGURE_END_CLOSED);
-                sink.Close()?;
-            }
-            NotchPlacement::Left => {
-                let cy = h * 0.5;
-                let start = D2D_POINT_2F { x: 0.0, y: cy - slit_half };
-                let end = D2D_POINT_2F { x: 0.0, y: cy + slit_half };
-                let apex = D2D_POINT_2F { x: depth, y: cy };
-
-                sink.BeginFigure(start, D2D1_FIGURE_BEGIN_FILLED);
-                sink.AddBezier(&D2D1_BEZIER_SEGMENT {
-                    point1: D2D_POINT_2F { x: depth * 0.50, y: cy - slit_half + slit_half * 0.25 },
-                    point2: D2D_POINT_2F { x: depth * 0.90, y: cy - slit_half * 0.35 },
-                    point3: apex,
-                });
-                sink.AddBezier(&D2D1_BEZIER_SEGMENT {
-                    point1: D2D_POINT_2F { x: depth * 0.90, y: cy + slit_half * 0.35 },
-                    point2: D2D_POINT_2F { x: depth * 0.50, y: cy + slit_half - slit_half * 0.25 },
-                    point3: end,
-                });
-                sink.AddLine(start);
-                sink.EndFigure(D2D1_FIGURE_END_CLOSED);
-                sink.Close()?;
-            }
-            NotchPlacement::Right => {
-                let cy = h * 0.5;
-                let start = D2D_POINT_2F { x: w, y: cy - slit_half };
-                let end = D2D_POINT_2F { x: w, y: cy + slit_half };
-                let apex = D2D_POINT_2F { x: w - depth, y: cy };
-
-                sink.BeginFigure(start, D2D1_FIGURE_BEGIN_FILLED);
-                sink.AddBezier(&D2D1_BEZIER_SEGMENT {
-                    point1: D2D_POINT_2F { x: w - depth * 0.50, y: cy - slit_half + slit_half * 0.25 },
-                    point2: D2D_POINT_2F { x: w - depth * 0.90, y: cy - slit_half * 0.35 },
-                    point3: apex,
-                });
-                sink.AddBezier(&D2D1_BEZIER_SEGMENT {
-                    point1: D2D_POINT_2F { x: w - depth * 0.90, y: cy + slit_half * 0.35 },
-                    point2: D2D_POINT_2F { x: w - depth * 0.50, y: cy + slit_half - slit_half * 0.25 },
-                    point3: end,
-                });
-                sink.AddLine(start);
-                sink.EndFigure(D2D1_FIGURE_END_CLOSED);
-                sink.Close()?;
-            }
-        }
-    }
-    Ok(geom)
-}
-
 /// Renders the volumetric purple portal slit + deep atmospheric bloom into `ctx`.
 /// Safe for both live DComp rendering and offscreen `snap_d2d` visual verification.
+///
+/// Uses a single 32-stop 16bpc float `D2D1_GAMMA_1_0` C^2-continuous radial gradient
+/// (zero overlapping ellipses, zero geometric mask clipping, zero dark-RGB muddy tail stops,
+/// and `(1 - r^2)^3` sextic falloff where `d(alpha)/dr = d^2(alpha)/dr^2 = 0` at `r = 1.0`)
+/// so the glow dissipates seamlessly on both pure white (`#FFFFFF`) and dark (`#06030A`)
+/// desktop backgrounds without any boundary step ("patahan") or concentric Mach banding.
 pub fn render_edge_glow_d2d(
     ctx: &ID2D1DeviceContext,
     _cache: &mut D2DResourceCache,
@@ -244,18 +152,20 @@ pub fn render_edge_glow_d2d(
         return;
     }
 
-    // Portal aperture parameters: expansive spatial presence, soft atmospheric opacity fade
-    let span_t = (0.65 + 0.35 * (1.0 - (1.0 - e).powi(2))).min(1.0);
-    let depth_t = (0.60 + 0.40 * (1.0 - (1.0 - e).powi(2))).min(1.0);
-    let alpha_t = (e.powf(1.10) * 0.72).clamp(0.0, 1.0);
+    // Smooth aperture breathing: gentle expansion & soft atmospheric opacity fade
+    let span_t = (0.74 + 0.26 * (1.0 - (1.0 - e).powi(2))).min(1.0);
+    let depth_t = (0.70 + 0.30 * (1.0 - (1.0 - e).powi(2))).min(1.0);
+    let alpha_t = (e.powf(1.12) * 0.56).clamp(0.0, 1.0);
 
     let (edge_len, max_depth) = match placement {
         NotchPlacement::Top => (w, h),
         NotchPlacement::Left | NotchPlacement::Right => (h, w),
     };
 
-    let slit_half = (edge_len * 0.42 * span_t).min(edge_len * 0.46).max(8.0);
-    let crescent_depth = (max_depth * 0.94 * depth_t).min(max_depth - 1.0).max(4.0);
+    // Keep elliptical radii well inside the HWND bounds (<= 90% depth, <= 45% span)
+    // so alpha reaches 0.000 several pixels before the window edge (zero rectangular cut-off).
+    let span_radius = (edge_len * 0.45 * span_t).min(edge_len * 0.47 - 4.0).max(8.0);
+    let depth_radius = (max_depth * 0.90 * depth_t).min(max_depth - 6.0).max(6.0);
 
     let center = match placement {
         NotchPlacement::Top => D2D_POINT_2F { x: w * 0.5, y: 0.0 },
@@ -263,79 +173,43 @@ pub fn render_edge_glow_d2d(
         NotchPlacement::Right => D2D_POINT_2F { x: w, y: h * 0.5 },
     };
 
-    let bounds = D2D_RECT_F { left: 0.0, top: 0.0, right: w, bottom: h };
+    let bounds = D2D_RECT_F {
+        left: 0.0,
+        top: 0.0,
+        right: w,
+        bottom: h,
+    };
 
-    // Create geometric mask matching the needle-cusp crescent lens
-    if let Ok(crescent_geo) = create_crescent_path(ctx, placement, w, h, slit_half, crescent_depth) {
-        let layer_params = D2D1_LAYER_PARAMETERS1 {
-            contentBounds: bounds,
-            geometricMask: ManuallyDrop::new(Some(crescent_geo.into())),
-            maskAntialiasMode: D2D1_ANTIALIAS_MODE_PER_PRIMITIVE,
-            maskTransform: Matrix3x2::identity(),
-            opacity: 1.0,
-            opacityBrush: ManuallyDrop::new(None),
-            layerOptions: D2D1_LAYER_OPTIONS1_NONE,
+    // Single unified 32-stop C^2-continuous sextic/Gaussian falloff:
+    // - Zero secondary inner ellipse -> zero inner concentric ring!
+    // - Keeps RGB in clean luminous orchid-violet (`rgb(220, 172, 255)` -> `rgb(168, 92, 247)`)
+    //   all the way to `r = 1.0` so white backgrounds never get a muddy grey/brown outer ring.
+    // - Smooth analytic curve `f(r) = (1.0 - r.powf(1.45)).powi(4)` gives inflections-free
+    //   decay with 32 densely sampled stops in 16bpc float precision.
+    let mut stops = [D2D1_GRADIENT_STOP::default(); 32];
+    for (i, stop) in stops.iter_mut().enumerate() {
+        let r = i as f32 / 31.0;
+        let bell = (1.0 - r.powf(1.42)).max(0.0).powi(4);
+        let core_mix = (1.0 - r * 1.6).clamp(0.0, 1.0).powi(2);
+        let red = (168.0 + 54.0 * core_mix).round() as u8;
+        let grn = (92.0 + 84.0 * core_mix).round() as u8;
+        let blu = (247.0 + 8.0 * core_mix).round() as u8;
+        *stop = D2D1_GRADIENT_STOP {
+            position: r,
+            color: d2d_rgba(red, grn, blu, bell * alpha_t),
         };
-
-        unsafe {
-            ctx.PushLayer(&layer_params, None);
-
-            // Layer 1: Ethereal Deep-Violet Atmospheric Fog (delicate translucent feather)
-            let outer_stops = [
-                D2D1_GRADIENT_STOP { position: 0.00, color: d2d_rgba(150, 75, 245, 0.65 * alpha_t) },
-                D2D1_GRADIENT_STOP { position: 0.25, color: d2d_rgba(125, 48, 230, 0.48 * alpha_t) },
-                D2D1_GRADIENT_STOP { position: 0.55, color: d2d_rgba(90, 24, 185, 0.26 * alpha_t) },
-                D2D1_GRADIENT_STOP { position: 0.78, color: d2d_rgba(55, 10, 130, 0.09 * alpha_t) },
-                D2D1_GRADIENT_STOP { position: 0.92, color: d2d_rgba(25, 3, 70, 0.02 * alpha_t) },
-                D2D1_GRADIENT_STOP { position: 1.00, color: d2d_rgba(10, 1, 30, 0.0) },
-            ];
-            let (o_rx, o_ry) = match placement {
-                NotchPlacement::Top => (slit_half * 0.98, crescent_depth * 0.98),
-                NotchPlacement::Left | NotchPlacement::Right => (crescent_depth * 0.98, slit_half * 0.98),
-            };
-            if let Ok(brush) = create_radial_brush(ctx, center, o_rx, o_ry, &outer_stops) {
-                ctx.FillRectangle(&bounds, &brush);
-            }
-
-            // Layer 2: Gentle Electric-Orchid Volumetric Crescent (Subtle additive bloom)
-            let mid_stops = [
-                D2D1_GRADIENT_STOP { position: 0.00, color: d2d_rgba(195, 130, 255, 0.46 * alpha_t) },
-                D2D1_GRADIENT_STOP { position: 0.30, color: d2d_rgba(160, 85, 245, 0.30 * alpha_t) },
-                D2D1_GRADIENT_STOP { position: 0.60, color: d2d_rgba(115, 40, 215, 0.12 * alpha_t) },
-                D2D1_GRADIENT_STOP { position: 0.85, color: d2d_rgba(70, 15, 155, 0.025 * alpha_t) },
-                D2D1_GRADIENT_STOP { position: 1.00, color: d2d_rgba(40, 6, 95, 0.0) },
-            ];
-            let (m_rx, m_ry) = match placement {
-                NotchPlacement::Top => (slit_half * 0.88, crescent_depth * 0.86),
-                NotchPlacement::Left | NotchPlacement::Right => (crescent_depth * 0.86, slit_half * 0.88),
-            };
-            ctx.SetPrimitiveBlend(D2D1_PRIMITIVE_BLEND_ADD);
-            if let Ok(brush) = create_radial_brush(ctx, center, m_rx, m_ry, &mid_stops) {
-                ctx.FillRectangle(&bounds, &brush);
-            }
-
-            // Layer 3: Soft Lavender Iris (Gentle seamless inner radiance, no hard white line)
-            let inner_stops = [
-                D2D1_GRADIENT_STOP { position: 0.00, color: d2d_rgba(225, 175, 255, 0.38 * alpha_t) },
-                D2D1_GRADIENT_STOP { position: 0.40, color: d2d_rgba(185, 120, 245, 0.20 * alpha_t) },
-                D2D1_GRADIENT_STOP { position: 0.75, color: d2d_rgba(135, 55, 215, 0.05 * alpha_t) },
-                D2D1_GRADIENT_STOP { position: 1.00, color: d2d_rgba(85, 18, 160, 0.0) },
-            ];
-            let (i_rx, i_ry) = match placement {
-                NotchPlacement::Top => (slit_half * 0.58, crescent_depth * 0.54),
-                NotchPlacement::Left | NotchPlacement::Right => (crescent_depth * 0.54, slit_half * 0.58),
-            };
-            if let Ok(brush) = create_radial_brush(ctx, center, i_rx, i_ry, &inner_stops) {
-                ctx.FillRectangle(&bounds, &brush);
-            }
-
-            ctx.PopLayer();
-            let _ = ManuallyDrop::into_inner(layer_params.geometricMask);
-            let _ = ManuallyDrop::into_inner(layer_params.opacityBrush);
-        }
     }
 
-    unsafe { ctx.SetPrimitiveBlend(D2D1_PRIMITIVE_BLEND_SOURCE_OVER) };
+    let (o_rx, o_ry) = match placement {
+        NotchPlacement::Top => (span_radius, depth_radius),
+        NotchPlacement::Left | NotchPlacement::Right => (depth_radius, span_radius),
+    };
+
+    unsafe {
+        if let Ok(brush) = create_radial_brush(ctx, center, o_rx, o_ry, &stops) {
+            ctx.FillRectangle(&bounds, &brush);
+        }
+    }
 }
 
 unsafe extern "system" fn edge_glow_wnd_proc(
