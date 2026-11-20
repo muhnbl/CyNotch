@@ -60,13 +60,18 @@ impl Renderer {
 
             pub fn render_d2d(&mut self, ctx: &windows::Win32::Graphics::Direct2D::ID2D1DeviceContext, state: &AppState, pointer: Option<(f32, f32)>) {
                 if self.d2d_cache.is_none() {
-                    self.d2d_cache = Some(D2DResourceCache::new(ctx).expect("Failed to init D2D cache"));
+                    match D2DResourceCache::new(ctx) {
+                        Ok(c) => self.d2d_cache = Some(c),
+                        Err(_) => return,
+                    }
                 }
                 unsafe {
                     ctx.Clear(Some(&windows::Win32::Graphics::Direct2D::Common::D2D1_COLOR_F { r: 0.0, g: 0.0, b: 0.0, a: 0.0 }));
                 }
                 let (ox, oy) = Self::compute_origin(state, self.width as f32, self.height as f32);
-                let cache = self.d2d_cache.as_mut().unwrap();
+                let Some(cache) = self.d2d_cache.as_mut() else {
+                    return;
+                };
                 self.hits.clear();
                 let frosted = state.is_frosted_active();
                 let w = state.current_width;

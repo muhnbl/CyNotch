@@ -526,13 +526,20 @@ unsafe fn redraw_settings_with_cache(hwnd: HWND, _allow_pane_cache: bool) {
             active_slider,
             ..
         } = *ui;
-        let (Some(fonts), Some(host)) = (fonts.as_mut(), dcomp.as_mut()) else {
+        let Some(fonts) = fonts.as_mut() else {
+            return;
+        };
+        if dcomp.is_none() {
+            *d2d_cache = None;
+            *dcomp = DCompHost::new(hwnd, int_w as u32, int_h as u32).ok();
+        }
+        let Some(host) = dcomp.as_mut() else {
             return;
         };
         let active_slider_id = active_slider.map(|s| s.id);
-        let _ = host.resize(int_w as u32, int_h as u32);
+        let resize_ok = host.resize(int_w as u32, int_h as u32).is_ok();
         let mut ok = false;
-        if let Ok(ctx) = host.begin_d2d_draw() {
+        if resize_ok && let Ok(ctx) = host.begin_d2d_draw() {
             if d2d_cache.is_none() {
                 *d2d_cache = D2DResourceCache::new(&ctx).ok();
             }
@@ -634,11 +641,17 @@ unsafe extern "system" fn settings_wnd_proc(
 unsafe fn hide_settings_window(hwnd: HWND) {
     let _ = ShowWindow(hwnd, SW_HIDE);
     crate::window::clear_settings_pacer_in_flight();
-    SETTINGS_UI.with_borrow_mut(|ui| {
-        if ui.drag_origin.take().is_some() {
-            let _ = ReleaseCapture();
-        }
+    // BH-04: ReleaseCapture synchronously dispatches WM_CAPTURECHANGED which borrows
+    // SETTINGS_UI mutably — release the RefCell borrow BEFORE calling ReleaseCapture.
+    let had_capture = SETTINGS_UI.with_borrow_mut(|ui| {
+        let had_drag = ui.drag_origin.take().is_some();
+        let had_slider = ui.active_slider.take().is_some();
+        let had_sb = std::mem::replace(&mut ui.dragging_scrollbar, false);
+        had_drag || had_slider || had_sb
     });
+    if had_capture {
+        let _ = ReleaseCapture();
+    }
     let _ = DestroyWindow(hwnd);
 }
 

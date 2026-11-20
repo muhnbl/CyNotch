@@ -3,7 +3,9 @@
 
 use std::ffi::c_void;
 use std::mem::size_of;
-use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, Condvar, Mutex};
+use std::thread::JoinHandle;
 use windows::Win32::Foundation::{BOOL, HWND, LPARAM, WPARAM};
 use windows::Win32::Graphics::Dwm::{
     DWMWA_BORDER_COLOR, DWMWA_CLOAKED, DWMWA_COLOR_DEFAULT, DWMWA_COLOR_NONE,
@@ -13,9 +15,9 @@ use windows::Win32::System::Threading::GetCurrentThreadId;
 use windows::Win32::UI::WindowsAndMessaging::{
     DispatchMessageW, EVENT_OBJECT_CREATE, EVENT_OBJECT_SHOW, EVENT_SYSTEM_FOREGROUND,
     EVENT_SYSTEM_MOVESIZEEND, EnumWindows, GWL_EXSTYLE, GWL_STYLE, GetMessageW, GetWindowLongPtrW,
-    IsWindow, IsWindowVisible, KillTimer, MSG, OBJID_WINDOW, PostThreadMessageW, SetTimer,
-    TranslateMessage, WINEVENT_OUTOFCONTEXT, WINEVENT_SKIPOWNPROCESS, WM_QUIT, WM_TIMER,
-    WS_CAPTION, WS_EX_TOOLWINDOW, WS_THICKFRAME,
+    IsWindow, IsWindowVisible, KillTimer, MSG, OBJID_WINDOW, PM_NOREMOVE, PeekMessageW,
+    PostThreadMessageW, SetTimer, TranslateMessage, WINEVENT_OUTOFCONTEXT, WINEVENT_SKIPOWNPROCESS,
+    WM_QUIT, WM_TIMER, WS_CAPTION, WS_EX_TOOLWINDOW, WS_THICKFRAME,
 };
 
 type HWINEVENTHOOK = *mut c_void;
@@ -43,8 +45,13 @@ unsafe extern "system" {
     fn UnhookWinEvent(h_win_event_hook: HWINEVENTHOOK) -> BOOL;
 }
 
+struct BorderWorkerHandle {
+    tid: u32,
+    join: JoinHandle<()>,
+}
+
 static ACTIVE: AtomicBool = AtomicBool::new(false);
-static WORKER_TID: AtomicU32 = AtomicU32::new(0);
+static WORKER: Mutex<Option<BorderWorkerHandle>> = Mutex::new(None);
 
 /// Sets `DWMWA_BORDER_COLOR` on a single HWND to `DWMWA_COLOR_NONE` (`0xFFFFFFFE`).
 pub fn set_window_borderless(hwnd: HWND) {
@@ -147,67 +154,103 @@ fn apply_all(color: u32) {
 }
 
 /// Enables or disables system-wide Windows app border removal.
+/// Serialized via `WORKER` mutex so rapid enable/disable toggles never orphan threads
+/// or race `PostThreadMessageW` before the worker message queue exists.
 pub fn set_enabled(enabled: bool) {
+    let mut slot = WORKER.lock().unwrap_or_else(|e| e.into_inner());
     if enabled {
-        if ACTIVE.swap(true, Ordering::AcqRel) {
+        if slot.is_some() {
+            ACTIVE.store(true, Ordering::Release);
             apply_all(DWMWA_COLOR_NONE);
             return;
         }
-        std::thread::spawn(|| unsafe {
-            let tid = GetCurrentThreadId();
-            WORKER_TID.store(tid, Ordering::Release);
+        ACTIVE.store(true, Ordering::Release);
+        let ready = Arc::new((Mutex::new(None::<u32>), Condvar::new()));
+        let ready_bg = Arc::clone(&ready);
 
-            apply_all(DWMWA_COLOR_NONE);
-
-            let flags = WINEVENT_OUTOFCONTEXT | WINEVENT_SKIPOWNPROCESS;
-            let hook_show = SetWinEventHook(
-                EVENT_OBJECT_CREATE,
-                EVENT_OBJECT_SHOW,
-                std::ptr::null_mut(),
-                win_event_cb,
-                0,
-                0,
-                flags,
-            );
-            let hook_fg = SetWinEventHook(
-                EVENT_SYSTEM_FOREGROUND,
-                EVENT_SYSTEM_MOVESIZEEND,
-                std::ptr::null_mut(),
-                win_event_cb,
-                0,
-                0,
-                flags,
-            );
-            let timer_id = SetTimer(None, 1, 30_000, None);
-
-            let mut msg = MSG::default();
-            while ACTIVE.load(Ordering::Acquire) && GetMessageW(&mut msg, None, 0, 0).as_bool() {
-                if msg.message == WM_TIMER {
-                    apply_all(DWMWA_COLOR_NONE);
-                } else {
-                    let _ = TranslateMessage(&msg);
-                    DispatchMessageW(&msg);
+        if let Ok(join) = std::thread::Builder::new()
+            .name("cynotch-borders".to_string())
+            .spawn(move || unsafe {
+                // Force creation of this thread's Win32 message queue BEFORE publishing TID.
+                let mut msg = MSG::default();
+                let _ = PeekMessageW(&mut msg, None, 0, 0, PM_NOREMOVE);
+                let tid = GetCurrentThreadId();
+                {
+                    let (lock, cvar) = &*ready_bg;
+                    let mut guard = lock.lock().unwrap_or_else(|e| e.into_inner());
+                    *guard = Some(tid);
+                    cvar.notify_all();
                 }
-            }
 
-            if timer_id != 0 {
-                let _ = KillTimer(None, timer_id);
+                if !ACTIVE.load(Ordering::Acquire) {
+                    return;
+                }
+
+                apply_all(DWMWA_COLOR_NONE);
+
+                let flags = WINEVENT_OUTOFCONTEXT | WINEVENT_SKIPOWNPROCESS;
+                let hook_show = SetWinEventHook(
+                    EVENT_OBJECT_CREATE,
+                    EVENT_OBJECT_SHOW,
+                    std::ptr::null_mut(),
+                    win_event_cb,
+                    0,
+                    0,
+                    flags,
+                );
+                let hook_fg = SetWinEventHook(
+                    EVENT_SYSTEM_FOREGROUND,
+                    EVENT_SYSTEM_MOVESIZEEND,
+                    std::ptr::null_mut(),
+                    win_event_cb,
+                    0,
+                    0,
+                    flags,
+                );
+                let timer_id = SetTimer(None, 1, 30_000, None);
+
+                while ACTIVE.load(Ordering::Acquire)
+                    && GetMessageW(&mut msg, None, 0, 0).as_bool()
+                {
+                    if !ACTIVE.load(Ordering::Acquire) {
+                        break;
+                    }
+                    if msg.message == WM_TIMER {
+                        apply_all(DWMWA_COLOR_NONE);
+                    } else {
+                        let _ = TranslateMessage(&msg);
+                        DispatchMessageW(&msg);
+                    }
+                }
+
+                if timer_id != 0 {
+                    let _ = KillTimer(None, timer_id);
+                }
+                if !hook_show.is_null() {
+                    let _ = UnhookWinEvent(hook_show);
+                }
+                if !hook_fg.is_null() {
+                    let _ = UnhookWinEvent(hook_fg);
+                }
+            })
+        {
+            let (lock, cvar) = &*ready;
+            let mut guard = lock.lock().unwrap_or_else(|e| e.into_inner());
+            while guard.is_none() {
+                guard = cvar.wait(guard).unwrap_or_else(|e| e.into_inner());
             }
-            if !hook_show.is_null() {
-                let _ = UnhookWinEvent(hook_show);
-            }
-            if !hook_fg.is_null() {
-                let _ = UnhookWinEvent(hook_fg);
-            }
-            WORKER_TID.store(0, Ordering::Release);
-        });
+            let tid = guard.unwrap_or(0);
+            *slot = Some(BorderWorkerHandle { tid, join });
+        }
     } else {
         let was_active = ACTIVE.swap(false, Ordering::AcqRel);
-        let tid = WORKER_TID.load(Ordering::Acquire);
-        if tid != 0 {
-            unsafe {
-                let _ = PostThreadMessageW(tid, WM_QUIT, WPARAM(0), LPARAM(0));
+        if let Some(handle) = slot.take() {
+            if handle.tid != 0 {
+                unsafe {
+                    let _ = PostThreadMessageW(handle.tid, WM_QUIT, WPARAM(0), LPARAM(0));
+                }
             }
+            let _ = handle.join.join();
         }
         if was_active {
             apply_all(DWMWA_COLOR_DEFAULT);

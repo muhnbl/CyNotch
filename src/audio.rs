@@ -1,5 +1,5 @@
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::{Condvar, Mutex, OnceLock};
+use std::sync::{Arc, Condvar, Mutex, OnceLock};
 use std::time::Instant;
 use windows::Win32::Media::Audio::Endpoints::*;
 use windows::Win32::Media::Audio::*;
@@ -114,7 +114,32 @@ struct VolWorker {
     cvar: Condvar,
 }
 
-static VOL_WORKER: OnceLock<VolWorker> = OnceLock::new();
+impl VolWorker {
+    fn new() -> Self {
+        Self {
+            pending: Mutex::new(None),
+            cvar: Condvar::new(),
+        }
+    }
+
+    fn post(&self, level: f32) {
+        let mut guard = self.pending.lock().unwrap_or_else(|e| e.into_inner());
+        *guard = Some(level);
+        self.cvar.notify_one();
+    }
+
+    fn take_blocking(&self) -> f32 {
+        let mut guard = self.pending.lock().unwrap_or_else(|e| e.into_inner());
+        loop {
+            if let Some(val) = guard.take() {
+                return val;
+            }
+            guard = self.cvar.wait(guard).unwrap_or_else(|e| e.into_inner());
+        }
+    }
+}
+
+static VOL_WORKER: OnceLock<Arc<VolWorker>> = OnceLock::new();
 static LAST_VOL_WRITE_EPOCH: OnceLock<Instant> = OnceLock::new();
 static LAST_VOL_WRITE_MS: AtomicU64 = AtomicU64::new(0);
 
@@ -169,37 +194,54 @@ fn apply_master_volume_com(enumerator: &mut Option<IMMDeviceEnumerator>, level: 
 /// single COM worker thread so Win32 UI `WM_MOUSEMOVE` never blocks.
 pub fn set_master_volume(level: f32) {
     let worker = VOL_WORKER.get_or_init(|| {
-        std::thread::Builder::new()
+        let w = Arc::new(VolWorker::new());
+        let bg = Arc::clone(&w);
+        let _ = std::thread::Builder::new()
             .name("cynotch-audio".to_string())
-            .spawn(|| {
-                unsafe {
-                    let _ = CoInitializeEx(None, COINIT_MULTITHREADED);
-                }
-                let w = VOL_WORKER.get().expect("VOL_WORKER initialized");
+            .spawn(move || {
+                let hr = unsafe { CoInitializeEx(None, COINIT_MULTITHREADED) };
+                let _com = ComInitGuard(hr.is_ok());
                 let mut enumerator: Option<IMMDeviceEnumerator> = None;
                 loop {
-                    let target = {
-                        let mut guard = w.pending.lock().unwrap();
-                        while guard.is_none() {
-                            guard = w.cvar.wait(guard).unwrap();
-                        }
-                        guard.take()
-                    };
-                    if let Some(val) = target {
-                        let _ = apply_master_volume_com(&mut enumerator, val);
-                    }
+                    let val = bg.take_blocking();
+                    let _ = apply_master_volume_com(&mut enumerator, val);
                 }
-            })
-            .ok();
-        VolWorker {
-            pending: Mutex::new(None),
-            cvar: Condvar::new(),
-        }
+            });
+        w
     });
 
     LAST_VOL_WRITE_MS.store(monotonic_ms(), Ordering::Release);
-    if let Ok(mut guard) = worker.pending.lock() {
-        *guard = Some(level.clamp(0.0, 1.0));
-        worker.cvar.notify_one();
+    worker.post(level.clamp(0.0, 1.0));
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn bh03_vol_worker_coalesces_without_init_race_or_panic() {
+        let w = Arc::new(VolWorker::new());
+        let bg = Arc::clone(&w);
+        let received = Arc::new(Mutex::new(Vec::<f32>::new()));
+        let rec_bg = Arc::clone(&received);
+
+        let handle = std::thread::spawn(move || loop {
+            let v = bg.take_blocking();
+            if v < 0.0 {
+                break;
+            }
+            rec_bg.lock().unwrap().push(v);
+        });
+
+        for i in 0..50 {
+            w.post((i as f32) / 50.0);
+        }
+        std::thread::sleep(std::time::Duration::from_millis(15));
+        w.post(-1.0);
+        handle.join().expect("worker thread must not panic");
+
+        let vals = received.lock().unwrap();
+        assert!(!vals.is_empty());
+        assert!(*vals.last().unwrap() <= 1.0);
     }
 }

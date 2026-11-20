@@ -25,7 +25,8 @@ use windows::Win32::Graphics::Dxgi::Common::{
     DXGI_ALPHA_MODE_PREMULTIPLIED, DXGI_FORMAT_B8G8R8A8_UNORM, DXGI_SAMPLE_DESC,
 };
 use windows::Win32::Graphics::Dxgi::{
-    DXGI_ERROR_DEVICE_REMOVED, DXGI_ERROR_DEVICE_RESET, DXGI_PRESENT, DXGI_SCALING_STRETCH,
+    DXGI_ERROR_DEVICE_HUNG, DXGI_ERROR_DEVICE_REMOVED, DXGI_ERROR_DEVICE_RESET,
+    DXGI_ERROR_DRIVER_INTERNAL_ERROR, DXGI_PRESENT, DXGI_SCALING_STRETCH,
     DXGI_SWAP_CHAIN_DESC1, DXGI_SWAP_CHAIN_FLAG, DXGI_SWAP_EFFECT_FLIP_SEQUENTIAL,
     DXGI_USAGE_RENDER_TARGET_OUTPUT, IDXGIAdapter, IDXGIDevice, IDXGIFactory2, IDXGISurface,
     IDXGISwapChain1,
@@ -60,7 +61,12 @@ thread_local! {
 fn shared_dcomp() -> Result<SharedDComp> {
     SHARED_DCOMP.with_borrow_mut(|slot| {
         if let Some(shared) = slot.as_ref() {
-            return Ok(shared.clone());
+            // BH-06: Proactively invalidate cached device if GPU was reset/removed
+            // so DCompHost::new recovery never reuses a dead thread-local device.
+            if unsafe { shared.d3d_device.GetDeviceRemovedReason() }.is_ok() {
+                return Ok(shared.clone());
+            }
+            *slot = None;
         }
         let compositor = Compositor::new()?;
         let (d3d_device, d3d_context) = create_d3d11_device()?;
@@ -82,6 +88,21 @@ fn shared_dcomp() -> Result<SharedDComp> {
         *slot = Some(shared.clone());
         Ok(shared)
     })
+}
+
+fn clear_shared_if_device_lost_err(err: &windows::core::Error) {
+    if is_device_lost_hresult(err.code()) {
+        SHARED_DCOMP.with_borrow_mut(|slot| *slot = None);
+    }
+}
+
+fn clear_shared_if_device_lost_hr(hr: windows::core::HRESULT) -> bool {
+    if is_device_lost_hresult(hr) {
+        SHARED_DCOMP.with_borrow_mut(|slot| *slot = None);
+        true
+    } else {
+        false
+    }
 }
 
 pub fn ensure_dispatcher_queue() -> Result<()> {
@@ -250,7 +271,9 @@ impl DCompHost {
 
     fn bind_d2d_target(&mut self) -> Result<()> {
         unsafe {
-            let surface: IDXGISurface = self.swap_chain.GetBuffer(0)?;
+            let surface: IDXGISurface = self.swap_chain.GetBuffer(0).inspect_err(|e| {
+                clear_shared_if_device_lost_err(e);
+            })?;
             let props = D2D1_BITMAP_PROPERTIES1 {
                 pixelFormat: D2D1_PIXEL_FORMAT {
                     format: DXGI_FORMAT_B8G8R8A8_UNORM,
@@ -261,7 +284,12 @@ impl DCompHost {
                 bitmapOptions: D2D1_BITMAP_OPTIONS_TARGET | D2D1_BITMAP_OPTIONS_CANNOT_DRAW,
                 colorContext: std::mem::ManuallyDrop::new(None),
             };
-            let bitmap: ID2D1Bitmap1 = self.d2d_context.CreateBitmapFromDxgiSurface(&surface, Some(&props))?;
+            let bitmap: ID2D1Bitmap1 = self
+                .d2d_context
+                .CreateBitmapFromDxgiSurface(&surface, Some(&props))
+                .inspect_err(|e| {
+                    clear_shared_if_device_lost_err(e);
+                })?;
             self.d2d_context.SetTarget(&bitmap);
             self.d2d_target = Some(bitmap);
         }
@@ -293,14 +321,12 @@ impl DCompHost {
     pub fn end_d2d_draw_and_present(&mut self) -> Result<()> {
         unsafe {
             if let Err(e) = self.d2d_context.EndDraw(None, None) {
-                if is_device_lost_hresult(e.code()) {
-                    SHARED_DCOMP.with_borrow_mut(|slot| *slot = None);
-                }
+                clear_shared_if_device_lost_err(&e);
                 return Err(e);
             }
             let hr = self.swap_chain.Present(0, DXGI_PRESENT(0));
-            if is_device_lost_hresult(hr) {
-                SHARED_DCOMP.with_borrow_mut(|slot| *slot = None);
+            if hr.is_err() {
+                clear_shared_if_device_lost_hr(hr);
                 return Err(windows::core::Error::from(hr));
             }
         }
@@ -326,13 +352,17 @@ impl DCompHost {
         unsafe {
             self.d2d_context.SetTarget(None);
             self.d2d_target = None;
-            self.swap_chain.ResizeBuffers(
-                2,
-                w,
-                h,
-                DXGI_FORMAT_B8G8R8A8_UNORM,
-                DXGI_SWAP_CHAIN_FLAG(0),
-            )?;
+            self.swap_chain
+                .ResizeBuffers(
+                    2,
+                    w,
+                    h,
+                    DXGI_FORMAT_B8G8R8A8_UNORM,
+                    DXGI_SWAP_CHAIN_FLAG(0),
+                )
+                .inspect_err(|e| {
+                    clear_shared_if_device_lost_err(e);
+                })?;
         }
         self.width = w;
         self.height = h;
@@ -420,7 +450,9 @@ impl DCompHost {
         self.prev_dirty = clamped_box;
 
         unsafe {
-            let back_buf: ID3D11Texture2D = self.swap_chain.GetBuffer(0)?;
+            let back_buf: ID3D11Texture2D = self.swap_chain.GetBuffer(0).inspect_err(|e| {
+                clear_shared_if_device_lost_err(e);
+            })?;
             let resource: ID3D11Resource = back_buf.cast()?;
             let row_pitch = self.width * 4;
             let depth_pitch = expected as u32;
@@ -456,7 +488,11 @@ impl DCompHost {
                     depth_pitch,
                 );
             }
-            self.swap_chain.Present(0, DXGI_PRESENT(0)).ok()?;
+            let hr = self.swap_chain.Present(0, DXGI_PRESENT(0));
+            if hr.is_err() {
+                clear_shared_if_device_lost_hr(hr);
+                return Err(windows::core::Error::from(hr));
+            }
         }
         Ok(())
     }
@@ -472,7 +508,11 @@ impl Drop for DCompHost {
 }
 
 fn is_device_lost_hresult(hr: windows::core::HRESULT) -> bool {
-    hr == DXGI_ERROR_DEVICE_REMOVED || hr == DXGI_ERROR_DEVICE_RESET || hr == D2DERR_RECREATE_TARGET
+    hr == DXGI_ERROR_DEVICE_REMOVED
+        || hr == DXGI_ERROR_DEVICE_RESET
+        || hr == DXGI_ERROR_DEVICE_HUNG
+        || hr == DXGI_ERROR_DRIVER_INTERNAL_ERROR
+        || hr == D2DERR_RECREATE_TARGET
 }
 
 fn swizzle_rgba_to_bgra(dst: &mut [u8], src: &[u8]) {
@@ -492,7 +532,11 @@ mod tests {
     fn test_device_lost_handling() {
         assert!(is_device_lost_hresult(DXGI_ERROR_DEVICE_REMOVED));
         assert!(is_device_lost_hresult(DXGI_ERROR_DEVICE_RESET));
+        assert!(is_device_lost_hresult(DXGI_ERROR_DEVICE_HUNG));
+        assert!(is_device_lost_hresult(DXGI_ERROR_DRIVER_INTERNAL_ERROR));
         assert!(is_device_lost_hresult(D2DERR_RECREATE_TARGET));
         assert!(!is_device_lost_hresult(windows::core::HRESULT(0)));
+        assert!(clear_shared_if_device_lost_hr(DXGI_ERROR_DEVICE_RESET));
+        assert!(!clear_shared_if_device_lost_hr(windows::core::HRESULT(0)));
     }
 }

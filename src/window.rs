@@ -807,6 +807,7 @@ struct NotchUi {
     last_second_tick: Option<std::time::Instant>,
     hidden_for_fullscreen: bool,
     has_ulw_initialized: bool,
+    dpi_generation: u64,
     prev_dib_w: i32,
     prev_dib_h: i32,
     last_win_x: i32,
@@ -2138,6 +2139,7 @@ unsafe fn wnd_proc_inner(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPARAM) -
             }
             let hidden = NOTCH_UI.with_borrow_mut(|ui| {
                 ui.has_ulw_initialized = false;
+                ui.dpi_generation = ui.dpi_generation.wrapping_add(1);
                 ui.win_pos_initialized = false;
                 ui.snap_glide_active = false;
                 ui.prev_dib_w = 0;
@@ -3805,6 +3807,8 @@ unsafe fn wnd_proc_inner(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPARAM) -
         }
         WM_DESTROY => {
             SHUTDOWN_REQUESTED.store(true, Ordering::Release);
+            // BH-16: Always restore system-wide DWM borders before process shutdown.
+            crate::borders::set_enabled(false);
             set_notch_pacer(hwnd, 0);
             set_settings_pacer(HWND::default(), 0);
             set_high_res_slot(1, false);
@@ -3919,13 +3923,15 @@ unsafe fn redraw_window(hwnd: HWND) {
         }
     });
 
-    let (prev_init, size_changed, pos_changed, pointer_pos, ren_opt, mut host_opt) = NOTCH_UI
-        .with_borrow_mut(|ui| {
+    let (prev_init, dpi_gen_before, size_changed, pos_changed, pointer_pos, ren_opt, mut host_opt) =
+        NOTCH_UI.with_borrow_mut(|ui| {
             let prev_init = ui.has_ulw_initialized;
+            let dpi_gen = ui.dpi_generation;
             let size_changed = ui.prev_dib_w != canvas_w || ui.prev_dib_h != canvas_h;
             let pos_changed = ui.last_win_x != win_x || ui.last_win_y != win_y;
             (
                 prev_init,
+                dpi_gen,
                 size_changed,
                 pos_changed,
                 ui.pointer_pos,
@@ -3998,6 +4004,21 @@ unsafe fn redraw_window(hwnd: HWND) {
         }
     }
 
+    // BH-18: Restore renderer & dcomp to NOTCH_UI BEFORE calling SetWindowPos so any
+    // synchronous WM_DPICHANGED re-entrancy can redraw and rebind cleanly instead of
+    // aborting on None and having its has_ulw_initialized=false clobbered afterward.
+    NOTCH_UI.with_borrow_mut(|ui| {
+        ui.renderer = Some(ren);
+        ui.dcomp = host_opt;
+        if ok && ui.dpi_generation == dpi_gen_before {
+            ui.has_ulw_initialized = true;
+            ui.prev_dib_w = canvas_w;
+            ui.prev_dib_h = canvas_h;
+            ui.last_win_x = win_x;
+            ui.last_win_y = win_y;
+        }
+    });
+
     if force_full {
         // Clear any stale client-space HRGN prior to moving/resizing so the shifted old
         // region never momentarily ejects the mouse cursor and triggers a spurious WM_MOUSELEAVE.
@@ -4018,17 +4039,11 @@ unsafe fn redraw_window(hwnd: HWND) {
         );
     }
 
-    NOTCH_UI.with_borrow_mut(|ui| {
-        ui.renderer = Some(ren);
-        ui.dcomp = host_opt;
-        if ok {
-            ui.has_ulw_initialized = true;
-            ui.prev_dib_w = canvas_w;
-            ui.prev_dib_h = canvas_h;
-            ui.last_win_x = win_x;
-            ui.last_win_y = win_y;
-        }
-    });
+    let dpi_changed_during_pos = NOTCH_UI.with_borrow(|ui| ui.dpi_generation != dpi_gen_before);
+    if dpi_changed_during_pos {
+        // WM_DPICHANGED already ran its own redraw + region + backdrop sync for the new DPI.
+        return;
+    }
     let _ = ok;
     // Clip the DComp HWND input region to capsule + 2px outward margin:
     // WM_NCHITTEST's HTTRANSPARENT only passes through to same-thread windows,
