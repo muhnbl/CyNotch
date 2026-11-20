@@ -1,12 +1,12 @@
 # Changelog
 
 ## v0.3.0 (2026-11-20)
-### 1. GPU Direct2D + DirectWrite Renderer & 57.9% Binary Size Reduction
+### 1. GPU Direct2D + DirectWrite Renderer & 55.9% Binary Size Reduction
 - Migrated all notch and Preferences rendering (`src/renderer/*`, `src/settings_window.rs`, `src/icons.rs`, `src/window.rs`) from CPU `tiny-skia` + `fontdue` to **GPU-accelerated Direct2D (`ID2D1DeviceContext`) and DirectWrite (`DWriteTextCache`)** bound directly to the DirectComposition DXGI SwapChain (`src/composition.rs`, `src/painter_d2d.rs`, `src/font_d2d.rs`), cutting expanded frame render time from **8.51–10.96 ms (CPU)** down to **0.93 ms CPU record / 1.08 ms GPU flush (~10× faster)** and idle capsule renders down to **59 µs CPU / 123 µs GPU**.
-- Removed `tiny-skia`, `fontdue`, `ureq`, and `chrono` crates: replaced `ureq` with native Win32 `WinHTTP` (`src/lyrics.rs`), `chrono` with Win32 `GetLocalTime` / `GetTimeZoneInformation` (`src/localtime.rs`), and PNG screenshot encoding with Win32 WIC (`src/capture.rs`), shrinking `cynotch.exe` from **3.95 MB (`3,949,056` B) in v0.2.4.1 down to 1.66 MB (`1,662,976` B) in v0.3.0 (−57.9%)**.
+- Removed `tiny-skia`, `fontdue`, `ureq`, and `chrono` crates: replaced `ureq` with native Win32 `WinHTTP` (`src/lyrics.rs`), `chrono` with Win32 `GetLocalTime` / `GetTimeZoneInformation` (`src/localtime.rs`), and PNG screenshot encoding with Win32 WIC (`src/capture.rs`), shrinking `cynotch.exe` from **3.95 MB (`3,949,056` B) in v0.2.4.1 down to 1.74 MB (`1,742,848` B) in v0.3.0 (−55.9%)**.
 
-### 2. Physical Screen-Edge Portal Glow & Framer-Motion Spring Choreography
-- Added an independent click-through `WS_EX_LAYERED | WS_EX_TRANSPARENT` screen-edge portal glow window (`src/edge_glow.rs`) hugging the physical monitor bezel (`Top`, `Left`, `Right`) with a borderless multi-layer radial violet aura (`#C4B5FD` -> `#A855F7` -> `#6D28D9` -> `#2E1065`), 5th-order smootherstep opening (`t³(6t² − 15t + 10)`), and a seamless ~1.2s atmospheric dissipation fade-out.
+### 2. Physical Screen-Edge & Corner Portal Glow + Framer-Motion Spring Choreography
+- Added an independent click-through DirectComposition screen-edge portal glow window (`src/edge_glow.rs`) hugging the physical monitor bezel (`Top`, `Left`, `Right`) and **originating directly from the physical top-left / top-right corner (`TopLeft`, `TopRight`) when corner-docked**, with a 32-stop 16bpc float `C^2`-continuous radial violet aura, 5th-order smootherstep opening (`t³(6t² − 15t + 10)`), and a seamless ~1.2s atmospheric dissipation fade-out.
 - Upgraded notch expansion, dock active pill gliding, and Preferences category switching to critically-damped Framer-Motion spring physics (`spring_step` in `src/models.rs`), exclusively gated behind Windows *Animation Effects* (`SPI_GETCLIENTAREAANIMATION` — snaps instantaneously when Windows animations are disabled).
 - Added configurable **Hover Delay** presets (`Quick 120ms`, `Normal 240ms`, `Slow 450ms`) in `Motion & Perf`.
 
@@ -17,6 +17,13 @@
 ### 4. Interactive Sliders, Unclipped Preferences & Pre-Release QA Polish
 - Replaced percentage-button presets for **Glass Opacity** (`Airy`..`Solid`) and **Blur Intensity** (`Soft`..`Ultra`) with smooth continuous drag sliders that auto-enable `Frosted Blur` and provide a one-click **`Enable in Win`** deep-link when Windows Transparency Effects are off.
 - Unified Music seek bar and Volume slider into 1:1 sub-pixel click-and-drag scrubbers with glowing thumbs, full-row (`556×40px`) toggle click targets, right-click context menu directly on the notch window, `WM_CAPTURECHANGED` drag-reset safety, keyboard navigation (`Up`/`Down`/`PgUp`/`PgDn`/`Home`/`End`/`1`–`5`/`Tab`), and calibrated Preferences tabs so `Motion`, `Modules`, `Notifications`, and `System` fit 100% unclipped at `scroll = 0`.
+
+### 5. Production Reliability, Security & GPU Recovery Hardening
+- **Memory & FFI Safety:** Fixed WinHTTP UTF-16 null-terminated pointer handling with bounded reads, status checks, and read deadlines (`src/lyrics.rs`); migrated Direct2D `StrokeStyle` ownership into `D2DResourceCache` (`src/painter_d2d.rs`); added DIB overflow guards and proper COM `ManuallyDrop` / `HICON` lifecycle cleanup.
+- **DirectComposition GPU Recovery:** Added shared DComp generation tracking (`SHARED_DCOMP_GEN`), target close-on-drop, and same-HWND target recreation (`src/composition.rs`, `src/edge_glow.rs`) so GPU driver resets and display changes recover cleanly without blank frames.
+- **Crash-Resistant Atomic Persistence:** Implemented write-temp + flush + atomic replace with `.bak` recovery and corruption preservation across config, tasks, shelf, screen-time, and notification backups (`src/persistence.rs`).
+- **Security & Registry Hardening:** Hardened Quick Shelf `ShellExecuteW` policy to block executable extensions, trailing dots, NTFS ADS, UNC/device paths, and symlink bypasses (`src/capture.rs`); hardened autostart registry writes and PowerShell helper (`src/autostart.rs`, `Enable-AutoStart.ps1`); and ensured safe backup-before-mutation and clean restore for Windows notification suppression and border hooks (`src/notifications.rs`, `src/borders.rs`).
+- **Verified by 132/132 Automated, Adversarial & Soak Tests:** Full unit, WARP Direct2D pixel, concurrency, and leak/handle soak coverage (`tests/reliability_hardening_tests.rs`, `tests/soak_and_adversarial_tests.rs`, `tests/edge_glow_tests.rs`).
 
 ## v0.2.4.1 (2026-11-19)
 ### Hover Dwell Delay & Deadlock Fix (`src/window.rs`, `src/renderer/mod.rs`)
