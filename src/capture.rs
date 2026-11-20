@@ -228,6 +228,15 @@ pub fn save_bgra_png(path: &std::path::Path, w: u32, h: u32, bgra: &[u8]) -> boo
     for px in opaque.chunks_exact_mut(4) {
         px[3] = 255;
     }
+    save_bgra_png_alpha(path, w, h, &opaque)
+}
+
+/// Saves a straight-alpha 32-bit BGRA buffer to PNG preserving exact per-pixel alpha transparency.
+pub fn save_bgra_png_alpha(path: &std::path::Path, w: u32, h: u32, bgra: &[u8]) -> bool {
+    if w == 0 || h == 0 || bgra.len() < (w as usize) * (h as usize) * 4 {
+        return false;
+    }
+    let opaque = &bgra[..(w as usize) * (h as usize) * 4];
     unsafe {
         let _ = CoInitializeEx(None, COINIT_APARTMENTTHREADED);
         let Ok(factory): windows::core::Result<IWICImagingFactory> =
@@ -275,7 +284,7 @@ pub fn save_bgra_png(path: &std::path::Path, w: u32, h: u32, bgra: &[u8]) -> boo
             return false;
         }
         let stride = w * 4;
-        if frame.WritePixels(h, stride, &opaque).is_err() {
+        if frame.WritePixels(h, stride, opaque).is_err() {
             return false;
         }
         if frame.Commit().is_err() {

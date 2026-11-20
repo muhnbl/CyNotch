@@ -108,7 +108,7 @@ fn snap_transparent(
         }
         readback.Unmap()?;
         let path = std::path::Path::new(dir).join(format!("{name}.png"));
-        if !cynotch::capture::save_bgra_png(&path, ow, oh, &out) {
+        if !cynotch::capture::save_bgra_png_alpha(&path, ow, oh, &out) {
             eprintln!("{name}: PNG save failed");
         }
     }
@@ -172,7 +172,7 @@ fn snap_bg(
         }
         readback.Unmap()?;
         let path = std::path::Path::new(dir).join(format!("{name}.png"));
-        if !cynotch::capture::save_bgra_png(&path, ow, oh, &out) {
+        if !cynotch::capture::save_bgra_png_alpha(&path, ow, oh, &out) {
             eprintln!("{name}: PNG save failed");
         }
     }
@@ -404,8 +404,10 @@ fn main() -> Result<()> {
             ws.is_pinned = name == "cynotch-home";
             ws.media.is_playing = true;
             ws.anim_time = 0.42;
+            ws.capture.last_path = Some("C:\\Users\\muhna\\Pictures\\CyNotch\\cyshot_desktop_20261120.png".to_string());
             ws.capture.last_filename = "cyshot_desktop_20261120.png".to_string();
-            ws.capture.last_dims = "1920 × 1080 • Copied to Clipboard".to_string();
+            ws.capture.last_dims = "1920 × 1080".to_string();
+            ws.capture.clipboard_ok = true;
             ws.set_hovered(true);
             ws.sync_preview_settled();
             let (w, h) = (
