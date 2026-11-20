@@ -423,7 +423,7 @@ impl Backdrop {
                 SWP_NOACTIVATE | SWP_NOOWNERZORDER,
             );
             if shape_changed {
-                let corner = if p.diam >= 8 && p.sharp_mask != 0x0F {
+                let corner = if p.diam >= 8 && p.sharp_mask == 0 && !p.flush {
                     DWMWCP_ROUND
                 } else {
                     DWMWCP_DONOTROUND
@@ -435,7 +435,7 @@ impl Backdrop {
                     size_of_val(&corner) as u32,
                 )
                 .is_ok();
-                if dwm_ok && corner == DWMWCP_ROUND && p.sharp_mask == 0 {
+                if dwm_ok && corner == DWMWCP_ROUND && p.sharp_mask == 0 && !p.flush {
                     let _ = SetWindowRgn(self.hwnd, HRGN::default(), false);
                 } else {
                     let hrgn = build_region(&p);
@@ -462,7 +462,7 @@ impl Backdrop {
                 flags |= SWP_NOMOVE;
             }
             let _ = SetWindowPos(self.hwnd, content, p.x, p.y, p.w, p.h, flags);
-            let corner = if p.diam >= 8 && p.sharp_mask != 0x0F {
+            let corner = if p.diam >= 8 && p.sharp_mask == 0 && !p.flush {
                 DWMWCP_ROUND
             } else {
                 DWMWCP_DONOTROUND
@@ -474,7 +474,7 @@ impl Backdrop {
                 size_of_val(&corner) as u32,
             )
             .is_ok();
-            if dwm_ok && corner == DWMWCP_ROUND && p.sharp_mask == 0 {
+            if dwm_ok && corner == DWMWCP_ROUND && p.sharp_mask == 0 && !p.flush {
                 let _ = SetWindowRgn(self.hwnd, HRGN::default(), true);
             } else {
                 let hrgn = build_region(&p);

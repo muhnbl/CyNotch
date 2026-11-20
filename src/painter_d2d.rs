@@ -302,9 +302,15 @@ impl Path {
                     min_x = min_x.min(*x); min_y = min_y.min(*y);
                     max_x = max_x.max(*x); max_y = max_y.max(*y);
                 }
-                PathVerb::QuadTo(x1, y1, x, y) | PathVerb::CubicTo(x1, y1, x, y, _, _) => {
+                PathVerb::QuadTo(x1, y1, x, y) => {
                     min_x = min_x.min(*x1).min(*x); min_y = min_y.min(*y1).min(*y);
                     max_x = max_x.max(*x1).max(*x); max_y = max_y.max(*y1).max(*y);
+                }
+                PathVerb::CubicTo(x1, y1, x2, y2, x, y) => {
+                    min_x = min_x.min(*x1).min(*x2).min(*x);
+                    min_y = min_y.min(*y1).min(*y2).min(*y);
+                    max_x = max_x.max(*x1).max(*x2).max(*x);
+                    max_y = max_y.max(*y1).max(*y2).max(*y);
                 }
                 _ => {}
             }
@@ -666,10 +672,31 @@ fn q_half_px(v: f32) -> i32 {
     (v * 2.0).round() as i32
 }
 
+#[inline]
+fn linear3_cache_key(
+    c0: D2D1_COLOR_F,
+    c_mid: D2D1_COLOR_F,
+    c1: D2D1_COLOR_F,
+    mid_pos: f32,
+    start: D2D_POINT_2F,
+    end: D2D_POINT_2F,
+) -> (u32, u32, u32, i32, i32, i32, i32, i32) {
+    (
+        pack_rgba8(c0),
+        pack_rgba8(c_mid),
+        pack_rgba8(c1),
+        (mid_pos.clamp(0.0, 1.0) * 1000.0).round() as i32,
+        q_half_px(start.x),
+        q_half_px(start.y),
+        q_half_px(end.x),
+        q_half_px(end.y),
+    )
+}
+
 pub struct D2DResourceCache {
     solid_brushes: RefCell<HashMap<u32, ID2D1SolidColorBrush>>,
     linear_brushes: RefCell<HashMap<(u32, u32, i32, i32, i32, i32), ID2D1LinearGradientBrush>>,
-    linear3_brushes: RefCell<HashMap<(u32, u32, u32, i32, i32, i32, i32), ID2D1LinearGradientBrush>>,
+    linear3_brushes: RefCell<HashMap<(u32, u32, u32, i32, i32, i32, i32, i32), ID2D1LinearGradientBrush>>,
     radial_brushes: RefCell<HashMap<(u32, u32, i32, i32, i32, i32), ID2D1RadialGradientBrush>>,
     path_geoms: RefCell<HashMap<u64, ID2D1PathGeometry>>,
     stroke_style_round: RefCell<Option<windows::Win32::Graphics::Direct2D::ID2D1StrokeStyle>>,
@@ -794,15 +821,7 @@ impl D2DResourceCache {
         start: D2D_POINT_2F,
         end: D2D_POINT_2F,
     ) -> Result<ID2D1LinearGradientBrush> {
-        let key = (
-            pack_rgba8(c0),
-            pack_rgba8(c_mid),
-            pack_rgba8(c1),
-            q_half_px(start.x),
-            q_half_px(start.y),
-            q_half_px(end.x),
-            q_half_px(end.y),
-        );
+        let key = linear3_cache_key(c0, c_mid, c1, mid_pos, start, end);
         let mut map = self.linear3_brushes.borrow_mut();
         if let Some(b) = map.get(&key) {
             return Ok(b.clone());
@@ -1240,7 +1259,8 @@ impl<'a> D2DPainter<'a> {
         Ok(())
     }
 
-    /// Strokes an arc using ID2D1PathGeometry.
+    /// Strokes an arc using ID2D1PathGeometry (or `DrawEllipse` for full 360-degree sweeps
+    /// where `start_pt == end_pt` would make Direct2D `AddArc` degenerate and invisible — BH-20).
     pub fn arc(
         &mut self,
         cx: f32,
@@ -1257,6 +1277,21 @@ impl<'a> D2DPainter<'a> {
         }
         let (dcx, dcy) = self.tf_pt(cx, cy);
         let dr = r * self.s;
+        let brush = self.cache.solid(self.ctx, col)?;
+        let style = self.cache.stroke_style_round();
+
+        if sweep.abs() >= std::f32::consts::TAU - 1e-3 {
+            let ellipse = windows::Win32::Graphics::Direct2D::D2D1_ELLIPSE {
+                point: D2D_POINT_2F { x: dcx, y: dcy },
+                radiusX: dr,
+                radiusY: dr,
+            };
+            unsafe {
+                self.ctx
+                    .DrawEllipse(&ellipse, &brush, width * self.s, style.as_ref());
+            }
+            return Ok(());
+        }
 
         let (start_pt, end_pt, arc_size) = arc_endpoints(dcx, dcy, dr, a0, sweep);
 
@@ -1285,8 +1320,6 @@ impl<'a> D2DPainter<'a> {
             sink.Close()?;
         }
 
-        let brush = self.cache.solid(self.ctx, col)?;
-        let style = self.cache.stroke_style_round();
         unsafe { self.ctx.DrawGeometry(&geom, &brush, width * self.s, style.as_ref()) };
         Ok(())
     }
@@ -1332,26 +1365,27 @@ impl<'a> D2DPainter<'a> {
             })?
         };
 
+        // BH-05: Bind layer_params and drop ManuallyDrop<Option<ID2D1Geometry>> after PushLayer
+        // so the COM refcount of ID2D1RoundedRectangleGeometry is never leaked.
+        let layer_params = windows::Win32::Graphics::Direct2D::D2D1_LAYER_PARAMETERS1 {
+            contentBounds: D2D_RECT_F {
+                left: dx,
+                top: dy,
+                right: dx + dw,
+                bottom: dy + dh,
+            },
+            geometricMask: ManuallyDrop::new(Some(geom.into())),
+            maskAntialiasMode:
+                windows::Win32::Graphics::Direct2D::D2D1_ANTIALIAS_MODE_PER_PRIMITIVE,
+            maskTransform: windows::Foundation::Numerics::Matrix3x2::identity(),
+            opacity: 1.0,
+            opacityBrush: ManuallyDrop::new(None),
+            layerOptions: D2D1_LAYER_OPTIONS1_NONE,
+        };
         unsafe {
-            self.ctx.PushLayer(
-                &windows::Win32::Graphics::Direct2D::D2D1_LAYER_PARAMETERS1 {
-                    contentBounds: D2D_RECT_F {
-                        left: dx,
-                        top: dy,
-                        right: dx + dw,
-                        bottom: dy + dh,
-                    },
-                    geometricMask: ManuallyDrop::new(Some(geom.into())),
-                    maskAntialiasMode:
-                        windows::Win32::Graphics::Direct2D::D2D1_ANTIALIAS_MODE_PER_PRIMITIVE,
-                    maskTransform: windows::Foundation::Numerics::Matrix3x2::identity(),
-                    opacity: 1.0,
-                    opacityBrush: ManuallyDrop::new(None),
-                    layerOptions: D2D1_LAYER_OPTIONS1_NONE,
-                },
-                None,
-            );
+            self.ctx.PushLayer(&layer_params, None);
         }
+        let _ = ManuallyDrop::into_inner(layer_params.geometricMask);
         Ok(())
     }
 
@@ -2364,14 +2398,15 @@ impl<'a> D2DPainter<'a> {
         bottom: Color,
     ) -> Result<()> {
         if (r_tl - r_tr).abs() < 1e-3 && (r_tr - r_br).abs() < 1e-3 && (r_br - r_bl).abs() < 1e-3 {
+            // BH-20: rrect_vertical_gradient multiplies global_alpha internally; pass alpha=1.0.
             return self.rrect_vertical_gradient(
                 x,
                 y,
                 w,
                 h,
                 r_tl,
-                top.to_d2d(self.global_alpha),
-                bottom.to_d2d(self.global_alpha),
+                top.to_d2d(1.0),
+                bottom.to_d2d(1.0),
             );
         }
         let (dx, dy) = self.tf_pt(x, y);
@@ -2466,7 +2501,8 @@ impl<'a> D2DPainter<'a> {
             let t = i as f32 / steps as f32;
             let exp = glow_r * t;
             let alpha_mult = 1.0 - t * 0.85;
-            let c = fade(color, alpha_mult).to_d2d(self.global_alpha);
+            // BH-20: self.rrect applies self.global_alpha once; pass 1.0 here.
+            let c = fade(color, alpha_mult).to_d2d(1.0);
             self.rrect(x - exp, y - exp, w + 2.0 * exp, h + 2.0 * exp, r + exp, c)?;
         }
         Ok(())
@@ -2480,7 +2516,8 @@ impl<'a> D2DPainter<'a> {
             let t = i as f32 / steps as f32;
             let exp = blur * t;
             let alpha_mult = (1.0 - t) * 0.4;
-            let c = fade(color, alpha_mult).to_d2d(self.global_alpha);
+            // BH-20: self.rrect applies self.global_alpha once; pass 1.0 here.
+            let c = fade(color, alpha_mult).to_d2d(1.0);
             self.rrect(x - exp, y - exp + blur * 0.3, w + 2.0 * exp, h + 2.0 * exp, r + exp, c)?;
         }
         Ok(())
@@ -2992,23 +3029,22 @@ impl<'a> PainterD2D<'a> {
     }
 
     // ── Basic Shapes ──────────────────────────────────────────────────────────
+    // BH-20: self.painter() inherits self.global_alpha and D2DPainter multiplies
+    // col.a *= self.global_alpha once; convert Color with 1.0 to avoid ga^2 fading.
 
     pub fn rrect(&mut self, x: f32, y: f32, w: f32, h: f32, r: f32, c: Color) {
-        let ga = self.global_alpha;
         let mut p = self.painter();
-        let _ = p.rrect(x, y, w, h, r, c.to_d2d(ga));
+        let _ = p.rrect(x, y, w, h, r, c.to_d2d(1.0));
     }
 
     pub fn rrect_stroke(&mut self, x: f32, y: f32, w: f32, h: f32, r: f32, width: f32, c: Color) {
-        let ga = self.global_alpha;
         let mut p = self.painter();
-        let _ = p.rrect_stroke(x, y, w, h, r, width, c.to_d2d(ga));
+        let _ = p.rrect_stroke(x, y, w, h, r, width, c.to_d2d(1.0));
     }
 
     pub fn rrect_vertical_gradient(&mut self, x: f32, y: f32, w: f32, h: f32, r: f32, c0: Color, c1: Color) {
-        let ga = self.global_alpha;
         let mut p = self.painter();
-        let _ = p.rrect_vertical_gradient(x, y, w, h, r, c0.to_d2d(ga), c1.to_d2d(ga));
+        let _ = p.rrect_vertical_gradient(x, y, w, h, r, c0.to_d2d(1.0), c1.to_d2d(1.0));
     }
 
     pub fn rrect_corners4_vertical_gradient(
@@ -3046,13 +3082,12 @@ impl<'a> PainterD2D<'a> {
     }
 
     pub fn radial_glow(&mut self, cx: f32, cy: f32, r: f32, c: Color, blend: BlendMode, _use_clip: bool) {
-        let ga = self.global_alpha;
         let is_add = matches!(blend, BlendMode::Plus);
         if is_add {
             unsafe { self.ctx.SetPrimitiveBlend(windows::Win32::Graphics::Direct2D::D2D1_PRIMITIVE_BLEND_ADD) };
         }
         let mut p = self.painter();
-        let c_center = c.to_d2d(ga);
+        let c_center = c.to_d2d(1.0);
         let c_edge = D2D1_COLOR_F { r: c_center.r, g: c_center.g, b: c_center.b, a: 0.0 };
         let _ = p.radial_glow(cx, cy, r, c_center, c_edge);
         if is_add {
@@ -3061,13 +3096,12 @@ impl<'a> PainterD2D<'a> {
     }
 
     pub fn elliptical_glow(&mut self, cx: f32, cy: f32, rx: f32, ry: f32, c: Color, blend: BlendMode, _use_clip: bool) {
-        let ga = self.global_alpha;
         let is_add = matches!(blend, BlendMode::Plus);
         if is_add {
             unsafe { self.ctx.SetPrimitiveBlend(windows::Win32::Graphics::Direct2D::D2D1_PRIMITIVE_BLEND_ADD) };
         }
         let mut p = self.painter();
-        let c_center = c.to_d2d(ga);
+        let c_center = c.to_d2d(1.0);
         let c_edge = D2D1_COLOR_F { r: c_center.r, g: c_center.g, b: c_center.b, a: 0.0 };
         let _ = p.elliptical_glow(cx, cy, rx, ry, c_center, c_edge);
         if is_add {
@@ -3086,21 +3120,18 @@ impl<'a> PainterD2D<'a> {
     }
 
     pub fn circle(&mut self, cx: f32, cy: f32, r: f32, c: Color) {
-        let ga = self.global_alpha;
         let mut p = self.painter();
-        let _ = p.circle(cx, cy, r, c.to_d2d(ga));
+        let _ = p.circle(cx, cy, r, c.to_d2d(1.0));
     }
 
     pub fn circle_stroke(&mut self, cx: f32, cy: f32, r: f32, width: f32, c: Color) {
-        let ga = self.global_alpha;
         let mut p = self.painter();
-        let _ = p.circle_stroke(cx, cy, r, width, c.to_d2d(ga));
+        let _ = p.circle_stroke(cx, cy, r, width, c.to_d2d(1.0));
     }
 
     pub fn arc(&mut self, cx: f32, cy: f32, r: f32, a0: f32, sweep: f32, width: f32, c: Color) {
-        let ga = self.global_alpha;
         let mut p = self.painter();
-        let _ = p.arc(cx, cy, r, a0, sweep, width, c.to_d2d(ga));
+        let _ = p.arc(cx, cy, r, a0, sweep, width, c.to_d2d(1.0));
     }
 
     pub fn line_gradient_blend(
@@ -3522,5 +3553,35 @@ impl<'a> PainterD2D<'a> {
                 }
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod graphics_reliability_tests {
+    use super::*;
+
+    #[test]
+    fn bh26_path_bounds_includes_cubic_endpoint() {
+        let mut pb = PathBuilder::new();
+        pb.move_to(0.0, 0.0);
+        pb.cubic_to(10.0, 5.0, 20.0, 15.0, 100.0, 80.0);
+        let path = pb.finish().unwrap();
+        let (x, y, w, h) = path.bounds().unwrap();
+        assert!((x - 0.0).abs() < 1e-3);
+        assert!((y - 0.0).abs() < 1e-3);
+        assert!((w - 100.0).abs() < 1e-3, "width must include cubic endpoint 100.0, got {}", w);
+        assert!((h - 80.0).abs() < 1e-3, "height must include cubic endpoint 80.0, got {}", h);
+    }
+
+    #[test]
+    fn bh26_linear3_cache_key_distinguishes_mid_pos() {
+        let c0 = color_to_d2d(255, 255, 255, 255, 1.0);
+        let cm = color_to_d2d(150, 100, 255, 200, 1.0);
+        let c1 = color_to_d2d(0, 0, 0, 255, 1.0);
+        let s = D2D_POINT_2F { x: 0.0, y: 0.0 };
+        let e = D2D_POINT_2F { x: 0.0, y: 100.0 };
+        let k50 = linear3_cache_key(c0, cm, c1, 0.50, s, e);
+        let k55 = linear3_cache_key(c0, cm, c1, 0.55, s, e);
+        assert_ne!(k50, k55, "linear_brush_3stop keys must differentiate mid_pos");
     }
 }

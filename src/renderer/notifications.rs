@@ -52,6 +52,19 @@ impl Renderer {
         let rem_frac = Self::notification_remaining_frac(notif);
         let cy = h * 0.5;
 
+        // BH-20: Clip additive glows strictly inside the notification capsule bounds.
+        let (r_tl, r_tr, r_br, r_bl) = state.corner_radii();
+        let inv_s = if p.s > 1e-3 { 1.0 / p.s } else { 1.0 };
+        let clipped = p.prepare_corners4_clip(
+            0.0,
+            0.0,
+            w,
+            h,
+            r_tl * inv_s,
+            r_tr * inv_s,
+            r_br * inv_s,
+            r_bl * inv_s,
+        );
         // Photo-matched luminous bottom-edge purple/lavender bloom + left ambient halo
         p.elliptical_glow(
             w * 0.48,
@@ -92,6 +105,9 @@ impl Renderer {
             BlendMode::Plus,
             true,
         );
+        if clipped {
+            p.pop_clip();
+        }
         p.rrect_vertical_gradient(
             left_cx - badge_r,
             cy - badge_r,
@@ -332,6 +348,7 @@ impl Renderer {
             rgba(235, 230, 255, 65),
             rgba(192, 132, 252, 65),
         );
+        let toast_clipped = p.prepare_rrect_clip(bx, by, bw, bh, 12.5);
         p.radial_glow(
             bx + 22.0,
             cy,
@@ -340,6 +357,9 @@ impl Renderer {
             BlendMode::SourceOver,
             true,
         );
+        if toast_clipped {
+            p.pop_clip();
+        }
 
         let ic_cx = bx + 20.0;
         p.rrect_vertical_gradient(

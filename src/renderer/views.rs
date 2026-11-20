@@ -923,6 +923,7 @@ impl Renderer {
                     LyricSize::Standard => (17.2, 12.4),
                     LyricSize::Large => (19.6, 13.4),
                 };
+                let lyric_clipped = p.prepare_rrect_clip(pad_x, ctx_y, inner_w, ctx_h, 12.0);
                 p.radial_glow(
                     pad_x + inner_w * 0.5,
                     center_y - 2.0,
@@ -931,6 +932,9 @@ impl Renderer {
                     BlendMode::SourceOver,
                     true,
                 );
+                if lyric_clipped {
+                    p.pop_clip();
+                }
                 let (hero_lines, fit_hero_sz) = p.wrap_lines_fit(
                     &state.lyrics[center_idx].text,
                     hero_sz,

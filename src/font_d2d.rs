@@ -79,6 +79,10 @@ impl DWriteTextCache {
             format.SetWordWrapping(DWRITE_WORD_WRAPPING_NO_WRAP)?;
         }
 
+        // BH-25: Cap cached IDWriteTextFormat entries so scale animations cannot grow unboundedly.
+        if self.formats.len() >= 64 {
+            self.formats.clear();
+        }
         self.formats.insert((weight_u16, size_quarter_px), format.clone());
         Ok(format)
     }
@@ -274,6 +278,7 @@ impl DWriteTextCache {
 
     pub fn clear(&mut self) {
         self.layouts.clear();
+        self.formats.clear();
     }
 
     pub fn trim(&mut self) {
@@ -330,5 +335,18 @@ mod tests {
         for line in lines {
             assert!(cache.measure(&line, 16.0, Weight::Regular).0 <= 100.0);
         }
+    }
+
+    #[test]
+    fn bh25_formats_cache_is_bounded_and_cleared_on_trim() {
+        let mut cache = DWriteTextCache::new().unwrap();
+        for i in 0..100 {
+            let sz = 8.0 + (i as f32) * 0.25;
+            let _ = cache.measure("A", sz, Weight::Regular);
+        }
+        assert!(cache.formats.len() <= 64, "formats exceeded cap: {}", cache.formats.len());
+        cache.trim();
+        assert!(cache.formats.is_empty());
+        assert!(cache.layouts.is_empty());
     }
 }

@@ -1481,7 +1481,14 @@ unsafe fn create_notch_hwnd(
         h_instance,
         None,
     )?;
-    let host = DCompHost::new(hwnd, canvas_w.max(1) as u32, canvas_h.max(1) as u32)?;
+    let host = match DCompHost::new(hwnd, canvas_w.max(1) as u32, canvas_h.max(1) as u32) {
+        Ok(h) => h,
+        Err(e) => {
+            // BH-23: Always clean up HWND if DComp initialization fails.
+            let _ = DestroyWindow(hwnd);
+            return Err(e);
+        }
+    };
     Ok((hwnd, host))
 }
 
