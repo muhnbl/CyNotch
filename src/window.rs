@@ -4044,11 +4044,19 @@ unsafe fn redraw_window(hwnd: HWND) {
     let blur_spec = if state_snapshot.is_frosted_active() && backdrop::blur_available() {
         let (ox, oy) = Renderer::compute_origin(&state_snapshot, canvas_w as f32, canvas_h as f32);
         backdrop::set_blur_px(crate::dcomp_blur::CALIBRATED_BLUR_PX);
+        let blur_h = if state_snapshot.is_hovered
+            && state_snapshot.mode == NotchMode::Music
+            && !state_snapshot.show_notif_history
+        {
+            (176.0 * state_snapshot.expanded_scale()).min(state_snapshot.current_height.max(1.0))
+        } else {
+            state_snapshot.current_height.max(1.0)
+        };
         Some(BlurSpec {
             x: ox,
             y: oy,
             w: state_snapshot.current_width.max(1.0),
-            h: state_snapshot.current_height.max(1.0),
+            h: blur_h,
             radii: state_snapshot.corner_radii(),
             blur_px: crate::dcomp_blur::CALIBRATED_BLUR_PX,
         })

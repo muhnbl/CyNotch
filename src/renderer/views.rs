@@ -456,28 +456,36 @@ impl Renderer {
         p.circle(thumb_x, thumb_y, thumb_r * 0.44, tok::amber_glow());
         p.hit(scrub_x, scrub_y - 8.0, scrub_w, 22.0, Action::SeekMusic(played_pct));
 
-        // 2. BOX 2 (Floating Track Info Card y=186..248, 10px transparent gap above & below)
-        let box2_y = 186.0;
+        // 2. BOX 2 (Floating Track Info Card y=200..262, 24px transparent gap below Box 1)
+        let box2_y = 200.0;
         let box2_h = 62.0;
-        p.rrect_vertical_gradient(
+        let (card_top, card_bot) = if p.frosted {
+            (tok::obsidian_shell_frosted(), tok::obsidian_deep_frosted())
+        } else {
+            (tok::obsidian_shell(), tok::obsidian_deep())
+        };
+        p.rrect_drop_shadow(0.0, box2_y, w, box2_h, 18.0, 2.0, 14.0, 95);
+        p.rrect_corners4_vertical_gradient(
             0.0,
             box2_y,
             w,
             box2_h,
-            18.0,
-            rgba(22, 20, 42, 232),
-            rgba(13, 12, 28, 240),
+            (18.0, 18.0, 18.0, 18.0),
+            card_top,
+            card_bot,
         );
-        p.rrect_bevel_stroke(
-            0.0,
-            box2_y,
-            w,
-            box2_h,
-            18.0,
-            1.0,
-            rgba(255, 255, 255, 44),
-            rgba(168, 85, 247, 36),
-        );
+        if p.prepare_rrect_clip(0.0, box2_y, w, box2_h, 18.0) {
+            p.elliptical_glow(
+                w * 0.5,
+                box2_y + box2_h + 4.0,
+                w * 0.5,
+                26.0,
+                rgba(124, 58, 237, if p.frosted { 30 } else { 48 }),
+                BlendMode::Plus,
+                true,
+            );
+            p.pop_clip();
+        }
 
         let art_x = 12.0;
         let art_y = box2_y + 8.0;
@@ -488,18 +496,8 @@ impl Renderer {
             art_sz,
             art_sz,
             12.0,
-            rgba(88, 48, 168, 190),
-            rgba(34, 22, 68, 215),
-        );
-        p.rrect_bevel_stroke(
-            art_x,
-            art_y,
-            art_sz,
-            art_sz,
-            12.0,
-            1.0,
-            rgba(233, 213, 255, 70),
-            rgba(124, 58, 237, 25),
+            rgba(88, 48, 168, 155),
+            rgba(34, 22, 68, 180),
         );
         icons::draw(p, Icon::Music, art_x + 13.0, art_y + 13.0, 20.0, tok::text1());
         if state.media.is_playing {
@@ -539,8 +537,8 @@ impl Renderer {
         let artist_ell = p.ellipsize_cow(artist_str, 11.2, Weight::Regular, text_max_w);
         p.text(&artist_ell, text_x, box2_y + 45.0, 11.2, Weight::Regular, tok::text2());
 
-        // 3. BOX 3 (3 Separated Floating Media Player Buttons y=258..304)
-        let btn_y = 258.0;
+        // 3. BOX 3 (3 Separated Floating Media Player Buttons y=272..318, same family as Box 2)
+        let btn_y = 272.0;
         let btn_w = 58.0;
         let btn_h = 46.0;
         let btn_gap = 12.0;
@@ -558,38 +556,39 @@ impl Renderer {
         ];
         for (bx, ic, act, is_primary) in btns {
             let ht = p.hot_t(bx, btn_y, btn_w, btn_h);
+            p.rrect_drop_shadow(bx, btn_y, btn_w, btn_h, 14.0, 2.0, 12.0, 90);
             if is_primary {
-                p.luminous_pill_button_t(
+                p.rrect_corners4_vertical_gradient(
                     bx,
                     btn_y,
                     btn_w,
                     btn_h,
-                    14.0,
-                    tok::cyno_indigo(),
-                    tok::cyno_violet(),
-                    tok::cyno_orchid(),
-                    ht,
+                    (14.0, 14.0, 14.0, 14.0),
+                    rgba(124, 58, 237, (145.0 + 45.0 * ht) as u8),
+                    rgba(76, 29, 149, (165.0 + 40.0 * ht) as u8),
                 );
             } else {
-                p.rrect_vertical_gradient(
+                p.rrect_corners4_vertical_gradient(
                     bx,
                     btn_y,
                     btn_w,
                     btn_h,
-                    14.0,
-                    rgba(26, 24, 52, 232),
-                    rgba(15, 14, 34, 240),
+                    (14.0, 14.0, 14.0, 14.0),
+                    card_top,
+                    card_bot,
                 );
-                p.rrect_bevel_stroke(
-                    bx,
-                    btn_y,
-                    btn_w,
-                    btn_h,
-                    14.0,
-                    1.0,
-                    rgba(255, 255, 255, (46.0 + 40.0 * ht) as u8),
-                    rgba(168, 85, 247, 36),
-                );
+                if ht > 0.02 && p.prepare_rrect_clip(bx, btn_y, btn_w, btn_h, 14.0) {
+                    p.elliptical_glow(
+                        bx + btn_w * 0.5,
+                        btn_y + btn_h + 2.0,
+                        btn_w * 0.65,
+                        btn_h * 0.55,
+                        rgba(253, 230, 138, (46.0 * ht) as u8),
+                        BlendMode::Plus,
+                        true,
+                    );
+                    p.pop_clip();
+                }
             }
             icons::draw(
                 p,
