@@ -2,21 +2,23 @@
 
 ## v0.3.1 (2026-11-22)
 ### 1. Pure Stealth Idle (Glowing Purple Wolf Eyes) & Staged Choreography
-- Replaced static `"CyNotch"` idle branding text in Minimal mode with **2 Glowing Purple Wolf Eyes** (`draw_wolf_eyes` in `src/renderer/mascot.rs`) featuring subtle breathing luminescence, slow natural blinks, and `~650ms` predator squint + violet micro-reaction on clipboard/capture events (`Opsi A`).
-- Implemented **Koreografi Bertahap (Staged Choreography)** calibrated to **Claude Fast** timing (`420ms` `anim_capsule_t`, `220ms` `held_shrink_dims` / `capsule_shrink_delay_until`, `0.0..0.42` roll-down exit + `0.30..1.00` overlapped roll-in):
-  - **Music → Stealth Idle**: Song title rolls downward first, Wolf Eyes fade in cleanly, then the capsule gently shrinks (`2.75 / 2.85 Hz`, `zeta = 0.92`).
-  - **Song A → Song B**: Outgoing title rolls downward before incoming track rolls in from the top.
-- Refined Music capsule typography & layout (`src/renderer/mod.rs`, `src/painter_d2d.rs`): restored `1.05x` scale, widened `music_max_width` (`240px` / `290px` / `350px`), formatted as **`Judul Lagu`** (Bold, 100% white) **`- Nama Artis`** (Regular, 75% opacity), with pure Direct2D `OpacityMask` alpha fade-out (`push_fade_mask`) before the Music badge.
+- Replaced static `"CyNotch"` idle branding text in Minimal mode with **2 Glowing Purple Wolf Eyes** (`draw_wolf_eyes` in `src/renderer/mascot.rs`) featuring subtle breathing luminescence, slow natural blinks, and `~650ms` predator squint + violet micro-reaction on clipboard/capture events.
+- Implemented **Staged Choreography** calibrated to **Claude Fast** timing (`420ms` `anim_capsule_t`, `220ms` `held_shrink_dims`, `0.0..0.42` roll-down exit + `0.30..1.00` overlapped roll-in) for Music → Stealth Idle and Song A → Song B transitions.
+- Refined Music capsule typography & layout (`src/renderer/mod.rs`, `src/painter_d2d.rs`): `1.05x` scale, `music_max_width` (`240px` / `290px` / `350px`), **`Judul Lagu`** (Bold 100%) **`- Nama Artis`** (Regular 75%), with Direct2D `OpacityMask` fade-out before the Music badge.
 
-### 2. Side Dock Orientation (`Left -90°` / `Right +90°`)
-- Rotated Stealth Wolf Eyes and Music capsule (`-90°` Left / `+90°` Right) with the Music badge pinned at the bottom (`badge_cy = h - badge_r - 5.5`), while keeping **Notifications, Expanded Panel, Volume, and Purge upright (`0°`)** for legibility (`src/renderer/vertical.rs`, `src/renderer/mod.rs`).
+### 2. 3-Box Floating Music UI, SMTC Controls & Uniform `620×234` Choreography
+- Redesigned `NotchMode::Music` (`src/renderer/views.rs`) into 3 separated floating Obsidian Liquid Glass sections within the uniform `620×234` expanded bounds (zero pop-up/resize on tab switch):
+  - **Box 1 (`y=0..134`)**: Mode Dock + Centered Large Lyrics (Apple Music focus, no mascot or `Lyrics` toggle) + Full-Width Seek Bar.
+  - **Box 2 (`y=146..188`)**: Floating Track Info card (cover tile, title, artist, timestamps).
+  - **Box 3 (`y=194..230`)**: 3 separated floating media buttons (`Prev`, `Play/Pause`, `Next`).
+- Added `BlurSpec.box1_h` & `BlurSpec.extra_boxes` (`src/dcomp_blur.rs`, `src/composition.rs`) so all 3 separated boxes receive identical `15px` WinRT `GaussianBlur` + Optical Luminosity Clamp while gaps remain 100% transparent.
+- Upgraded media transport (`src/media.rs`) to **WinRT SMTC** (`TryTogglePlayPauseAsync`, `TrySkipNextAsync`, `TrySkipPreviousAsync`) with `VK_MEDIA` fallback, and added monotonic SMTC progress clamping in `src/main.rs` to eliminate playhead jitter.
 
-### 3. Click-Through Default, Grip-Only Drag, Silent Shelf & Longer Hover Dwell
-- **True Click-Through Default (`src/window.rs`)**: Added `sync_click_through_ex_style` toggling `WS_EX_LAYERED | WS_EX_TRANSPARENT` + `SetWindowPos(..., SWP_FRAMECHANGED)` when collapsed and `Expand Click Only` (`click_to_open`) is OFF, so clicks pass straight through to browser tabs/apps behind the notch; `TIMER_POLL_ID` polls cursor position to trigger hover dwell, and external drag-in (`>= 14px` movement with `VK_LBUTTON` held near the pill) temporarily lifts click-through so OLE `IDropTarget` still accepts drops.
-- **Grip-Only Window Drag**: Removed collapsed `IdlePressOrDrag` and header-bar fallback dragging so notch position is draggable strictly via the 6-dot `Action::StartGripDrag` handle.
-- **No Hover Glow & Longer Hover Dwell (`src/models.rs`)**: Disabled `anim_edge_glow_t` during hover dwell (`0Hz` while pending) and increased `HoverDwellSpeed` presets to `Quick (300ms)`, `Normal (650ms)`, and `Slow (1000ms)` (`HOVER_DWELL_MS = 650`).
-- **Silent Shelf & Snipping Tool Capture**: Removed `"Parked on Shelf"` notification banners on OLE drop/clear (`src/window.rs`), and added `Win+Shift+S` Snipping Tool `CF_DIB` clipboard image capture to Shelf (`read_clipboard_dib_to_shelf` in `src/capture.rs`) with `is_screenshot_or_snip_toast` filtering.
-- **Verified**: `149/149` tests passing across 14 suites (`cargo test`) and release build deployed to `C:\Users\muhna\.local\bin\cynotch.exe`.
+### 3. Focused 5-Mode Hub, Top-Center Lock, Click-Through & Silent OLE Shelf
+- **Locked Top-Center & Pruned Scope**: Locked notch to `NotchPlacement::Top` (removed grip drag, edge snap, `-90°/+90°` side dock, `Tasks`, `Capture`, `ScreenTime`, and manual 8-area MemReduct selection in favor of a safe non-stuttering profile: `Working Sets + System File Cache + Low-Priority Standby`).
+- **Home & Shelf Polish**: Expanded Home `Command Hub` into 2 spacious full-height cards (`Now Playing` + `Quick Shelf`) and standardized `Quick Shelf` to a uniform 3-column box grid.
+- **True Click-Through Default (`src/window.rs`)**: `WS_EX_LAYERED | WS_EX_TRANSPARENT` when collapsed (`click_to_open` OFF), `HoverDwellSpeed` (`300ms / 650ms / 1000ms`), `0Hz` hover glow, `Win+Shift+S` `CF_DIB` capture to Shelf, and Stealth Wolf Eyes app icon (`assets/cynotch.ico`).
+- **Verified**: `147/147` tests passing across 14 suites (`cargo test`) and release build deployed to `C:\Users\muhna\.local\bin\cynotch.exe`.
 
 ## v0.3.0 (2026-11-20)
 ### 1. GPU Direct2D + DirectWrite Renderer & 55.9% Binary Size Reduction

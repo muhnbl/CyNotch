@@ -1,8 +1,9 @@
 # CyNotch v0.3.1 — Obsidian Liquid Glass Design System (Approved)
 
 > **Architecture**: Atomic Design Hierarchy (`Tokens → Atoms → Molecules → Organisms → Templates/Pages`)
-> **Material**: Fixed Calibrated Translucent Obsidian Glass (`24px` blur, zero opacity/blur sliders)
-> **Rule of Affordance**: Windows, Cards, and Sections are **borderless** (separated purely by soft drop shadow + surface luminance). **Bottom-to-top faded outlines (`~50% → 0%`) belong exclusively to interactive buttons & rows.**
+> **Material**: Fixed Calibrated Translucent Obsidian Glass (`CALIBRATED_BLUR_PX = 15`, zero opacity/blur sliders)
+> **Canvas & Placement**: Locked Top-Center (`NotchPlacement::Top`, non-draggable) · Uniform `620 × 234` expanded bounds across all 5 modes (`Home`, `Music`, `Volume`, `MemReduct`, `Shelf`)
+> **Rule of Affordance**: Windows, Cards, and Sections are **borderless** (`0px` outer stroke, separated purely by surface luminance or real transparent gaps). **Bottom-to-top faded outlines (`~50% → 0%`) belong exclusively to interactive buttons & rows.**
 > **Icons**: Clean Tailwind / Heroicons SVG strokes (`1.8–2.0px`), zero raw emojis.
 
 ---
@@ -65,17 +66,22 @@
 
 ### Organisms
 1. **Borderless Obsidian Card**: Shadow-elevated translucent container (`0px` border) with bottom violet-pearl bloom.
-2. **Vertical Quick Shelf (Prototype A)**: Notch Shell + Header + Interactive Mode Dock + Borderless Shelf Card + Unclipped Row List + Clean Refraction Canvas Layer.
-3. **Horizontal Quick Shelf (Prototype B)**: Wide top-center notch shell with compact 3-column Shelf Card.
-4. **Settings Window (Prototype C)**: Borderless glass window containing shadow-elevated borderless Section Cards — **zero transparency/blur sliders**.
+2. **Command Hub (`Home`)**: Companion Card (`154×154` CPU/RAM + Purge CTA) + 2 full-height (`154px`) side-by-side cards (`Now Playing` + `Quick Shelf`).
+3. **3-Box Floating Music Player (`Music`)**:
+   - **Box 1 (`y = 0..134`)**: Top notch shell with Mode Dock, Centered Large Lyrics (active `17px` Bold `#F8F7FF`, prev/next `40%` opacity), and Full-Width Seek Bar (`y = 118`).
+   - **Gap 1 (`12px` transparent)** → **Box 2 (`y = 146..188`, `0px` border, no drop-shadow)**: Cover tile (`30×30`), Title + Artist, and Timestamp.
+   - **Gap 2 (`6px` transparent)** → **Box 3 (`y = 194..230`, `4px` bottom safety margin)**: 3 separated floating media buttons (`54×36`, `gap = 10px`) using `PrimaryOutline` / `PrimaryFill`.
+   - All 3 boxes share identical `15px` WinRT blur + Optical Luminosity Clamp via `BlurSpec.box1_h` & `BlurSpec.extra_boxes` (`src/composition.rs`).
+4. **Uniform Quick Shelf (`Shelf`)**: 3-column equal-width box grid (`tile_w = (inner_w - gap * 2) / 3`, `88px` height) — never over-extends.
+5. **Settings Window**: Borderless glass window containing shadow-elevated borderless Section Cards — **zero transparency/blur sliders**.
 
 ---
 
 ## 3. Direct2D & WinRT Composition Porting Map (`CyNotch-v0.3.1`)
-- `src/dcomp_blur.rs`:
-  - Chain `GaussianBlurEffect(24px)` → **Optical Luminosity Clamp** (`ColorMatrixEffect` luminance compression / `BlendEffect::Luminosity` smoked obsidian tint) on the WinRT `CompositionBackdropBrush` so `#FFFFFF` light-theme apps stay rich smoked obsidian with `~10.8:1` AAA contrast and `0%` CPU screen-capture.
+- `src/dcomp_blur.rs` & `src/composition.rs`:
+  - Chain `GaussianBlurEffect(15px)` → **Optical Luminosity Clamp** (`ColorMatrixEffect` luminance compression) on WinRT `CompositionBackdropBrush`, with `BlurSpec.box1_h` + `BlurSpec.extra_boxes` rendering multi-box alpha masks onto `mask_swap_chain` so separated floating boxes blur identically while gaps stay 100% transparent.
 - `src/painter_d2d.rs`:
-  - `elevated_card`: Remove outer bevel stroke when `frosted == true`; keep soft `rrect_drop_shadow` + translucent obsidian-to-violet gradient + subtle bottom-left radial bloom.
+  - `elevated_card`: Remove outer bevel stroke when `frosted == true`; translucent obsidian-to-violet gradient + subtle bottom-left radial bloom (no `rrect_drop_shadow` on separated transparent-gap cards).
   - `tactile_surface_pill_t`: Support `ButtonVariant::{PrimaryFill, PrimaryOutline, TextOnly}`; continuous vertical `ID2D1LinearGradientBrush` rim (`bottom ~0.50 → top 0.0`) for `PrimaryFill` & `PrimaryOutline`; pure bottom-up liquid glow for `TextOnly` hover; 5% opacity text shadow.
-- `src/renderer/views.rs` & `src/renderer/vertical.rs`: Unclipped shelf row list, Heroicon vector paths, Raycast dock pill indicator.
-- `src/settings_window.rs`: Remove `FrostedOpacity` and `FrostedBlur` sliders; lock fixed calibrated constants (`frosted_blur_px = 24`, fixed alpha recipe).
+- `src/renderer/views.rs`: 2-card Home Hub, 3-box floating Music UI, 3-column uniform Quick Shelf, Safe Trim MemReduct UI.
+- `src/settings_window.rs`: Fixed calibrated glass constants (`CALIBRATED_BLUR_PX = 15`), Top-Center placement lock, 4 module toggles (`Music`, `Volume`, `MemReduct`, `Shelf`).
