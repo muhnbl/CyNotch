@@ -103,7 +103,7 @@ impl Renderer {
 
                 // 1. Borderless Volumetric Obsidian Shell (Box 1 only in Music mode so Box 2 & 3 float independently!)
                 let shell_h = if state.is_hovered && state.mode == NotchMode::Music && !state.show_notif_history {
-                    (136.0 * state.expanded_scale()).min(h)
+                    (134.0 * state.expanded_scale()).min(h)
                 } else {
                     h
                 };

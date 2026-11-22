@@ -430,7 +430,7 @@ impl Renderer {
         };
         let scrub_x = 32.0;
         let scrub_w = (w - 64.0).max(80.0);
-        let scrub_y = 120.0;
+        let scrub_y = 118.0;
         p.glowing_striped_bar(
             scrub_x,
             scrub_y,
@@ -456,8 +456,8 @@ impl Renderer {
         p.circle(thumb_x, thumb_y, thumb_r * 0.44, tok::amber_glow());
         p.hit(scrub_x, scrub_y - 7.0, scrub_w, 20.0, Action::SeekMusic(played_pct));
 
-        // 2. BOX 2 (Floating Obsidian Glass Track Info y=148..190, 12px transparent gap below Box 1)
-        let box2_y = 148.0;
+        // 2. BOX 2 (Floating Obsidian Glass Track Info y=146..188, 12px transparent gap below Box 1)
+        let box2_y = 146.0;
         let box2_h = 42.0;
         let (card_top, card_bot) = if p.frosted {
             (tok::obsidian_shell_frosted(), tok::obsidian_deep_frosted())
@@ -536,10 +536,10 @@ impl Renderer {
         let artist_ell = p.ellipsize_cow(artist_str, 10.2, Weight::Regular, text_max_w);
         p.text(&artist_ell, text_x, box2_y + 32.5, 10.2, Weight::Regular, tok::text2());
 
-        // 3. BOX 3 (3 Separated Floating Obsidian Glass Buttons y=196..234, same family as Box 2)
-        let btn_y = 196.0;
+        // 3. BOX 3 (3 Separated Floating Obsidian Glass Buttons y=194..230, 4px safe margin from bottom)
+        let btn_y = 194.0;
         let btn_w = 54.0;
-        let btn_h = 38.0;
+        let btn_h = 36.0;
         let btn_gap = 10.0;
         let start_x = cx - (btn_w * 3.0 + btn_gap * 2.0) * 0.5;
 

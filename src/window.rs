@@ -4052,16 +4052,16 @@ unsafe fn redraw_window(hwnd: HWND) {
             let s = state_snapshot.expanded_scale();
             let cw_f = state_snapshot.current_width.max(1.0);
             let ch_f = state_snapshot.current_height.max(1.0);
-            let b1h = (136.0 * s).min(ch_f);
+            let b1h = (134.0 * s).min(ch_f);
             let btn_w = 54.0 * s;
-            let btn_h = 38.0 * s;
+            let btn_h = 36.0 * s;
             let btn_gap = 10.0 * s;
-            let btn_y = 196.0 * s;
+            let btn_y = 194.0 * s;
             let start_x = cw_f * 0.5 - (btn_w * 3.0 + btn_gap * 2.0) * 0.5;
             (
                 Some(b1h),
                 Some([
-                    (0.0, 148.0 * s, cw_f, 42.0 * s, 16.0 * s),
+                    (0.0, 146.0 * s, cw_f, 42.0 * s, 16.0 * s),
                     (start_x, btn_y, btn_w, btn_h, 13.0 * s),
                     (start_x + btn_w + btn_gap, btn_y, btn_w, btn_h, 13.0 * s),
                     (start_x + (btn_w + btn_gap) * 2.0, btn_y, btn_w, btn_h, 13.0 * s),
