@@ -248,7 +248,7 @@ impl Renderer {
             card_y,
             right_w,
             top_h,
-            Action::SetMode(NotchMode::Telemetry),
+            Action::SetMode(NotchMode::MemReduct),
         );
 
         // Right Bottom Split: Media Overview + Tasks & Capture
@@ -335,35 +335,34 @@ impl Renderer {
             Action::TogglePlayPause,
         );
 
-        // Bottom-Right: Tasks & Quick Screen Shot
+        // Bottom-Right: Quick Shelf
         let br_x = right_x + sub_w + 12.0;
         p.elevated_card(br_x, bot_y, sub_w, bot_h, 15.0, None);
-        let tasks_card_ht = p.hot_t(br_x, bot_y, sub_w - 42.0, bot_h);
-        if tasks_card_ht > 0.02 && p.prepare_rrect_clip(br_x, bot_y, sub_w, bot_h, 15.0) {
+        let shelf_card_ht = p.hot_t(br_x, bot_y, sub_w, bot_h);
+        if shelf_card_ht > 0.02 && p.prepare_rrect_clip(br_x, bot_y, sub_w, bot_h, 15.0) {
             p.elliptical_glow(
                 br_x + sub_w * 0.5,
                 bot_y + bot_h + 2.0,
                 sub_w * 0.52,
                 bot_h * 0.58,
-                rgba(253, 230, 138, (46.0 * tasks_card_ht) as u8),
+                rgba(253, 230, 138, (46.0 * shelf_card_ht) as u8),
                 BlendMode::Plus,
                 true,
             );
             p.pop_clip();
         }
-        let pending = state.tasks.iter().filter(|t| !t.completed).count();
         p.text(
-            "Tasks Open",
+            "Quick Shelf",
             br_x + 14.0,
             bot_y + 22.0,
             10.0,
             Weight::Semibold,
             tok::text2(),
         );
-        let mut task_num = StackStr::<24>::new();
-        let _ = write!(task_num, "{} active", pending);
+        let mut shelf_num = StackStr::<24>::new();
+        let _ = write!(shelf_num, "{} parked", state.shelf_items.len());
         p.text(
-            &task_num,
+            &shelf_num,
             br_x + 14.0,
             bot_y + 46.0,
             13.5,
@@ -373,24 +372,10 @@ impl Renderer {
         p.hit(
             br_x,
             bot_y,
-            sub_w - 42.0,
+            sub_w,
             bot_h,
-            Action::SetMode(NotchMode::Tasks),
+            Action::SetMode(NotchMode::Shelf),
         );
-
-        let shot_x = br_x + sub_w - 40.0;
-        let shot_y = bot_y + 21.5;
-        let shot_ht = p.hot_t(shot_x, shot_y, 28.0, 28.0);
-        p.tactile_surface_pill_t(shot_x, shot_y, 28.0, 28.0, 14.0, shot_ht, None);
-        icons::draw(
-            p,
-            Icon::Video,
-            shot_x + 7.5,
-            shot_y + 7.5 - 0.55 * shot_ht,
-            13.0,
-            tok::cyno_violet_hi(),
-        );
-        p.hit(shot_x, shot_y, 28.0, 28.0, Action::CaptureScreen);
     }
 
     // ─────────────────────────────────────────────────────────────────────────────
@@ -799,6 +784,7 @@ impl Renderer {
                     let p_cnt = prev_lines.len().max(1);
                     let p_step = fit_prev_sz * 1.14;
                     let last_base = (pill_y - 7.0).max(ctx_y + (p_cnt as f32) * p_step - 2.0);
+                    let dimmed = rgba(199, 194, 223, 102);
                     for (li, line) in prev_lines.iter().enumerate() {
                         let by = last_base - ((p_cnt - 1 - li) as f32) * p_step;
                         p.text_center(
@@ -807,7 +793,7 @@ impl Renderer {
                             by,
                             fit_prev_sz,
                             Weight::Regular,
-                            tok::text2(),
+                            dimmed,
                         );
                     }
                     p.hit(
@@ -819,19 +805,29 @@ impl Renderer {
                     );
                 }
 
+                // Apple Music Clean Focus: pure typography hierarchy without heavy pill box
                 let text_block_h = (line_cnt as f32 - 1.0) * line_step;
-                if state.lyric_style == LyricStyle::KaraokeGlow {
-                    p.luminous_pill_button(
-                        pad_x,
-                        pill_y,
-                        inner_w,
-                        pill_h,
-                        9.5,
-                        tok::cyno_indigo(),
-                        tok::cyno_violet(),
-                        tok::cyno_orchid(),
-                        false,
+                let safe_r = (inner_w * 0.34).min((ctx_h * 0.44).max(12.0));
+                p.radial_glow(
+                    pad_x + inner_w * 0.5,
+                    center_y,
+                    safe_r,
+                    rgba(139, 92, 246, 26),
+                    BlendMode::SourceOver,
+                    true,
+                );
+                let first_base = center_y - text_block_h * 0.5 + fit_act_sz * 0.34;
+                for (li, line) in act_lines.iter().enumerate() {
+                    p.text_center_shadow(
+                        line,
+                        pad_x + inner_w * 0.5,
+                        first_base + (li as f32) * line_step,
+                        fit_act_sz,
+                        Weight::Bold,
+                        tok::text1(),
                     );
+                }
+                if state.lyric_style == LyricStyle::KaraokeGlow {
                     let cur_sec = state.lyrics[center_idx].seconds;
                     let next_sec = state
                         .lyrics
@@ -848,56 +844,11 @@ impl Renderer {
                     } else {
                         0.64
                     };
-                    p.rrect(
-                        pad_x + 10.0,
-                        pill_y + pill_h - 3.5,
-                        inner_w - 20.0,
-                        2.0,
-                        1.0,
-                        rgba(10, 8, 22, 135),
-                    );
-                    p.rrect(
-                        pad_x + 10.0,
-                        pill_y + pill_h - 3.5,
-                        (inner_w - 20.0) * karaoke_pct,
-                        2.0,
-                        1.0,
-                        tok::cyno_mist(),
-                    );
-
-                    let first_base =
-                        pill_y + (pill_h - 4.0) * 0.5 - text_block_h * 0.5 + fit_act_sz * 0.32;
-                    for (li, line) in act_lines.iter().enumerate() {
-                        p.text_center_shadow(
-                            line,
-                            pad_x + inner_w * 0.5,
-                            first_base + (li as f32) * line_step,
-                            fit_act_sz,
-                            Weight::Bold,
-                            tok::text1(),
-                        );
-                    }
-                } else {
-                    p.tactile_surface_pill(
-                        pad_x,
-                        pill_y,
-                        inner_w,
-                        pill_h,
-                        9.0,
-                        false,
-                        Some(tok::cyno_violet()),
-                    );
-                    let first_base = pill_y + pill_h * 0.5 - text_block_h * 0.5 + fit_act_sz * 0.34;
-                    for (li, line) in act_lines.iter().enumerate() {
-                        p.text_center_shadow(
-                            line,
-                            pad_x + inner_w * 0.5,
-                            first_base + (li as f32) * line_step,
-                            fit_act_sz,
-                            Weight::Bold,
-                            tok::text1(),
-                        );
-                    }
+                    let bar_w = (inner_w * 0.42).min(140.0);
+                    let bar_x = pad_x + (inner_w - bar_w) * 0.5;
+                    let bar_y = pill_y + pill_h - 3.0;
+                    p.rrect(bar_x, bar_y, bar_w, 2.0, 1.0, rgba(255, 255, 255, 28));
+                    p.rrect(bar_x, bar_y, bar_w * karaoke_pct, 2.0, 1.0, tok::cyno_mist());
                 }
 
                 if center_idx + 1 < state.lyrics.len() {
@@ -912,6 +863,7 @@ impl Renderer {
                     let n_step = fit_next_sz * 1.14;
                     let first_next_y =
                         (pill_y + pill_h + fit_next_sz + 5.0).min(ctx_y + ctx_h - 2.0);
+                    let dimmed = rgba(199, 194, 223, 102);
                     for (li, line) in next_lines.iter().enumerate() {
                         let by = first_next_y + (li as f32) * n_step;
                         if by <= ctx_y + ctx_h + 2.0 {
@@ -921,7 +873,7 @@ impl Renderer {
                                 by,
                                 fit_next_sz,
                                 Weight::Regular,
-                                tok::text2(),
+                                dimmed,
                             );
                         }
                     }
@@ -1526,55 +1478,27 @@ impl Renderer {
             tok::text2(),
         );
 
-        // Card 2: All 8 Mem Reduct Clean Areas + Auto Clean Toggle
+        // Card 2: Safe Auto Clean Profile (no manual area grid)
         p.elevated_card(col2_x, row1_y, col_w, card_h, 15.0, None);
-
-        let auto_w = 68.0;
+        p.text(
+            "Safe Trim Profile",
+            col2_x + 14.0,
+            row1_y + 18.5,
+            10.2,
+            Weight::Semibold,
+            tok::text2(),
+        );
+        let auto_w = 72.0;
         let auto_x = col2_x + col_w - auto_w - 12.0;
-        let auto_y = row1_y + 6.0;
-        let auto_h = 16.0;
-
-        let a_gap_x = 4.5;
-        let a_gap_y = 3.5;
-        let pill_w = (col_w - 28.0 - a_gap_x * 3.0) / 4.0;
-        let pill_h = 16.0;
-
-        let hovered_area = (0..8).find(|&idx| {
-            let col_i = idx % 4;
-            let row_i = idx / 4;
-            let px = col2_x + 14.0 + (col_i as f32 * (pill_w + a_gap_x));
-            let py = row1_y + 29.0 + (row_i as f32 * (pill_h + a_gap_y));
-            p.hot(px, py, pill_w, pill_h)
-        });
-        let header_max_w = (auto_x - (col2_x + 14.0) - 8.0).max(60.0);
-        if let Some(desc) = hovered_area.and_then(crate::memreduct::clean_area_description) {
-            let ell = p.ellipsize_cow(desc, 9.2, Weight::Semibold, header_max_w);
-            p.text(
-                &ell,
-                col2_x + 14.0,
-                row1_y + 16.0,
-                9.2,
-                Weight::Semibold,
-                tok::cyno_violet_hi(),
-            );
-        } else {
-            p.text(
-                "Clean Areas",
-                col2_x + 14.0,
-                row1_y + 16.0,
-                10.0,
-                Weight::Semibold,
-                tok::text2(),
-            );
-        }
-
+        let auto_y = row1_y + 8.0;
+        let auto_h = 20.0;
         let auto_ht = p.hot_t(auto_x, auto_y, auto_w, auto_h);
         p.tactile_surface_pill_t(
             auto_x,
             auto_y,
             auto_w,
             auto_h,
-            8.0,
+            10.0,
             auto_ht,
             if state.mem_reduct.auto_clean_enabled {
                 Some(tok::cyno_violet())
@@ -1590,8 +1514,8 @@ impl Renderer {
         p.text_center(
             auto_lbl,
             auto_x + auto_w / 2.0,
-            auto_y + 11.0 - 0.45 * auto_ht,
-            9.0,
+            auto_y + 13.2 - 0.45 * auto_ht,
+            9.2,
             Weight::Bold,
             if state.mem_reduct.auto_clean_enabled {
                 tok::text1()
@@ -1600,87 +1524,22 @@ impl Renderer {
             },
         );
         p.hit(auto_x, auto_y, auto_w, auto_h, Action::ToggleAutoClean);
-
-        let areas = [
-            (
-                "WS",
-                state.mem_reduct.clean_working_sets,
-                Action::ToggleArea(0),
-            ),
-            (
-                "SysWS",
-                state.mem_reduct.clean_system_ws,
-                Action::ToggleArea(1),
-            ),
-            (
-                "Standby",
-                state.mem_reduct.clean_standby_list,
-                Action::ToggleArea(2),
-            ),
-            (
-                "ModPg",
-                state.mem_reduct.clean_modified_page_list,
-                Action::ToggleArea(3),
-            ),
-            (
-                "StbyLo",
-                state.mem_reduct.clean_standby_low,
-                Action::ToggleArea(4),
-            ),
-            (
-                "ModFile",
-                state.mem_reduct.clean_modified_file_cache,
-                Action::ToggleArea(5),
-            ),
-            (
-                "RegCch",
-                state.mem_reduct.clean_registry_cache,
-                Action::ToggleArea(6),
-            ),
-            (
-                "Combine",
-                state.mem_reduct.clean_combine_memory_lists,
-                Action::ToggleArea(7),
-            ),
-        ];
-
-        for (idx, (label, active, act)) in areas.iter().enumerate() {
-            let col_i = idx % 4;
-            let row_i = idx / 4;
-            let px = col2_x + 14.0 + (col_i as f32 * (pill_w + a_gap_x));
-            let py = row1_y + 29.0 + (row_i as f32 * (pill_h + a_gap_y));
-            let ht = p.hot_t(px, py, pill_w, pill_h);
-            p.tactile_surface_pill_t(
-                px,
-                py,
-                pill_w,
-                pill_h,
-                6.0,
-                ht,
-                if *active {
-                    Some(tok::cyno_violet())
-                } else {
-                    None
-                },
-            );
-            p.text_center(
-                label,
-                px + pill_w / 2.0,
-                py + 11.5 - 0.45 * ht,
-                8.5,
-                if *active {
-                    Weight::Bold
-                } else {
-                    Weight::Semibold
-                },
-                if *active {
-                    tok::text1()
-                } else {
-                    lerp_color(tok::text2(), tok::text1(), ht)
-                },
-            );
-            p.hit(px, py, pill_w, pill_h, *act);
-        }
+        p.text(
+            "Working Sets • SysWS • Low Standby",
+            col2_x + 14.0,
+            row1_y + 42.5,
+            10.5,
+            Weight::Semibold,
+            tok::text1(),
+        );
+        p.text(
+            "Recommended non-stuttering targets",
+            col2_x + 14.0,
+            row1_y + 59.5,
+            9.0,
+            Weight::Regular,
+            tok::text2(),
+        );
 
         // Card 3: Rules (Independent Threshold & Interval triggers with Disabled option)
         let chip_y = row2_y + 28.0;
@@ -1836,525 +1695,6 @@ impl Renderer {
     // ─────────────────────────────────────────────────────────────────────────────
     // 4. SCREEN TIME TELEMETRY VIEW (Real Hourly Sparkline + Multi-day Average)
     // ─────────────────────────────────────────────────────────────────────────────
-    pub(super) fn draw_screentime_view(p: &mut PainterD2D, state: &AppState, w: f32, card_y: f32) {
-        let margin_x = 20.0;
-        let grid_w = w - (margin_x * 2.0);
-        let col_gap = 14.0;
-        let row_gap = 12.0;
-        let col_w = (grid_w - col_gap) / 2.0;
-        let card_h = 71.0;
-
-        let col1_x = margin_x;
-        let col2_x = margin_x + col_w + col_gap;
-        let row1_y = card_y;
-        let row2_y = row1_y + card_h + row_gap;
-
-        // Card 1: Today
-        p.elevated_card(
-            col1_x,
-            row1_y,
-            col_w,
-            card_h,
-            15.0,
-            Some((col_w - 25.0, 15.0, 65.0, tok::cyno_violet())),
-        );
-        p.dot_matrix(
-            col1_x + col_w - 42.0,
-            row1_y + 10.0,
-            5,
-            3,
-            5.0,
-            rgba(255, 255, 255, 32),
-        );
-        p.text(
-            "Today",
-            col1_x + 16.0,
-            row1_y + 21.0,
-            10.5,
-            Weight::Semibold,
-            tok::text2(),
-        );
-        let today_h = state.screen_time.today_secs / 3600;
-        let today_m = (state.screen_time.today_secs % 3600) / 60;
-        let today_str = format!("{} h {} m", today_h, today_m);
-        p.text(
-            &today_str,
-            col1_x + 16.0,
-            row1_y + 50.0,
-            19.0,
-            Weight::Bold,
-            tok::text1(),
-        );
-
-        // Card 2: Most used + runner-up
-        p.elevated_card(
-            col2_x,
-            row1_y,
-            col_w,
-            card_h,
-            15.0,
-            Some((col_w - 25.0, 15.0, 65.0, tok::cyno_orchid())),
-        );
-        p.text(
-            "Most used",
-            col2_x + 16.0,
-            row1_y + 20.0,
-            10.5,
-            Weight::Semibold,
-            tok::text2(),
-        );
-        if let Some((second_name, second_secs)) = state.screen_time.top_apps.get(1) {
-            let mut runner_buf = StackStr::<64>::new();
-            let _ = write!(runner_buf, "#2 {} {}m", second_name, second_secs / 60);
-            let runner = p.ellipsize_cow(&runner_buf, 9.5, Weight::Regular, col_w - 92.0);
-            p.text_right(
-                &runner,
-                col2_x + col_w - 16.0,
-                row1_y + 20.0,
-                9.5,
-                Weight::Regular,
-                tok::text2(),
-            );
-        }
-        let top_name = p.ellipsize_cow(
-            &state.screen_time.top_app_name,
-            15.0,
-            Weight::Bold,
-            col_w - 96.0,
-        );
-        p.text(
-            &top_name,
-            col2_x + 16.0,
-            row1_y + 42.0,
-            15.0,
-            Weight::Bold,
-            tok::cyno_mist(),
-        );
-        let top_h = state.screen_time.top_app_secs / 3600;
-        let top_m = (state.screen_time.top_app_secs % 3600) / 60;
-        let top_str = format!("{} h {} m", top_h, top_m);
-        p.text_right(
-            &top_str,
-            col2_x + col_w - 16.0,
-            row1_y + 42.0,
-            11.5,
-            Weight::Semibold,
-            tok::text1(),
-        );
-
-        let share = if state.screen_time.today_secs > 0 {
-            (state.screen_time.top_app_secs as f32 / state.screen_time.today_secs as f32)
-                .clamp(0.08, 1.0)
-        } else {
-            0.0
-        };
-        p.glowing_striped_bar(
-            col2_x + 16.0,
-            row1_y + 53.0,
-            col_w - 32.0,
-            6.5,
-            share,
-            tok::gold_deep(),
-            tok::gold_champagne(),
-        );
-
-        // Card 3: 7-day average
-        p.elevated_card(col1_x, row2_y, col_w, card_h, 15.0, None);
-        p.text(
-            "7-day average",
-            col1_x + 16.0,
-            row2_y + 21.0,
-            10.5,
-            Weight::Semibold,
-            tok::text2(),
-        );
-        let days_lbl = format!("{}d log", state.screen_time.tracked_days.max(1));
-        p.text_right(
-            &days_lbl,
-            col1_x + col_w - 16.0,
-            row2_y + 21.0,
-            9.5,
-            Weight::Semibold,
-            tok::text2(),
-        );
-        let avg_h = state.screen_time.seven_day_avg_secs / 3600;
-        let avg_m = (state.screen_time.seven_day_avg_secs % 3600) / 60;
-        let avg_str = format!("{} h {} m", avg_h, avg_m);
-        p.text(
-            &avg_str,
-            col1_x + 16.0,
-            row2_y + 50.0,
-            19.0,
-            Weight::Bold,
-            tok::cyno_violet_hi(),
-        );
-
-        // Card 4: Computed Peak hour + 12-bin 24h Sparkline
-        p.elevated_card(
-            col2_x,
-            row2_y,
-            col_w,
-            card_h,
-            15.0,
-            Some((col2_x * 0.1 + 40.0, 42.0, 50.0, tok::cyno_violet())),
-        );
-        p.text(
-            "Peak hour",
-            col2_x + 16.0,
-            row2_y + 21.0,
-            10.5,
-            Weight::Semibold,
-            tok::text2(),
-        );
-        p.text(
-            &state.screen_time.peak_hour_str,
-            col2_x + 16.0,
-            row2_y + 50.0,
-            19.0,
-            Weight::Bold,
-            tok::text1(),
-        );
-
-        // Mini 12-bin (2h buckets across 24h) activity chart on right side of Card 4
-        let mut bins = [0u64; 12];
-        for (h_idx, &secs) in state.screen_time.hourly_secs.iter().enumerate() {
-            bins[h_idx / 2] += secs;
-        }
-        let max_bin = bins.iter().copied().max().unwrap_or(1).max(1);
-        let peak_bin = state.screen_time.peak_hour / 2;
-        let chart_x = col2_x + col_w - 124.0;
-        let chart_base_y = row2_y + 57.0;
-        let max_bar_h = 34.0;
-        for (b, &val) in bins.iter().enumerate() {
-            let bx = chart_x + (b as f32 * 9.0);
-            let bh = if val == 0 {
-                2.0
-            } else {
-                ((val as f32 / max_bin as f32) * max_bar_h).clamp(4.0, max_bar_h)
-            };
-            let bar_col = if val > 0 && b == peak_bin {
-                tok::cyno_mist()
-            } else if val > 0 {
-                tok::cyno_violet()
-            } else {
-                rgba(255, 255, 255, 22)
-            };
-            p.rrect(bx, chart_base_y - bh, 5.5, bh, 2.5, bar_col);
-        }
-    }
-
-    // ─────────────────────────────────────────────────────────────────────────────
-    // 5. TASKS CHECKLIST VIEW (Scrollable + Individual Delete × + From Clip)
-    // ─────────────────────────────────────────────────────────────────────────────
-    pub(super) fn draw_tasks_view(p: &mut PainterD2D, state: &AppState, w: f32, card_y: f32) {
-        let margin_x = 20.0;
-        let card_w = w - (margin_x * 2.0);
-        let card_h = 154.0;
-
-        p.elevated_card(
-            margin_x,
-            card_y,
-            card_w,
-            card_h,
-            16.0,
-            Some((card_w - 40.0, 20.0, 84.0, tok::cyno_violet())),
-        );
-
-        icons::draw(
-            p,
-            Icon::List,
-            margin_x + 18.0,
-            card_y + 16.0,
-            18.0,
-            tok::cyno_violet_hi(),
-        );
-        p.text(
-            "Tasks & Todos",
-            margin_x + 44.0,
-            card_y + 27.5,
-            13.5,
-            Weight::Bold,
-            tok::text1(),
-        );
-
-        let total = state.tasks.len();
-        let pending = state.tasks.iter().filter(|t| !t.completed).count();
-        let start_idx = state.tasks_scroll.min(total.saturating_sub(3));
-
-        // Action pills
-        let btn_h = 24.0;
-        let btn_y = card_y + 15.0;
-        let clear_w = 78.0;
-        let clear_x = margin_x + card_w - clear_w - 16.0;
-        let clear_ht = p.hot_t(clear_x, btn_y, clear_w, btn_h);
-        p.tactile_surface_pill_t(clear_x, btn_y, clear_w, btn_h, 7.5, clear_ht, None);
-        p.text_center(
-            "Clear Done",
-            clear_x + clear_w / 2.0,
-            btn_y + 16.0 - 0.55 * clear_ht,
-            10.0,
-            Weight::Semibold,
-            lerp_color(tok::text_soft(), tok::text1(), clear_ht),
-        );
-        p.hit(clear_x, btn_y, clear_w, btn_h, Action::ClearCompletedTasks);
-
-        let add_w = 86.0;
-        let add_x = clear_x - add_w - 8.0;
-        let add_ht = p.hot_t(add_x, btn_y, add_w, btn_h);
-        p.tactile_surface_pill_t(
-            add_x,
-            btn_y,
-            add_w,
-            btn_h,
-            7.5,
-            add_ht,
-            Some(tok::cyno_violet()),
-        );
-        p.text_center(
-            "+ From Clip",
-            add_x + add_w / 2.0,
-            btn_y + 16.0 - 0.55 * add_ht,
-            10.0,
-            Weight::Bold,
-            tok::text1(),
-        );
-        p.hit(add_x, btn_y, add_w, btn_h, Action::PasteAsTask);
-
-        let sub = if total > 3 {
-            format!(
-                "{} open • {}-{} of {} (scroll)",
-                pending,
-                start_idx + 1,
-                (start_idx + 3).min(total),
-                total
-            )
-        } else {
-            format!("{} open • toggle or × remove", pending)
-        };
-        let sub_max_w = (add_x - (margin_x + 44.0) - 10.0).max(60.0);
-        let sub_ell = p.ellipsize_cow(&sub, 10.0, Weight::Regular, sub_max_w);
-        p.text(
-            &sub_ell,
-            margin_x + 44.0,
-            card_y + 42.5,
-            10.0,
-            Weight::Regular,
-            tok::text2(),
-        );
-
-        if state.tasks.is_empty() {
-            p.text_center(
-                "All tasks clear! Copy text and click '+ From Clip' to add.",
-                margin_x + card_w / 2.0,
-                card_y + 98.0,
-                11.5,
-                Weight::Regular,
-                tok::text2(),
-            );
-        } else {
-            for (slot, (real_idx, task)) in state
-                .tasks
-                .iter()
-                .enumerate()
-                .skip(start_idx)
-                .take(3)
-                .enumerate()
-            {
-                let item_y = card_y + 56.0 + (slot as f32 * 30.0);
-                let item_h = 26.0;
-                let item_x = margin_x + 16.0;
-                let del_w = 26.0;
-                let row_w = card_w - 32.0 - del_w - 8.0;
-                let row_ht = p.hot_t(item_x, item_y, row_w, item_h);
-
-                p.tactile_surface_pill_t(item_x, item_y, row_w, item_h, 7.5, row_ht, None);
-
-                let dy = -0.55 * row_ht;
-                let check_cx = item_x + 15.0;
-                let check_cy = item_y + item_h / 2.0 + dy;
-                if task.completed {
-                    p.radial_glow(
-                        check_cx,
-                        check_cy,
-                        10.0,
-                        rgba(139, 92, 246, 95),
-                        BlendMode::Plus,
-                        false,
-                    );
-                    p.circle(check_cx, check_cy, 6.5, tok::cyno_violet());
-                    icons::draw(
-                        p,
-                        Icon::Check,
-                        check_cx - 4.5,
-                        check_cy - 4.5,
-                        9.0,
-                        rgba(255, 255, 255, 255),
-                    );
-                } else {
-                    let well = p.well_col();
-                    p.circle(check_cx, check_cy, 6.5, well);
-                    p.circle_stroke(check_cx, check_cy, 6.5, 1.0, rgba(255, 255, 255, 70));
-                }
-
-                let task_text = p.ellipsize_cow(&task.text, 11.5, Weight::Regular, row_w - 44.0);
-                let text_color = if task.completed {
-                    tok::text3()
-                } else {
-                    tok::text1()
-                };
-                p.text(
-                    &task_text,
-                    item_x + 30.0,
-                    item_y + 17.0 + dy,
-                    11.5,
-                    Weight::Regular,
-                    text_color,
-                );
-                p.hit(item_x, item_y, row_w, item_h, Action::ToggleTask(real_idx));
-
-                // Delete pill button
-                let del_x = item_x + row_w + 8.0;
-                let del_ht = p.hot_t(del_x, item_y, del_w, item_h);
-                p.tactile_surface_pill_t(del_x, item_y, del_w, item_h, 7.5, del_ht, None);
-                if del_ht > 0.02 {
-                    p.rrect(
-                        del_x,
-                        item_y - 0.55 * del_ht,
-                        del_w,
-                        item_h,
-                        7.5,
-                        fade(rgba(220, 38, 38, 195), del_ht),
-                    );
-                }
-                icons::draw(
-                    p,
-                    Icon::Close,
-                    del_x + 7.0,
-                    item_y + 7.0 - 0.55 * del_ht,
-                    12.0,
-                    lerp_color(tok::text2(), tok::text1(), del_ht),
-                );
-                p.hit(del_x, item_y, del_w, item_h, Action::DeleteTask(real_idx));
-            }
-        }
-    }
-
-    // ─────────────────────────────────────────────────────────────────────────────
-    // 7. SHELF (Ephemeral Drag-and-Drop + Raycast Tactile Mass Absorption & Refraction)
-    // ─────────────────────────────────────────────────────────────────────────────
-    pub(super) fn draw_shelf_liquid_fx(
-        p: &mut PainterD2D,
-        state: &AppState,
-        card_x: f32,
-        card_y: f32,
-        card_w: f32,
-        card_h: f32,
-        radius: f32,
-    ) {
-        let now = std::time::Instant::now();
-        let hover_t = state.shelf_fx.drag_hover_t;
-        let plop_t = if state.are_animations_active() {
-            state
-                .shelf_fx
-                .plop_started_at
-                .map(|s| now.saturating_duration_since(s).as_secs_f32())
-                .filter(|&t| t < crate::models::LIQUID_PLOP_DURATION_SECS)
-        } else {
-            None
-        };
-        if hover_t <= 0.005 && plop_t.is_none() {
-            return;
-        }
-
-        let clipped = p.prepare_rrect_mask(card_x, card_y, card_w, card_h, radius);
-
-        // 1. Drag-over subtle cursor radial lens (MOTION_SYSTEM.md §2.2: rgba(216,180,254,0.14))
-        if hover_t > 0.005 {
-            let cx = state
-                .shelf_fx
-                .drag_cursor_smooth
-                .0
-                .clamp(card_x + 16.0, card_x + card_w - 16.0);
-            let cy = state
-                .shelf_fx
-                .drag_cursor_smooth
-                .1
-                .clamp(card_y + 16.0, card_y + card_h - 16.0);
-            p.radial_glow(
-                cx,
-                cy,
-                84.0,
-                fade(rgba(216, 180, 254, 36), hover_t),
-                BlendMode::Plus,
-                false,
-            );
-            if hover_t > 0.25 {
-                let badge_w = 112.0;
-                let badge_h = 22.0;
-                let bx = card_x + (card_w - badge_w) * 0.5;
-                let by = card_y + card_h - badge_h - 10.0;
-                p.button_pill_variant(
-                    bx,
-                    by,
-                    badge_w,
-                    badge_h,
-                    11.0,
-                    hover_t * 0.4,
-                    ButtonVariant::PrimaryOutline,
-                );
-                icons::draw(
-                    p,
-                    Icon::Droplet,
-                    bx + 10.0,
-                    by + 5.0,
-                    11.5,
-                    fade(tok::amber_glow(), hover_t),
-                );
-                p.text(
-                    "Drop to Shelf",
-                    bx + 26.0,
-                    by + 14.5,
-                    10.0,
-                    Weight::Semibold,
-                    fade(tok::text1(), hover_t),
-                );
-            }
-        }
-
-        // 2. Raycast Tactile drop impact: single crisp 380ms glass refraction hairline ring
-        //    (r: 6px -> 84px, ease-out cubic, alpha -> 0; zero sparks, zero arcs, zero particles)
-        if let Some(t) = plop_t {
-            let ox = state
-                .shelf_fx
-                .plop_origin
-                .0
-                .clamp(card_x + 20.0, card_x + card_w - 20.0);
-            let oy = state
-                .shelf_fx
-                .plop_origin
-                .1
-                .clamp(card_y + 20.0, card_y + card_h - 20.0);
-            let u = (t / crate::models::LIQUID_PLOP_DURATION_SECS).clamp(0.0, 1.0);
-            let ease = crate::models::ease_out_cubic(u);
-            let radius_px = 6.0 + ease * 78.0;
-            let alpha = (1.0 - u).powf(1.6);
-            let stroke_w = (1.25 - u * 0.65).max(0.55);
-            if alpha > 0.01 {
-                p.circle_stroke(
-                    ox,
-                    oy,
-                    radius_px,
-                    stroke_w,
-                    fade(rgba(233, 213, 255, 165), alpha),
-                );
-            }
-        }
-
-        if clipped {
-            p.pop_clip();
-        }
-    }
-
     pub(super) fn draw_shelf_view(p: &mut PainterD2D, state: &AppState, w: f32, card_y: f32) {
         let now = std::time::Instant::now();
         let absorb_y = if state.are_animations_active() {
@@ -2817,211 +2157,119 @@ impl Renderer {
     // ─────────────────────────────────────────────────────────────────────────────
     // 8. QUICK CAPTURE VIEW (Lazyshot-style Instant Desktop/Window PNG + Clipboard)
     // ─────────────────────────────────────────────────────────────────────────────
-    pub(super) fn draw_capture_view(p: &mut PainterD2D, state: &AppState, w: f32, card_y: f32) {
-        let margin_x = 20.0;
-        let card_h = 154.0;
-        let gap = 14.0;
-        let left_w = 242.0;
-        let right_x = margin_x + left_w + gap;
-        let right_w = w - (margin_x * 2.0) - left_w - gap;
-
-        // Left Card: Instant Capture Triggers
-        p.elevated_card(
-            margin_x,
-            card_y,
-            left_w,
-            card_h,
-            16.0,
-            Some((left_w * 0.5, 36.0, 75.0, tok::cyno_violet())),
-        );
-        icons::draw(
-            p,
-            Icon::Video,
-            margin_x + 16.0,
-            card_y + 16.0,
-            18.0,
-            tok::cyno_violet_hi(),
-        );
-        p.text(
-            "Screen Snapshot",
-            margin_x + 42.0,
-            card_y + 27.5,
-            13.0,
-            Weight::Bold,
-            tok::text1(),
-        );
-        let cap_sub = p.ellipsize_cow(
-            "Saves PNG & copies (Ctrl+Shift+S)",
-            9.8,
-            Weight::Regular,
-            left_w - 32.0,
-        );
-        p.text(
-            &cap_sub,
-            margin_x + 16.0,
-            card_y + 45.0,
-            9.8,
-            Weight::Regular,
-            tok::text2(),
-        );
-
-        let btn_w = left_w - 32.0;
-        let b1_x = margin_x + 16.0;
-        let b1_y = card_y + 62.0;
-        let b1_h = 36.0;
-        let b1_ht = p.hot_t(b1_x, b1_y, btn_w, b1_h);
-        p.luminous_pill_button_t(
-            b1_x,
-            b1_y,
-            btn_w,
-            b1_h,
-            11.0,
-            tok::cyno_indigo(),
-            tok::cyno_violet(),
-            tok::cyno_orchid(),
-            b1_ht,
-        );
-        p.text_center_shadow(
-            "Capture Full Screen",
-            b1_x + btn_w / 2.0,
-            b1_y + 22.0 - 0.8 * b1_ht,
-            12.0,
-            Weight::Bold,
-            tok::text1(),
-        );
-        p.hit(b1_x, b1_y, btn_w, b1_h, Action::CaptureScreen);
-
-        let b2_y = card_y + 108.0;
-        let b2_h = 30.0;
-        let b2_ht = p.hot_t(b1_x, b2_y, btn_w, b2_h);
-        p.tactile_surface_pill_t(b1_x, b2_y, btn_w, b2_h, 9.5, b2_ht, None);
-        p.text_center(
-            "Capture Active Window",
-            b1_x + btn_w / 2.0,
-            b2_y + 19.0 - 0.55 * b2_ht,
-            11.0,
-            Weight::Semibold,
-            lerp_color(tok::text_soft(), tok::text1(), b2_ht),
-        );
-        p.hit(b1_x, b2_y, btn_w, b2_h, Action::CaptureWindow);
-
-        // Right Card: Latest Capture Status & Folder Launcher
-        p.elevated_card(
-            right_x,
-            card_y,
-            right_w,
-            card_h,
-            16.0,
-            Some((right_w - 30.0, 24.0, 75.0, tok::cyno_orchid())),
-        );
-        p.dot_matrix(
-            right_x + right_w - 44.0,
-            card_y + 14.0,
-            5,
-            3,
-            5.0,
-            rgba(255, 255, 255, 30),
-        );
-        icons::draw(
-            p,
-            Icon::Folder,
-            right_x + 16.0,
-            card_y + 16.0,
-            18.0,
-            tok::cyno_mist(),
-        );
-        p.text(
-            "Capture Output",
-            right_x + 42.0,
-            card_y + 27.5,
-            13.0,
-            Weight::Bold,
-            tok::text1(),
-        );
-
-        if let Some(ref _path) = state.capture.last_path {
-            let fname = p.ellipsize_cow(
-                &state.capture.last_filename,
-                11.5,
-                Weight::Semibold,
-                right_w - 32.0,
-            );
-            p.text(
-                &fname,
-                right_x + 16.0,
-                card_y + 64.0,
-                11.5,
-                Weight::Semibold,
-                tok::text1(),
-            );
-            let dims = format!(
-                "{} • {}",
-                state.capture.last_dims,
-                if state.capture.clipboard_ok {
-                    "Copied to Clipboard"
-                } else {
-                    "Saved to Disk"
-                }
-            );
-            p.text(
-                &dims,
-                right_x + 16.0,
-                card_y + 82.0,
-                10.5,
-                Weight::Regular,
-                if state.capture.clipboard_ok {
-                    tok::status_correct()
-                } else {
-                    tok::amber_light()
-                },
-            );
+    pub(super) fn draw_shelf_liquid_fx(
+        p: &mut PainterD2D,
+        state: &AppState,
+        card_x: f32,
+        card_y: f32,
+        card_w: f32,
+        card_h: f32,
+        radius: f32,
+    ) {
+        let now = std::time::Instant::now();
+        let hover_t = state.shelf_fx.drag_hover_t;
+        let plop_t = if state.are_animations_active() {
+            state
+                .shelf_fx
+                .plop_started_at
+                .map(|s| now.saturating_duration_since(s).as_secs_f32())
+                .filter(|&t| t < crate::models::LIQUID_PLOP_DURATION_SECS)
         } else {
-            p.text(
-                "No capture taken in this session",
-                right_x + 16.0,
-                card_y + 64.0,
-                11.5,
-                Weight::Semibold,
-                tok::text1(),
-            );
-            p.text(
-                "Output: Pictures\\CyNotch\\*.png",
-                right_x + 16.0,
-                card_y + 82.0,
-                10.5,
-                Weight::Regular,
-                tok::text2(),
-            );
+            None
+        };
+        if hover_t <= 0.005 && plop_t.is_none() {
+            return;
         }
 
-        let open_w = right_w - 32.0;
-        let open_x = right_x + 16.0;
-        let open_y = card_y + 108.0;
-        let open_h = 30.0;
-        let open_ht = p.hot_t(open_x, open_y, open_w, open_h);
-        p.tactile_surface_pill_t(
-            open_x,
-            open_y,
-            open_w,
-            open_h,
-            9.5,
-            open_ht,
-            Some(tok::cyno_violet()),
-        );
-        p.text_center(
-            "Open Pictures\\CyNotch",
-            open_x + open_w / 2.0,
-            open_y + 19.0 - 0.55 * open_ht,
-            11.0,
-            Weight::Bold,
-            tok::text1(),
-        );
-        p.hit(open_x, open_y, open_w, open_h, Action::OpenCaptureFolder);
+        let clipped = p.prepare_rrect_mask(card_x, card_y, card_w, card_h, radius);
+
+        // 1. Drag-over subtle cursor radial lens (MOTION_SYSTEM.md §2.2: rgba(216,180,254,0.14))
+        if hover_t > 0.005 {
+            let cx = state
+                .shelf_fx
+                .drag_cursor_smooth
+                .0
+                .clamp(card_x + 16.0, card_x + card_w - 16.0);
+            let cy = state
+                .shelf_fx
+                .drag_cursor_smooth
+                .1
+                .clamp(card_y + 16.0, card_y + card_h - 16.0);
+            p.radial_glow(
+                cx,
+                cy,
+                84.0,
+                fade(rgba(216, 180, 254, 36), hover_t),
+                BlendMode::Plus,
+                false,
+            );
+            if hover_t > 0.25 {
+                let badge_w = 112.0;
+                let badge_h = 22.0;
+                let bx = card_x + (card_w - badge_w) * 0.5;
+                let by = card_y + card_h - badge_h - 10.0;
+                p.button_pill_variant(
+                    bx,
+                    by,
+                    badge_w,
+                    badge_h,
+                    11.0,
+                    hover_t * 0.4,
+                    ButtonVariant::PrimaryOutline,
+                );
+                icons::draw(
+                    p,
+                    Icon::Droplet,
+                    bx + 10.0,
+                    by + 5.0,
+                    11.5,
+                    fade(tok::amber_glow(), hover_t),
+                );
+                p.text(
+                    "Drop to Shelf",
+                    bx + 26.0,
+                    by + 14.5,
+                    10.0,
+                    Weight::Semibold,
+                    fade(tok::text1(), hover_t),
+                );
+            }
+        }
+
+        // 2. Raycast Tactile drop impact: single crisp 380ms glass refraction hairline ring
+        //    (r: 6px -> 84px, ease-out cubic, alpha -> 0; zero sparks, zero arcs, zero particles)
+        if let Some(t) = plop_t {
+            let ox = state
+                .shelf_fx
+                .plop_origin
+                .0
+                .clamp(card_x + 20.0, card_x + card_w - 20.0);
+            let oy = state
+                .shelf_fx
+                .plop_origin
+                .1
+                .clamp(card_y + 20.0, card_y + card_h - 20.0);
+            let u = (t / crate::models::LIQUID_PLOP_DURATION_SECS).clamp(0.0, 1.0);
+            let ease = crate::models::ease_out_cubic(u);
+            let radius_px = 6.0 + ease * 78.0;
+            let alpha = (1.0 - u).powf(1.6);
+            let stroke_w = (1.25 - u * 0.65).max(0.55);
+            if alpha > 0.01 {
+                p.circle_stroke(
+                    ox,
+                    oy,
+                    radius_px,
+                    stroke_w,
+                    fade(rgba(233, 213, 255, 165), alpha),
+                );
+            }
+        }
+
+        if clipped {
+            p.pop_clip();
+        }
     }
 
-    // ─────────────────────────────────────────────────────────────────────────────
-    // 9. INLINE SETTINGS VIEW (Quick Controls + Launcher to Advanced Window)
-    // ─────────────────────────────────────────────────────────────────────────────
     pub(super) fn draw_settings_view(p: &mut PainterD2D, state: &AppState, w: f32, card_y: f32) {
         let smooth = state.micro_interactions;
         let margin_x = 20.0;

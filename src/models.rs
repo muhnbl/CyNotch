@@ -36,15 +36,11 @@ pub enum NotchPlacement {
 
 impl NotchPlacement {
     pub fn is_vertical(self) -> bool {
-        !matches!(self, Self::Top)
+        false
     }
 
     pub fn label(self) -> &'static str {
-        match self {
-            Self::Top => "Top",
-            Self::Left => "Left",
-            Self::Right => "Right",
-        }
+        "Top"
     }
 }
 
@@ -396,10 +392,7 @@ pub struct ModuleVisibility {
     pub music: bool,
     pub volume: bool,
     pub mem_reduct: bool,
-    pub tasks: bool,
     pub shelf: bool,
-    pub capture: bool,
-    pub telemetry: bool,
 }
 
 impl Default for ModuleVisibility {
@@ -408,10 +401,7 @@ impl Default for ModuleVisibility {
             music: true,
             volume: true,
             mem_reduct: true,
-            tasks: true,
             shelf: true,
-            capture: true,
-            telemetry: true,
         }
     }
 }
@@ -634,10 +624,7 @@ pub enum NotchMode {
     Music,
     Volume,
     MemReduct,
-    Tasks,
     Shelf,
-    Capture,
-    Telemetry,
     Settings,
 }
 
@@ -2142,7 +2129,7 @@ impl AppState {
     }
 
     pub fn visible_dock_modes(&self) -> Vec<NotchMode> {
-        let mut modes = Vec::with_capacity(9);
+        let mut modes = Vec::with_capacity(6);
         modes.push(NotchMode::Home);
         if self.modules.music {
             modes.push(NotchMode::Music);
@@ -2153,17 +2140,8 @@ impl AppState {
         if self.modules.mem_reduct {
             modes.push(NotchMode::MemReduct);
         }
-        if self.modules.tasks {
-            modes.push(NotchMode::Tasks);
-        }
         if self.modules.shelf {
             modes.push(NotchMode::Shelf);
-        }
-        if self.modules.capture {
-            modes.push(NotchMode::Capture);
-        }
-        if self.modules.telemetry {
-            modes.push(NotchMode::Telemetry);
         }
         modes
     }
@@ -2220,10 +2198,8 @@ impl AppState {
             ToggleId::ModMusic => self.modules.music,
             ToggleId::ModVolume => self.modules.volume,
             ToggleId::ModMemReduct => self.modules.mem_reduct,
-            ToggleId::ModTasks => self.modules.tasks,
+            ToggleId::ModTasks | ToggleId::ModCapture | ToggleId::ModTelemetry => false,
             ToggleId::ModShelf => self.modules.shelf,
-            ToggleId::ModCapture => self.modules.capture,
-            ToggleId::ModTelemetry => self.modules.telemetry,
             ToggleId::MinimizedIsland => self.minimized_island,
             ToggleId::AreaModPage => self.mem_reduct.clean_modified_page_list,
             ToggleId::AreaStandbyLow => self.mem_reduct.clean_standby_low,
@@ -2563,10 +2539,7 @@ impl AppState {
                     NotchMode::Music => self.modules.music = !self.modules.music,
                     NotchMode::Volume => self.modules.volume = !self.modules.volume,
                     NotchMode::MemReduct => self.modules.mem_reduct = !self.modules.mem_reduct,
-                    NotchMode::Tasks => self.modules.tasks = !self.modules.tasks,
                     NotchMode::Shelf => self.modules.shelf = !self.modules.shelf,
-                    NotchMode::Capture => self.modules.capture = !self.modules.capture,
-                    NotchMode::Telemetry => self.modules.telemetry = !self.modules.telemetry,
                     _ => {}
                 }
                 if !self.visible_dock_modes().contains(&self.mode) {

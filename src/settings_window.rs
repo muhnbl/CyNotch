@@ -958,10 +958,6 @@ unsafe fn settings_wnd_proc_inner(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: 
                     if let Some(enabled) = eff.update_autostart {
                         crate::autostart::set_autostart(enabled);
                     }
-                    if eff.reset_screentime {
-                        crate::screentime::RESET_SCREENTIME_REQUESTED
-                            .store(true, Ordering::Release);
-                    }
                     if eff.trigger_purge {
                         crate::window::request_purge();
                     }
@@ -1709,23 +1705,11 @@ fn draw_general_pane(p: &mut PainterD2D, state: &AppState, px: f32, py: f32, pw:
         ctrl_x,
         ctrl_w,
         state.placement,
-        &[
-            (
-                "Top",
-                NotchPlacement::Top,
-                Action::SetPlacement(NotchPlacement::Top),
-            ),
-            (
-                "Left",
-                NotchPlacement::Left,
-                Action::SetPlacement(NotchPlacement::Left),
-            ),
-            (
-                "Right",
-                NotchPlacement::Right,
-                Action::SetPlacement(NotchPlacement::Right),
-            ),
-        ],
+        &[(
+            "Top",
+            NotchPlacement::Top,
+            Action::SetPlacement(NotchPlacement::Top),
+        )],
     );
     draw_segmented_row(
         p,
@@ -2712,28 +2696,10 @@ fn draw_modules_pane(p: &mut PainterD2D, state: &AppState, px: f32, py: f32, pw:
             NotchMode::MemReduct,
         ),
         (
-            Icon::List,
-            "Tasks Todo",
-            ToggleId::ModTasks,
-            NotchMode::Tasks,
-        ),
-        (
             Icon::Clipboard,
             "File Shelf",
             ToggleId::ModShelf,
             NotchMode::Shelf,
-        ),
-        (
-            Icon::Video,
-            "Quick Capture",
-            ToggleId::ModCapture,
-            NotchMode::Capture,
-        ),
-        (
-            Icon::Display,
-            "Screen Time",
-            ToggleId::ModTelemetry,
-            NotchMode::Telemetry,
         ),
     ];
 

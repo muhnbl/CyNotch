@@ -225,7 +225,7 @@ fn main() -> Result<()> {
         ("home", true, NotchMode::Home, false),
         ("music", true, NotchMode::Music, false),
         ("memreduct", true, NotchMode::MemReduct, false),
-        ("stats", true, NotchMode::Telemetry, false),
+        ("shelf", true, NotchMode::Shelf, false),
     ];
     for (name, hovered, mode, lyrics) in shots {
         s.mode = mode;
@@ -340,9 +340,7 @@ fn main() -> Result<()> {
     if std::env::args().any(|a| a == "--all") {
         let extra_modes = [
             ("volume", NotchMode::Volume, false),
-            ("tasks", NotchMode::Tasks, false),
             ("shelf", NotchMode::Shelf, false),
-            ("capture", NotchMode::Capture, false),
             ("inline_settings", NotchMode::Settings, false),
             ("music_lyrics", NotchMode::Music, true),
         ];
@@ -409,7 +407,6 @@ fn main() -> Result<()> {
             ("cynotch-music", NotchMode::Music, true),
             ("cynotch-memreduct", NotchMode::MemReduct, false),
             ("cynotch-shelf", NotchMode::Shelf, false),
-            ("cynotch-capture", NotchMode::Capture, false),
             ("cynotch-volume", NotchMode::Volume, false),
         ];
         for (name, mode, lyrics) in web_modes {

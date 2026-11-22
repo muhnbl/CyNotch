@@ -2,7 +2,6 @@
 
 use cynotch::localtime::{format_rfc3339, local_now};
 use cynotch::models::{self, AppState, IdleMetric, NotchMode};
-use cynotch::screentime::ScreenTimeTracker;
 use cynotch::telemetry::TelemetryCollector;
 use cynotch::window::NotchWindow;
 use cynotch::*;
@@ -111,7 +110,6 @@ fn main() {
         }
         cynotch::memreduct::enable_memory_privileges();
         let mut collector = TelemetryCollector::new();
-        let mut tracker = ScreenTimeTracker::new();
         let mut media_poller = media::MediaPoller::new();
         let mut audio_mon = audio::AudioMonitor::new();
         let mut notif_bridge = notifications::SystemNotificationBridge::new();
@@ -131,22 +129,12 @@ fn main() {
                 loop {
                     if first_pass {
                         first_pass = false;
-                        let init_hour = (local_now().hour as usize).min(23);
-                let init_stats = tracker.stats(init_hour);
-                if let Ok(mut s) = poll_state.lock() {
-                    s.screen_time = init_stats;
-                }
-            } else {
-                thread::sleep(Duration::from_millis(500));
-            }
+                    } else {
+                        thread::sleep(Duration::from_millis(500));
+                    }
 
             if cynotch::window::SHUTDOWN_REQUESTED.load(Ordering::Acquire) {
-                tracker.save();
                 break;
-            }
-
-            if cynotch::screentime::RESET_SCREENTIME_REQUESTED.swap(false, Ordering::AcqRel) {
-                tracker.reset_today();
             }
 
             let media_opt = { media_poller.poll() };
@@ -158,16 +146,10 @@ fn main() {
                 None
             };
 
-            let (screentime_enabled, notif_enabled, notif_auto_clear) = poll_state
+            let (notif_enabled, notif_auto_clear) = poll_state
                 .lock()
-                .map(|s| {
-                    (
-                        s.screentime_enabled,
-                        s.notif_listener_enabled,
-                        s.notif_auto_clear_action_center,
-                    )
-                })
-                .unwrap_or((true, false, false));
+                .map(|s| (s.notif_listener_enabled, s.notif_auto_clear_action_center))
+                .unwrap_or((false, false));
 
             if cynotch::window::NOTIF_SYNC_REQUESTED.swap(false, Ordering::AcqRel) && notif_enabled
             {
@@ -243,21 +225,11 @@ fn main() {
                 }
             }
 
-            let (telem_opt, screen_stats) = if last_sec_tick.elapsed() >= Duration::from_millis(950)
-                        {
-                            last_sec_tick = Instant::now();
-                            let st_opt = {
-                                if screentime_enabled {
-                                    Some(tracker.tick())
-                                } else {
-                                    let hour = (local_now().hour as usize).min(23);
-                                    Some(tracker.stats(hour))
-                                }
-                            };
-                let telem = { collector.poll() };
-                (Some(telem), st_opt)
+            let telem_opt = if last_sec_tick.elapsed() >= Duration::from_millis(950) {
+                last_sec_tick = Instant::now();
+                Some(collector.poll())
             } else {
-                (None, None)
+                None
             };
 
             let mut auto_clean_params: Option<cynotch::memreduct::CleanAreas> = None;
@@ -312,10 +284,7 @@ fn main() {
                     if telem_changed {
                         settings_changed = true;
                         if s.is_hovered
-                            && matches!(
-                                s.mode,
-                                NotchMode::Home | NotchMode::MemReduct | NotchMode::Telemetry
-                            )
+                            && matches!(s.mode, NotchMode::Home | NotchMode::MemReduct)
                         {
                             ui_changed = true;
                         } else if !s.is_hovered
@@ -346,15 +315,6 @@ fn main() {
                         && !s.media.is_playing
                         && s.idle_metric == IdleMetric::Clock
                     {
-                        ui_changed = true;
-                    }
-                }
-
-                if let Some(stats) = screen_stats {
-                    let st_changed = stats.today_secs != s.screen_time.today_secs
-                        || stats.top_app_name != s.screen_time.top_app_name;
-                    s.screen_time = stats;
-                    if st_changed && s.is_hovered && s.mode == NotchMode::Telemetry {
                         ui_changed = true;
                     }
                 }

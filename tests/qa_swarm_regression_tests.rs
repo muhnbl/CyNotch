@@ -433,10 +433,7 @@ fn qa_rapid_interaction_and_multi_scale_stability_stress() -> Result<()> {
         NotchMode::Music,
         NotchMode::Volume,
         NotchMode::MemReduct,
-        NotchMode::Tasks,
         NotchMode::Shelf,
-        NotchMode::Capture,
-        NotchMode::Telemetry,
         NotchMode::Settings,
     ];
     let scales = [

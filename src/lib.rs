@@ -19,7 +19,6 @@ pub mod notifications;
 pub mod painter_d2d;
 pub mod persistence;
 pub mod renderer;
-pub mod screentime;
 pub mod settings_window;
 pub mod shelf_dnd;
 pub mod sound;

@@ -2401,13 +2401,11 @@ unsafe fn wnd_proc_inner(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPARAM) -
                 return LRESULT(0);
             }
             if let Some(text) = read_clipboard_text(hwnd) {
-                let app =
-                    crate::screentime::get_active_app_name().unwrap_or_else(|| "App".to_string());
                 let mut updated = false;
                 if let Some(state_mutex) = get_global_state()
                     && let Ok(mut state) = state_mutex.lock()
                 {
-                    state.push_clipboard(text, &app);
+                    state.push_clipboard(text, "Clipboard");
                     updated = true;
                 }
                 if updated {
@@ -2499,19 +2497,6 @@ unsafe fn wnd_proc_inner(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPARAM) -
                                 as u64;
                             state.media.position_ms = target;
                             seek_to_position_ms(target);
-                            changed = true;
-                        }
-                    }
-                    NotchMode::Tasks => {
-                        let vis = if state.placement.is_vertical() { 5 } else { 3 };
-                        let max_scroll = state.tasks.len().saturating_sub(vis);
-                        let next_scroll = if steps > 0 {
-                            state.tasks_scroll.saturating_sub(1)
-                        } else {
-                            (state.tasks_scroll + 1).min(max_scroll)
-                        };
-                        if next_scroll != state.tasks_scroll {
-                            state.tasks_scroll = next_scroll;
                             changed = true;
                         }
                     }
@@ -3583,9 +3568,6 @@ unsafe fn wnd_proc_inner(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPARAM) -
             if let Some(eff) = extra_effects {
                 if let Some(enabled) = eff.update_autostart {
                     autostart_update = Some(enabled);
-                }
-                if eff.reset_screentime {
-                    crate::screentime::RESET_SCREENTIME_REQUESTED.store(true, Ordering::Release);
                 }
                 if eff.trigger_purge {
                     purge_trigger = true;

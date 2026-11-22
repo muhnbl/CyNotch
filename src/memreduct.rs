@@ -172,13 +172,13 @@ pub struct CleanAreas {
 
 impl Default for CleanAreas {
     fn default() -> Self {
-        // Matches Henry++ Mem Reduct ReductMask2 = 0x0F default
+        // Safe & recommended non-stuttering profile: Working Sets + System File Cache + Low-Priority Standby
         Self {
             working_sets: true,
             system_file_cache: true,
-            modified_page_list: true,
-            standby_list: true,
-            standby_list_low: false,
+            modified_page_list: false,
+            standby_list: false,
+            standby_list_low: true,
             modified_file_cache: false,
             registry_cache: false,
             combine_memory_lists: false,

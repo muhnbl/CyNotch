@@ -11,7 +11,6 @@ use cynotch::models::{
 use cynotch::painter_d2d::{D2DPainter, D2DResourceCache, color_to_d2d};
 use cynotch::persistence::{LoadOutcome, atomic_write_json, backup_path, load_json_with_recovery};
 use cynotch::renderer::Renderer;
-use cynotch::screentime::ScreenTimeTracker;
 use cynotch::sound::{find_data_chunk, scale_wav_volume};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -306,31 +305,6 @@ fn bh09_persistence_stress_and_screentime_recovery() {
 
     // Fault injection: write to a directory path fails cleanly without panicking
     assert!(atomic_write_json(tmp.path(), &v51, true).is_err());
-
-    // ScreenTimeTracker isolated load + save + corruption recovery using dynamic current date (BH-43)
-    let st_path = tmp.path().join("screentime.json");
-    let today = cynotch::localtime::format_ymd(cynotch::localtime::local_now());
-    let sample = serde_json::json!({
-        "current_date": today,
-        "app_seconds": { "VS Code": 1200 },
-        "total_seconds": 1200,
-        "hourly_seconds": [0,0,0,0,0,0,0,0,0,0,1200,0,0,0,0,0,0,0,0,0,0,0,0,0],
-        "daily_totals": { "2026-01-01": 3600 }
-    });
-    atomic_write_json(&st_path, &sample, true).unwrap();
-    atomic_write_json(&st_path, &sample, true).unwrap();
-    std::fs::write(&st_path, "CORRUPT").unwrap();
-
-    let recovered_tracker = ScreenTimeTracker::load_from_path(st_path);
-    let stats = recovered_tracker.stats(10);
-    assert_eq!(
-        stats.today_secs, 1200,
-        "screentime must recover exact today_secs from .bak on primary corruption"
-    );
-    assert!(
-        stats.seven_day_avg_secs > 0,
-        "screentime must recover daily_totals history from .bak"
-    );
 }
 
 #[test]

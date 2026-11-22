@@ -1,6 +1,5 @@
 mod mascot;
 mod notifications;
-mod vertical;
 mod views;
 
 use crate::font_d2d::{DWriteTextCache, Weight};
@@ -215,11 +214,7 @@ impl Renderer {
                         p.global_alpha = fade_out;
                         if state.notification.is_some() && w >= 220.0 && h >= 48.0 {
                             let target_bs = state.banner_scale();
-                            let (base_bw, base_bh) = if state.placement.is_vertical() {
-                                (AppState::VERT_BANNER_WIDTH, AppState::VERT_BANNER_HEIGHT)
-                            } else {
-                                (AppState::BANNER_WIDTH, AppState::BANNER_HEIGHT)
-                            };
+                            let (base_bw, base_bh) = (AppState::BANNER_WIDTH, AppState::BANNER_HEIGHT);
                             let notif_alpha = if state.are_animations_active() {
                                 crate::models::ease_out_cubic(state.anim_notif_t)
                             } else {
@@ -229,15 +224,6 @@ impl Renderer {
                             let bs = (w / base_bw).min(h / base_bh).min(target_bs).max(0.65);
                             p.s = bs;
                             Self::draw_notification_banner(&mut p, state, w / bs, h / bs);
-                        } else if state.placement.is_vertical() {
-                            if state.minimized_island || w < 22.0 || h < 42.0 {
-                                p.type_scale = TypeScale::Compact;
-                                Self::draw_minimized_idle_vertical(&mut p, state, w, h);
-                            } else {
-                                let is = state.type_scale.idle_ui_scale();
-                                p.s = is;
-                                Self::draw_idle_vertical(&mut p, state, w / is, h / is);
-                            }
                         } else if state.minimized_island || w < 48.0 || h < 21.0 {
                             p.type_scale = TypeScale::Compact;
                             Self::draw_minimized_idle_capsule(&mut p, state, w, h);
@@ -260,11 +246,7 @@ impl Renderer {
                             p.origin_x = ox + (w - base_w * scale_fit) * 0.5;
                             p.origin_y = oy + (h - base_h * scale_fit) * 0.5;
                         }
-                        if state.placement.is_vertical() {
-                            Self::draw_expanded_vertical(&mut p, state, base_w, base_h, settled_expanded);
-                        } else {
-                            Self::draw_expanded(&mut p, state, base_w, base_h, settled_expanded);
-                        }
+                        Self::draw_expanded(&mut p, state, base_w, base_h, settled_expanded);
                     }
                 }
 
@@ -1134,10 +1116,7 @@ impl Renderer {
                 NotchMode::Music => Icon::Music,
                 NotchMode::Volume => Icon::Volume,
                 NotchMode::MemReduct => Icon::Wave,
-                NotchMode::Tasks => Icon::List,
                 NotchMode::Shelf => Icon::Clipboard,
-                NotchMode::Capture => Icon::Video,
-                NotchMode::Telemetry => Icon::Display,
                 NotchMode::Settings => Icon::Settings,
             };
             let ix = dock_x + 4.0 + (i as f32 * item_w);
@@ -1345,10 +1324,7 @@ impl Renderer {
                 }
                 NotchMode::Volume => draw_title(p, "Volume Master"),
                 NotchMode::MemReduct => draw_title(p, "Mem Reduct"),
-                NotchMode::Tasks => draw_title(p, "Tasks"),
                 NotchMode::Shelf => draw_title(p, "Quick Shelf"),
-                NotchMode::Capture => draw_title(p, "Quick Capture"),
-                NotchMode::Telemetry => draw_title(p, "Screen Time"),
                 NotchMode::Settings => draw_title(p, "Quick Settings"),
             }
         }
@@ -1370,10 +1346,7 @@ impl Renderer {
                 }
                 NotchMode::Volume => Self::draw_volume_view(p, state, w, card_y),
                 NotchMode::MemReduct => Self::draw_memreduct_view(p, state, w, card_y),
-                NotchMode::Tasks => Self::draw_tasks_view(p, state, w, card_y),
                 NotchMode::Shelf => Self::draw_shelf_view(p, state, w, card_y),
-                NotchMode::Capture => Self::draw_capture_view(p, state, w, card_y),
-                NotchMode::Telemetry => Self::draw_screentime_view(p, state, w, card_y),
                 NotchMode::Settings => Self::draw_settings_view(p, state, w, card_y),
             }
         }
