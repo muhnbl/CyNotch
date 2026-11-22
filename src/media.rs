@@ -325,17 +325,65 @@ pub fn default_demo_lyrics() -> Vec<LyricLine> {
     ]
 }
 
-// Media Control Key simulation (Spotify, YouTube, VLC, Apple Music, etc.)
+// Media Control via WinRT SMTC (Spotify, YouTube/Chrome, Apple Music, VLC) with VK_MEDIA fallback
+#[derive(Clone, Copy)]
+enum SmtcCommand {
+    TogglePlayPause,
+    Next,
+    Prev,
+}
+
+#[cfg(windows)]
+fn dispatch_smtc_command(cmd: SmtcCommand, fallback_vk: u8) {
+    let _ = std::thread::Builder::new()
+        .name("cynotch-smtc-cmd".to_string())
+        .spawn(move || {
+            use windows::Media::Control::GlobalSystemMediaTransportControlsSessionManager;
+            let sent = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                let Ok(op) = GlobalSystemMediaTransportControlsSessionManager::RequestAsync() else {
+                    return false;
+                };
+                let Ok(mgr) = op.get() else {
+                    return false;
+                };
+                let Ok(session) = mgr.GetCurrentSession() else {
+                    return false;
+                };
+                match cmd {
+                    SmtcCommand::TogglePlayPause => session
+                        .TryTogglePlayPauseAsync()
+                        .and_then(|o| o.get())
+                        .unwrap_or(false),
+                    SmtcCommand::Next => session
+                        .TrySkipNextAsync()
+                        .and_then(|o| o.get())
+                        .unwrap_or(false),
+                    SmtcCommand::Prev => session
+                        .TrySkipPreviousAsync()
+                        .and_then(|o| o.get())
+                        .unwrap_or(false),
+                }
+            }))
+            .unwrap_or(false);
+            if !sent {
+                send_media_key(fallback_vk);
+            }
+        });
+}
+
+#[cfg(not(windows))]
+fn dispatch_smtc_command(_cmd: SmtcCommand, _fallback_vk: u8) {}
+
 pub fn toggle_play_pause() {
-    send_media_key(0xB3); // VK_MEDIA_PLAY_PAUSE
+    dispatch_smtc_command(SmtcCommand::TogglePlayPause, 0xB3); // VK_MEDIA_PLAY_PAUSE
 }
 
 pub fn next_track() {
-    send_media_key(0xB0); // VK_MEDIA_NEXT_TRACK
+    dispatch_smtc_command(SmtcCommand::Next, 0xB0); // VK_MEDIA_NEXT_TRACK
 }
 
 pub fn prev_track() {
-    send_media_key(0xB1); // VK_MEDIA_PREV_TRACK
+    dispatch_smtc_command(SmtcCommand::Prev, 0xB1); // VK_MEDIA_PREV_TRACK
 }
 
 fn send_media_key(vk: u8) {

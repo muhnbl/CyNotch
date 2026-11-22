@@ -994,11 +994,16 @@ pub fn notch_backdrop_geom(state: &AppState, cw: i32, ch: i32) -> Option<ShellGe
         NotchPlacement::Left => 1,
         NotchPlacement::Right => 2,
     };
+    let backdrop_h = if state.is_hovered && state.mode == NotchMode::Music && !state.show_notif_history {
+        (176.0 * state.expanded_scale()).min(state.current_height.max(1.0))
+    } else {
+        state.current_height.max(1.0)
+    };
     ShellGeom::from_shell_clipped(
         ox,
         oy,
         state.current_width.max(1.0),
-        state.current_height.max(1.0),
+        backdrop_h,
         cw,
         ch,
         max_r,
@@ -2763,17 +2768,7 @@ unsafe fn wnd_proc_inner(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPARAM) -
                         let (cw, ch) = (state.canvas_width() as f32, state.canvas_height() as f32);
                         let (origin_x, _origin_y) = Renderer::compute_origin(&state, cw, ch);
                         let local_px = (px - origin_x) / state.expanded_scale().max(0.5);
-                        let (sx, sw) = if state.placement.is_vertical() {
-                            (
-                                AppState::VERT_MUSIC_SCRUBBER_X,
-                                AppState::VERT_MUSIC_SCRUBBER_W,
-                            )
-                        } else if state.show_lyrics {
-                            let cx = state.expanded_width() * 0.5;
-                            (cx - (340.0 + 18.0 + 104.0) * 0.5, 340.0)
-                        } else {
-                            (AppState::MUSIC_SCRUBBER_X, AppState::MUSIC_SCRUBBER_W)
-                        };
+                        let (sx, sw) = (32.0, (state.base_expanded_width() - 64.0).max(80.0));
                         let frac = ((local_px - sx) / sw.max(1.0)).clamp(0.0, 1.0);
                         let pos = ((state.media.duration_ms as f32) * frac) as u64;
                         state.media.position_ms = pos;
@@ -3381,17 +3376,7 @@ unsafe fn wnd_proc_inner(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPARAM) -
                                     (state.canvas_width() as f32, state.canvas_height() as f32);
                                 let (ox, _oy) = Renderer::compute_origin(&state, cw, ch);
                                 let local_px = (x - ox) / state.expanded_scale().max(0.5);
-                                let (sx, sw) = if state.placement.is_vertical() {
-                                    (
-                                        AppState::VERT_MUSIC_SCRUBBER_X,
-                                        AppState::VERT_MUSIC_SCRUBBER_W,
-                                    )
-                                } else if state.show_lyrics {
-                                    let cx = state.expanded_width() * 0.5;
-                                    (cx - (340.0 + 18.0 + 104.0) * 0.5, 340.0)
-                                } else {
-                                    (AppState::MUSIC_SCRUBBER_X, AppState::MUSIC_SCRUBBER_W)
-                                };
+                                let (sx, sw) = (32.0, (state.base_expanded_width() - 64.0).max(80.0));
                                 let exact_pct = ((local_px - sx) / sw.max(1.0)).clamp(0.0, 1.0);
                                 let pos = ((state.media.duration_ms as f32) * exact_pct)
                                     .clamp(0.0, state.media.duration_ms as f32)

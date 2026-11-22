@@ -1658,8 +1658,8 @@ impl AppState {
     }
 
     pub fn base_expanded_height(&self) -> f32 {
-        if self.placement.is_vertical() {
-            Self::VERT_EXPANDED_HEIGHT
+        if self.mode == NotchMode::Music {
+            308.0
         } else {
             Self::EXPANDED_HEIGHT
         }
@@ -3540,6 +3540,14 @@ impl AppState {
             self.show_notif_history = false;
             self.hover_target_idx = None;
             self.hover_slots = [0.0; 48];
+            if self.is_hovered {
+                self.target_width = self.expanded_width();
+                self.target_height = self.expanded_height();
+                if !self.are_animations_active() {
+                    self.current_width = self.target_width;
+                    self.current_height = self.target_height;
+                }
+            }
             if self.are_animations_active() {
                 self.anim_mode_t = 0.0;
                 self.anim_mode_dir = if next_idx >= prev_idx { 1.0 } else { -1.0 };

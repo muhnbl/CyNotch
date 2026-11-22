@@ -101,18 +101,23 @@ impl Renderer {
                     state.type_scale,
                 );
 
-                // 1. Borderless Volumetric Obsidian Shell (Option B fixed calibrated glass when OS Transparency ON)
+                // 1. Borderless Volumetric Obsidian Shell (Box 1 only in Music mode so Box 2 & 3 float independently!)
+                let shell_h = if state.is_hovered && state.mode == NotchMode::Music && !state.show_notif_history {
+                    (176.0 * state.expanded_scale()).min(h)
+                } else {
+                    h
+                };
                 let (shell_top, shell_bot) = if frosted {
                     (tok::obsidian_shell_frosted(), tok::obsidian_deep_frosted())
                 } else {
                     (tok::obsidian_shell(), tok::obsidian_deep())
                 };
-                p.rrect_corners4_vertical_gradient(0.0, 0.0, w, h, (r_tl, r_tr, r_br, r_bl), shell_top, shell_bot);
+                p.rrect_corners4_vertical_gradient(0.0, 0.0, w, shell_h, (r_tl, r_tr, r_br, r_bl), shell_top, shell_bot);
 
                 // 2. Internal Atmospheric Aurora Glows
                 let glow_scale = if frosted { 0.38 } else { 1.0 };
                 if t > 0.05 {
-                    if p.prepare_corners4_clip(0.0, 0.0, w, h, r_tl, r_tr, r_br, r_bl) {
+                    if p.prepare_corners4_clip(0.0, 0.0, w, shell_h, r_tl, r_tr, r_br, r_bl) {
                         p.radial_glow(
                             48.0,
                             24.0,
@@ -123,7 +128,7 @@ impl Renderer {
                         );
                         p.radial_glow(
                             w - 52.0,
-                            h - 10.0,
+                            shell_h - 10.0,
                             116.0,
                             fade(rgba(124, 58, 237, 48), t * glow_scale),
                             BlendMode::SourceOver,
@@ -131,9 +136,9 @@ impl Renderer {
                         );
                         p.elliptical_glow(
                             w * 0.5,
-                            h + 6.0,
+                            shell_h + 6.0,
                             w * 0.56,
-                            (h * 0.36).max(24.0),
+                            (shell_h * 0.36).max(24.0),
                             fade(rgba(168, 85, 247, 34), t * glow_scale),
                             BlendMode::Plus,
                             true,
@@ -1258,64 +1263,7 @@ impl Renderer {
         } else {
             match state.mode {
                 NotchMode::Home => draw_title(p, "Command Hub"),
-                NotchMode::Music => {
-                    let tab_y = dock_y + 4.0;
-                    let lyrics_pill_w = 58.0;
-                    let lyrics_pill_x = bell_x - lyrics_pill_w - 8.0;
-                    let music_max = (lyrics_pill_x - title_x - 8.0).max(0.0);
-                    if music_max >= 26.0 {
-                        let s = p.ellipsize("Music", 13.0, Weight::Bold, music_max);
-                        p.text(&s, title_x, title_y, 13.0, Weight::Bold, tok::text1());
-                    }
-
-                    let lyrics_ht = p.hot_t(lyrics_pill_x, tab_y, lyrics_pill_w, 26.0);
-                    if state.show_lyrics {
-                        p.luminous_pill_button_t(
-                            lyrics_pill_x,
-                            tab_y,
-                            lyrics_pill_w,
-                            26.0,
-                            13.0,
-                            tok::cyno_indigo(),
-                            tok::cyno_violet(),
-                            tok::cyno_orchid(),
-                            lyrics_ht,
-                        );
-                        p.text_center_shadow(
-                            "Lyrics",
-                            lyrics_pill_x + lyrics_pill_w / 2.0,
-                            tab_y + 17.0,
-                            11.0,
-                            Weight::Bold,
-                            tok::text1(),
-                        );
-                    } else {
-                        p.tactile_surface_pill_t(
-                            lyrics_pill_x,
-                            tab_y,
-                            lyrics_pill_w,
-                            26.0,
-                            13.0,
-                            lyrics_ht,
-                            None,
-                        );
-                        p.text_center(
-                            "Lyrics",
-                            lyrics_pill_x + lyrics_pill_w / 2.0,
-                            tab_y + 17.0,
-                            11.0,
-                            Weight::Semibold,
-                            tok::text_soft(),
-                        );
-                    }
-                    p.hit(
-                        lyrics_pill_x,
-                        tab_y,
-                        lyrics_pill_w,
-                        26.0,
-                        Action::ToggleLyrics,
-                    );
-                }
+                NotchMode::Music => draw_title(p, "Music"),
                 NotchMode::Volume => draw_title(p, "Volume Master"),
                 NotchMode::MemReduct => draw_title(p, "Mem Reduct"),
                 NotchMode::Shelf => draw_title(p, "Quick Shelf"),
@@ -1334,10 +1282,7 @@ impl Renderer {
                     Self::draw_home_view(p, state, w, card_y);
                     Self::draw_expanded_anim_overlay(p, state);
                 }
-                NotchMode::Music => {
-                    Self::draw_music_view(p, state, w, card_y);
-                    Self::draw_expanded_anim_overlay(p, state);
-                }
+                NotchMode::Music => Self::draw_music_view(p, state, w, card_y),
                 NotchMode::Volume => Self::draw_volume_view(p, state, w, card_y),
                 NotchMode::MemReduct => Self::draw_memreduct_view(p, state, w, card_y),
                 NotchMode::Shelf => Self::draw_shelf_view(p, state, w, card_y),

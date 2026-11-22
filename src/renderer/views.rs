@@ -322,439 +322,285 @@ impl Renderer {
     // 1. MUSIC PLAYER (Aligned 154x154 Art + Real Multi-Line Lyrics View)
     // ─────────────────────────────────────────────────────────────────────────────
     pub(super) fn draw_music_view(p: &mut PainterD2D, state: &AppState, w: f32, card_y: f32) {
-        let card_x = 20.0;
-        let card_size = 154.0;
+        let cx = w * 0.5;
 
-        if state.show_lyrics {
-            let full_w = w - 40.0;
-            p.elevated_card(
-                card_x,
-                card_y,
-                full_w,
-                card_size,
-                18.0,
-                Some((full_w * 0.5, 42.0, 130.0, tok::cyno_violet())),
-            );
-            let cx = card_x + full_w * 0.5;
-
-            // Top (Centered): Title • Artist (no mode chips, no mascot)
-            let header_str = if state.media.artist.is_empty() {
-                state.media.title.clone()
-            } else {
-                format!("{}  •  {}", state.media.title, state.media.artist)
-            };
-            let header_ell = p.ellipsize_cow(&header_str, 11.5, Weight::Semibold, full_w - 48.0);
-            p.text_center(&header_ell, cx, card_y + 22.0, 11.5, Weight::Semibold, tok::text2());
-
-            // Middle (Centered): Single Large Clean Lyrics Focus
-            let ctx_y = card_y + 30.0;
-            let ctx_h = 78.0;
-            let center_y = ctx_y + ctx_h * 0.5;
-            if state.lyrics.is_empty() {
-                p.text_center(
-                    "No synced lyrics found for this track yet.",
-                    cx,
-                    center_y + 4.0,
-                    12.5,
-                    Weight::Regular,
-                    tok::text2(),
-                );
-            } else {
-                let base_idx = state.current_lyric_index.unwrap_or(0) as i32;
-                let max_idx = (state.lyrics.len() as i32) - 1;
-                let center_idx = (base_idx + state.lyrics_offset).clamp(0, max_idx) as usize;
-                let dimmed = rgba(199, 194, 223, 102);
-
-                let (act_lines, fit_act_sz) = p.wrap_lines_fit(
-                    &state.lyrics[center_idx].text,
-                    17.4,
-                    12.5,
-                    Weight::Bold,
-                    full_w - 56.0,
-                    2,
-                );
-                let line_cnt = act_lines.len().max(1);
-                let line_step = fit_act_sz * 1.15;
-                let text_block_h = (line_cnt as f32 - 1.0) * line_step;
-
-                p.radial_glow(
-                    cx,
-                    center_y,
-                    (ctx_h * 0.55).max(24.0),
-                    rgba(139, 92, 246, 26),
-                    BlendMode::SourceOver,
-                    true,
-                );
-
-                let active_top = center_y - text_block_h * 0.5 - fit_act_sz * 0.45;
-                let active_bot = center_y + text_block_h * 0.5 + fit_act_sz * 0.55;
-
-                if center_idx > 0 && line_cnt == 1 {
-                    let prev_ell = p.ellipsize_cow(
-                        &state.lyrics[center_idx - 1].text,
-                        11.2,
-                        Weight::Regular,
-                        full_w - 64.0,
-                    );
-                    p.text_center(
-                        &prev_ell,
-                        cx,
-                        (active_top - 6.0).max(ctx_y + 12.0),
-                        11.2,
-                        Weight::Regular,
-                        dimmed,
-                    );
-                    p.hit(card_x + 16.0, ctx_y, full_w - 32.0, 22.0, Action::ScrollLyrics(-1));
-                }
-
-                let first_base = center_y - text_block_h * 0.5 + fit_act_sz * 0.34;
-                for (li, line) in act_lines.iter().enumerate() {
-                    p.text_center_shadow(
-                        line,
-                        cx,
-                        first_base + (li as f32) * line_step,
-                        fit_act_sz,
-                        Weight::Bold,
-                        tok::text1(),
-                    );
-                }
-
-                if center_idx + 1 < state.lyrics.len() {
-                    let next_ell = p.ellipsize_cow(
-                        &state.lyrics[center_idx + 1].text,
-                        11.4,
-                        Weight::Regular,
-                        full_w - 64.0,
-                    );
-                    p.text_center(
-                        &next_ell,
-                        cx,
-                        (active_bot + 13.0).min(ctx_y + ctx_h - 4.0),
-                        11.4,
-                        Weight::Regular,
-                        dimmed,
-                    );
-                    p.hit(
-                        card_x + 16.0,
-                        active_bot,
-                        full_w - 32.0,
-                        (ctx_y + ctx_h - active_bot).max(18.0),
-                        Action::ScrollLyrics(1),
-                    );
-                }
-            }
-
-            // Bottom (Centered): Seek Bar + Transport Controls
-            let played_pct = if state.media.duration_ms > 0 {
-                (state.media.position_ms as f32 / state.media.duration_ms as f32).clamp(0.0, 1.0)
-            } else {
-                0.0
-            };
-            let scrub_w = 340.0;
-            let trans_w = 104.0;
-            let gap = 18.0;
-            let group_x = cx - (scrub_w + gap + trans_w) * 0.5;
-            let mini_y = card_y + 126.0;
-            p.glowing_striped_bar(
-                group_x,
-                mini_y,
-                scrub_w,
-                6.0,
-                played_pct,
-                tok::gold_deep(),
-                tok::gold_champagne(),
-            );
-            let mini_hot = p.hot(group_x - 4.0, card_y + 118.0, scrub_w + 8.0, 22.0);
-            let thumb_x = (group_x + scrub_w * played_pct).clamp(group_x + 4.0, group_x + scrub_w - 3.0);
-            let thumb_y = mini_y + 3.0;
-            let thumb_r = if mini_hot { 5.8 } else { 4.6 };
-            p.radial_glow(
-                thumb_x,
-                thumb_y,
-                if mini_hot { 11.0 } else { 8.5 },
-                rgba(200, 155, 60, if mini_hot { 125 } else { 80 }),
-                BlendMode::Plus,
-                false,
-            );
-            p.circle(thumb_x, thumb_y, thumb_r, rgba(255, 255, 255, 250));
-            p.circle(thumb_x, thumb_y, thumb_r * 0.44, tok::amber_glow());
-            p.hit(group_x, card_y + 118.0, scrub_w, 22.0, Action::SeekMusic(played_pct));
-            Self::draw_transport_buttons(
-                p,
-                state.media.is_playing,
-                group_x + scrub_w + gap + trans_w * 0.5,
-                card_y + 115.0,
-            );
-            return;
-        }
-
-        // Luminous Volumetric Album Art Cover (matches right card height symmetrically!)
-        p.luminous_pill_button(
-            card_x,
-            card_y,
-            card_size,
-            card_size,
-            22.0,
-            tok::cyno_indigo(),
-            tok::cyno_violet(),
-            tok::cyno_orchid(),
-            false,
-        );
-        p.dot_matrix(
-            card_x + 16.0,
-            card_y + 16.0,
-            4,
-            3,
-            5.5,
-            rgba(255, 255, 255, 55),
-        );
-
-        if state.show_mascot && state.media.is_playing {
-            let hero_cx = card_x + card_size * 0.5;
-            let hero_cy = card_y + 62.0;
-            p.circle(hero_cx, hero_cy - 1.5, 41.0, rgba(10, 9, 20, 145));
-            p.circle_stroke(hero_cx, hero_cy - 1.5, 41.0, 1.0, rgba(255, 255, 255, 45));
-        } else {
-            icons::draw(
-                p,
-                Icon::Music,
-                card_x + (card_size - 42.0) / 2.0,
-                card_y + 42.0 + 1.5,
-                42.0,
-                rgba(0, 0, 0, 85),
-            );
-            icons::draw(
-                p,
-                Icon::Music,
-                card_x + (card_size - 42.0) / 2.0,
-                card_y + 42.0,
-                42.0,
-                rgba(255, 255, 255, 255),
-            );
-        }
-
-        let art_badge = if !state.media.album.is_empty() {
-            state.media.album.as_str()
-        } else if state.media.is_idle() {
-            "IDLE"
-        } else if state.media.is_playing {
-            "LIVE AUDIO"
-        } else {
-            "PAUSED"
-        };
-        let is_live = state.media.is_playing;
-        let badge_txt = p.ellipsize_cow(art_badge, 9.5, Weight::Bold, card_size - 36.0);
-        let badge_w = card_size - 32.0;
-        let badge_x = card_x + 16.0;
-        let badge_y = card_y + 116.0;
-        p.rrect(
-            badge_x,
-            badge_y,
-            badge_w,
-            22.0,
-            11.0,
-            rgba(10, 8, 22, 160),
-        );
-        if is_live {
-            p.circle(badge_x + 12.0, badge_y + 11.0, 2.5, tok::amber_glow());
-            p.text(
-                &badge_txt,
-                badge_x + 20.0,
-                badge_y + 14.5,
-                9.5,
-                Weight::Bold,
-                tok::text1(),
-            );
-        } else {
+        // 1. BOX 1 (Top Notch Box y=0..176): Centered Large Lyrics + Full-Width Progress Bar
+        let ctx_y = card_y;
+        let ctx_h = 80.0;
+        let center_y = ctx_y + ctx_h * 0.5;
+        if state.lyrics.is_empty() {
             p.text_center(
-                &badge_txt,
-                card_x + card_size / 2.0,
-                badge_y + 14.5,
-                9.5,
-                Weight::Bold,
+                "No synced lyrics found for this track yet.",
+                cx,
+                center_y + 4.0,
+                12.5,
+                Weight::Regular,
                 tok::text2(),
             );
-        }
-
-        let info_x = card_x + card_size + 14.0;
-        let info_w = (w - 20.0) - info_x;
-
-        p.elevated_card(
-            info_x,
-            card_y,
-            info_w,
-            card_size,
-            16.0,
-            Some((info_w - 22.0, 22.0, 80.0, tok::cyno_violet())),
-        );
-
-        let pad_x = AppState::MUSIC_SCRUBBER_X;
-        let inner_w = AppState::MUSIC_SCRUBBER_W;
-
-        if state.show_lyrics {
-            Self::draw_lyrics_panel(p, state, pad_x, card_y + 8.0, inner_w, 101.0, false);
-
-            let played_pct = if state.media.duration_ms > 0 {
-                (state.media.position_ms as f32 / state.media.duration_ms as f32).clamp(0.0, 1.0)
-            } else {
-                0.0
-            };
-            let mini_w = inner_w - 138.0;
-            let mini_y = card_y + 123.0;
-            p.glowing_striped_bar(
-                pad_x,
-                mini_y,
-                mini_w,
-                6.0,
-                played_pct,
-                tok::gold_deep(),
-                tok::gold_champagne(),
-            );
-            let mini_hot = p.hot(pad_x - 4.0, card_y + 115.0, mini_w + 8.0, 22.0);
-            let thumb_x = (pad_x + mini_w * played_pct).clamp(pad_x + 4.0, pad_x + mini_w - 3.0);
-            let thumb_y = mini_y + 3.0;
-            let thumb_r = if mini_hot { 5.8 } else { 4.6 };
-            p.radial_glow(
-                thumb_x,
-                thumb_y,
-                if mini_hot { 11.0 } else { 8.5 },
-                rgba(200, 155, 60, if mini_hot { 125 } else { 80 }),
-                BlendMode::Plus,
-                false,
-            );
-            p.circle(thumb_x, thumb_y, thumb_r, rgba(255, 255, 255, 250));
-            p.circle(thumb_x, thumb_y, thumb_r * 0.44, tok::amber_glow());
-            p.hit(
-                pad_x,
-                card_y + 115.0,
-                mini_w,
-                22.0,
-                Action::SeekMusic(played_pct),
-            );
-            Self::draw_transport_buttons(
-                p,
-                state.media.is_playing,
-                pad_x + inner_w - 60.0,
-                card_y + 112.0,
-            );
-            return;
-        }
-
-        // Standard Now Playing View
-        let title_y = card_y + 26.0;
-        let title_max_w = if state.equalizer_enabled {
-            inner_w - 72.0
         } else {
-            inner_w
-        };
-        let title_text = p.ellipsize_cow(&state.media.title, 15.5, Weight::Bold, title_max_w);
-        p.text(
-            &title_text,
-            pad_x,
-            title_y,
-            15.5,
-            Weight::Bold,
-            tok::text1(),
-        );
+            let base_idx = state.current_lyric_index.unwrap_or(0) as i32;
+            let max_idx = (state.lyrics.len() as i32) - 1;
+            let center_idx = (base_idx + state.lyrics_offset).clamp(0, max_idx) as usize;
+            let dimmed = rgba(199, 194, 223, 102);
 
-        let artist_y = title_y + 19.0;
-        let artist_txt = p.ellipsize_cow(&state.media.artist, 12.0, Weight::Regular, inner_w);
-        p.text(
-            &artist_txt,
-            pad_x,
-            artist_y,
-            12.0,
-            Weight::Regular,
-            tok::text2(),
-        );
+            let (act_lines, fit_act_sz) = p.wrap_lines_fit(
+                &state.lyrics[center_idx].text,
+                18.0,
+                12.5,
+                Weight::Bold,
+                w - 72.0,
+                2,
+            );
+            let line_cnt = act_lines.len().max(1);
+            let line_step = fit_act_sz * 1.15;
+            let text_block_h = (line_cnt as f32 - 1.0) * line_step;
 
-        let prog_y = artist_y + 13.0;
+            p.radial_glow(
+                cx,
+                center_y,
+                (ctx_h * 0.55).max(24.0),
+                rgba(139, 92, 246, 26),
+                BlendMode::SourceOver,
+                true,
+            );
+
+            let active_top = center_y - text_block_h * 0.5 - fit_act_sz * 0.45;
+            let active_bot = center_y + text_block_h * 0.5 + fit_act_sz * 0.55;
+
+            if center_idx > 0 && line_cnt == 1 {
+                let prev_ell = p.ellipsize_cow(
+                    &state.lyrics[center_idx - 1].text,
+                    11.5,
+                    Weight::Regular,
+                    w - 80.0,
+                );
+                p.text_center(
+                    &prev_ell,
+                    cx,
+                    (active_top - 6.0).max(ctx_y + 12.0),
+                    11.5,
+                    Weight::Regular,
+                    dimmed,
+                );
+                p.hit(24.0, ctx_y, w - 48.0, 22.0, Action::ScrollLyrics(-1));
+            }
+
+            let first_base = center_y - text_block_h * 0.5 + fit_act_sz * 0.34;
+            for (li, line) in act_lines.iter().enumerate() {
+                p.text_center_shadow(
+                    line,
+                    cx,
+                    first_base + (li as f32) * line_step,
+                    fit_act_sz,
+                    Weight::Bold,
+                    tok::text1(),
+                );
+            }
+
+            if center_idx + 1 < state.lyrics.len() {
+                let next_ell = p.ellipsize_cow(
+                    &state.lyrics[center_idx + 1].text,
+                    11.5,
+                    Weight::Regular,
+                    w - 80.0,
+                );
+                p.text_center(
+                    &next_ell,
+                    cx,
+                    (active_bot + 13.0).min(ctx_y + ctx_h - 4.0),
+                    11.5,
+                    Weight::Regular,
+                    dimmed,
+                );
+                p.hit(
+                    24.0,
+                    active_bot,
+                    w - 48.0,
+                    (ctx_y + ctx_h - active_bot).max(18.0),
+                    Action::ScrollLyrics(1),
+                );
+            }
+        }
+
+        // Full-Width Progress / Seek Bar at bottom of Box 1
         let played_pct = if state.media.duration_ms > 0 {
             (state.media.position_ms as f32 / state.media.duration_ms as f32).clamp(0.0, 1.0)
         } else {
             0.0
         };
+        let scrub_x = 32.0;
+        let scrub_w = (w - 64.0).max(80.0);
+        let scrub_y = 152.0;
         p.glowing_striped_bar(
-            pad_x,
-            prog_y,
-            inner_w,
-            6.5,
+            scrub_x,
+            scrub_y,
+            scrub_w,
+            6.0,
             played_pct,
             tok::gold_deep(),
             tok::gold_champagne(),
         );
-        let scrub_hot = p.hot(pad_x - 4.0, prog_y - 6.0, inner_w + 8.0, 19.0);
-        let thumb_x = (pad_x + inner_w * played_pct).clamp(pad_x + 5.0, pad_x + inner_w - 3.0);
-        let thumb_y = prog_y + 3.25;
-        let thumb_r = if scrub_hot { 6.2 } else { 5.0 };
+        let mini_hot = p.hot(scrub_x - 4.0, scrub_y - 8.0, scrub_w + 8.0, 22.0);
+        let thumb_x = (scrub_x + scrub_w * played_pct).clamp(scrub_x + 4.0, scrub_x + scrub_w - 3.0);
+        let thumb_y = scrub_y + 3.0;
+        let thumb_r = if mini_hot { 5.8 } else { 4.6 };
         p.radial_glow(
             thumb_x,
             thumb_y,
-            if scrub_hot { 12.0 } else { 9.0 },
-            rgba(200, 155, 60, if scrub_hot { 130 } else { 85 }),
+            if mini_hot { 11.0 } else { 8.5 },
+            rgba(200, 155, 60, if mini_hot { 125 } else { 80 }),
             BlendMode::Plus,
             false,
         );
-        p.circle(thumb_x, thumb_y, thumb_r, rgba(255, 255, 255, 252));
+        p.circle(thumb_x, thumb_y, thumb_r, rgba(255, 255, 255, 250));
         p.circle(thumb_x, thumb_y, thumb_r * 0.44, tok::amber_glow());
-        p.hit(
-            pad_x,
-            prog_y - 6.0,
-            inner_w,
-            19.0,
-            Action::SeekMusic(played_pct),
+        p.hit(scrub_x, scrub_y - 8.0, scrub_w, 22.0, Action::SeekMusic(played_pct));
+
+        // 2. BOX 2 (Floating Track Info Card y=186..248, 10px transparent gap above & below)
+        let box2_y = 186.0;
+        let box2_h = 62.0;
+        p.rrect_vertical_gradient(
+            0.0,
+            box2_y,
+            w,
+            box2_h,
+            18.0,
+            rgba(22, 20, 42, 232),
+            rgba(13, 12, 28, 240),
+        );
+        p.rrect_bevel_stroke(
+            0.0,
+            box2_y,
+            w,
+            box2_h,
+            18.0,
+            1.0,
+            rgba(255, 255, 255, 44),
+            rgba(168, 85, 247, 36),
         );
 
-        let time_y = prog_y + 17.0;
-        let pos_sec = state.media.position_ms / 1000;
-        let dur_sec = state.media.duration_ms / 1000;
-        let rem_sec = dur_sec.saturating_sub(pos_sec);
-        let left_time = format!("{}:{:02}", pos_sec / 60, pos_sec % 60);
-        let right_time = if state.media.duration_ms > 0 {
-            format!("-{}:{:02}", rem_sec / 60, rem_sec % 60)
-        } else {
-            "--:--".to_string()
-        };
-        p.text(
-            &left_time,
-            pad_x,
-            time_y,
-            10.0,
-            Weight::Semibold,
-            tok::text2(),
-        );
-        p.text_right(
-            &right_time,
-            pad_x + inner_w,
-            time_y,
-            10.0,
-            Weight::Semibold,
-            tok::text2(),
-        );
-
-        let lyric_y = time_y + 16.0;
-        let (snip_lines, snip_sz) = p.wrap_lines_fit(
-            &state.current_lyric_text,
+        let art_x = 12.0;
+        let art_y = box2_y + 8.0;
+        let art_sz = 46.0;
+        p.rrect_vertical_gradient(
+            art_x,
+            art_y,
+            art_sz,
+            art_sz,
             12.0,
-            9.5,
-            Weight::Regular,
-            inner_w,
-            2,
+            rgba(88, 48, 168, 190),
+            rgba(34, 22, 68, 215),
         );
-        for (li, line) in snip_lines.iter().take(2).enumerate() {
-            p.text(
-                line,
-                pad_x,
-                lyric_y + (li as f32) * (snip_sz + 2.0),
-                snip_sz,
-                Weight::Regular,
-                tok::text_soft(),
-            );
+        p.rrect_bevel_stroke(
+            art_x,
+            art_y,
+            art_sz,
+            art_sz,
+            12.0,
+            1.0,
+            rgba(233, 213, 255, 70),
+            rgba(124, 58, 237, 25),
+        );
+        icons::draw(p, Icon::Music, art_x + 13.0, art_y + 13.0, 20.0, tok::text1());
+        if state.media.is_playing {
+            p.circle(art_x + art_sz - 6.0, art_y + 6.0, 3.0, tok::amber_glow());
         }
 
-        let ctrl_cx = pad_x + inner_w / 2.0;
-        let ctrl_y = card_y + 113.0;
-        Self::draw_transport_buttons(p, state.media.is_playing, ctrl_cx, ctrl_y);
+        let pos_s = state.media.position_ms / 1000;
+        let dur_s = state.media.duration_ms / 1000;
+        let rem_s = dur_s.saturating_sub(pos_s);
+        let mut time_str = StackStr::<32>::new();
+        let _ = write!(
+            time_str,
+            "{}:{:02} / -{}:{:02}",
+            pos_s / 60,
+            pos_s % 60,
+            rem_s / 60,
+            rem_s % 60
+        );
+        p.text_right(
+            &time_str,
+            w - 16.0,
+            box2_y + 34.0,
+            10.2,
+            Weight::Semibold,
+            tok::text3(),
+        );
+
+        let text_x = art_x + art_sz + 14.0;
+        let text_max_w = (w - text_x - 108.0).max(80.0);
+        let title_ell = p.ellipsize_cow(&state.media.title, 13.5, Weight::Bold, text_max_w);
+        p.text(&title_ell, text_x, box2_y + 27.0, 13.5, Weight::Bold, tok::text1());
+        let artist_str = if state.media.artist.is_empty() {
+            "Unknown Artist"
+        } else {
+            state.media.artist.as_str()
+        };
+        let artist_ell = p.ellipsize_cow(artist_str, 11.2, Weight::Regular, text_max_w);
+        p.text(&artist_ell, text_x, box2_y + 45.0, 11.2, Weight::Regular, tok::text2());
+
+        // 3. BOX 3 (3 Separated Floating Media Player Buttons y=258..304)
+        let btn_y = 258.0;
+        let btn_w = 58.0;
+        let btn_h = 46.0;
+        let btn_gap = 12.0;
+        let start_x = cx - (btn_w * 3.0 + btn_gap * 2.0) * 0.5;
+
+        let btns = [
+            (start_x, Icon::Prev, Action::PrevTrack, false),
+            (
+                start_x + btn_w + btn_gap,
+                if state.media.is_playing { Icon::Pause } else { Icon::Play },
+                Action::TogglePlayPause,
+                true,
+            ),
+            (start_x + (btn_w + btn_gap) * 2.0, Icon::Next, Action::NextTrack, false),
+        ];
+        for (bx, ic, act, is_primary) in btns {
+            let ht = p.hot_t(bx, btn_y, btn_w, btn_h);
+            if is_primary {
+                p.luminous_pill_button_t(
+                    bx,
+                    btn_y,
+                    btn_w,
+                    btn_h,
+                    14.0,
+                    tok::cyno_indigo(),
+                    tok::cyno_violet(),
+                    tok::cyno_orchid(),
+                    ht,
+                );
+            } else {
+                p.rrect_vertical_gradient(
+                    bx,
+                    btn_y,
+                    btn_w,
+                    btn_h,
+                    14.0,
+                    rgba(26, 24, 52, 232),
+                    rgba(15, 14, 34, 240),
+                );
+                p.rrect_bevel_stroke(
+                    bx,
+                    btn_y,
+                    btn_w,
+                    btn_h,
+                    14.0,
+                    1.0,
+                    rgba(255, 255, 255, (46.0 + 40.0 * ht) as u8),
+                    rgba(168, 85, 247, 36),
+                );
+            }
+            icons::draw(
+                p,
+                ic,
+                bx + (btn_w - 18.0) * 0.5,
+                btn_y + (btn_h - 18.0) * 0.5 - 0.5 * ht,
+                18.0,
+                tok::text1(),
+            );
+            p.hit(bx, btn_y, btn_w, btn_h, act);
+        }
     }
 
     pub(super) fn draw_lyrics_panel(
