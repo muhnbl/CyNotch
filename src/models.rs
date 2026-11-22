@@ -2749,8 +2749,8 @@ impl AppState {
         self.mem_reduct.auto_clean_enabled = cfg.auto_clean_enabled;
         self.is_pinned = cfg.is_pinned;
         self.is_hovered = cfg.is_pinned;
-        self.x_offset = cfg.x_offset;
-        self.y_offset = cfg.y_offset;
+        self.x_offset = 0;
+        self.y_offset = 0;
         if cfg.last_freed_mb > 0.0 || !cfg.last_cleaned_status.is_empty() {
             self.mem_reduct.last_freed_mb = cfg.last_freed_mb;
             if !cfg.last_cleaned_status.is_empty()
@@ -2760,7 +2760,7 @@ impl AppState {
             }
         }
         self.notch_style = cfg.notch_style;
-        self.placement = cfg.placement;
+        self.placement = NotchPlacement::Top;
         self.size_preset = cfg.size_preset;
         self.expanded_size = cfg.expanded_size;
         self.type_scale = cfg.type_scale;
@@ -3016,8 +3016,8 @@ impl AppState {
             mem_reduct.every_mins = cfg.every_mins;
             mem_reduct.auto_clean_enabled = cfg.auto_clean_enabled;
             is_pinned = cfg.is_pinned;
-            x_offset = cfg.x_offset;
-            y_offset = cfg.y_offset;
+            x_offset = 0;
+            y_offset = 0;
             if cfg.last_freed_mb > 0.0 || !cfg.last_cleaned_status.is_empty() {
                 mem_reduct.last_freed_mb = cfg.last_freed_mb;
                 if !cfg.last_cleaned_status.is_empty()
@@ -3027,7 +3027,7 @@ impl AppState {
                 }
             }
             notch_style = cfg.notch_style;
-            placement = cfg.placement;
+            placement = NotchPlacement::Top;
             size_preset = cfg.size_preset;
             expanded_size = cfg.expanded_size;
             type_scale = cfg.type_scale;

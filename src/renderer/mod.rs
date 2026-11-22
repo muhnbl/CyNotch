@@ -1138,15 +1138,9 @@ impl Renderer {
             p.hit(ix, iy, item_w, 26.0, Action::SetMode(*mode));
         }
 
-        // Right Actions: [Lyrics Pill] [Pin Lock] [Settings Gear] [Grip]
+        // Right Actions: [Lyrics Pill] [Bell] [Pin Lock] [Settings Gear]
         let right_x = w - 20.0;
-        let grip_x = right_x - 18.0;
-        let grip_ht = p.hot_t(grip_x - 4.0, dock_y, 26.0, dock_h);
-        let grip_col = lerp_color(rgba(148, 163, 184, 115), tok::text1(), grip_ht);
-        icons::draw(p, Icon::Grip, grip_x, dock_y + 9.0, 16.0, grip_col);
-        p.hit(grip_x - 4.0, dock_y, 26.0, dock_h, Action::StartGripDrag);
-
-        let gear_x = grip_x - 38.0;
+        let gear_x = right_x - 28.0;
         let is_settings_active = state.settings_open || state.mode == NotchMode::Settings;
         let gear_ht = p.hot_t(gear_x, dock_y + 3.0, 28.0, 28.0);
         if is_settings_active {

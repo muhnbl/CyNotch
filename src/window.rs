@@ -3016,25 +3016,8 @@ unsafe fn wnd_proc_inner(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPARAM) -
                         .map(|h| h.action)
                 })
             });
-            if matches!(hit_action, Some(Action::StartGripDrag)) {
-                let _ = ReleaseCapture();
-                if let Some(state_mutex) = get_global_state()
-                    && let Ok(mut state) = state_mutex.lock()
-                {
-                    state.x_offset = 0;
-                    state.y_offset = 0;
-                    state.reset_anchor_for_placement();
-                    state.save_config();
-                }
-                NOTCH_UI.with_borrow_mut(|ui| {
-                    ui.drag_mode = DragMode::None;
-                    ui.snap_glide_active = true;
-                    ui.last_anim_instant = Some(std::time::Instant::now());
-                });
-                crate::settings_window::post_redraw();
-                redraw_window(hwnd);
-                return LRESULT(0);
-            }
+            let _ = hit_action;
+            return LRESULT(0);
             LRESULT(0)
         }
         WM_RBUTTONUP => {
@@ -3238,13 +3221,7 @@ unsafe fn wnd_proc_inner(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPARAM) -
                             state.save_config();
                             notify_settings = true;
                         }
-                        Action::StartGripDrag => {
-                            start_grip_offset = Some(if state.placement.is_vertical() {
-                                state.y_offset
-                            } else {
-                                state.x_offset
-                            });
-                        }
+                        Action::StartGripDrag => {}
                         Action::ResetPosition => {
                             state.x_offset = 0;
                             state.y_offset = 0;
