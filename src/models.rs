@@ -58,17 +58,51 @@ pub enum NotchSizePreset {
 impl NotchSizePreset {
     pub fn idle_width(self) -> f32 {
         match self {
-            Self::Compact => 260.0,
-            Self::Standard => 330.0,
-            Self::Wide => 412.0,
+            Self::Compact => 210.0,
+            Self::Standard => 248.0,
+            Self::Wide => 292.0,
         }
+    }
+
+    /// Strict compact max-width per `Idle Size` preset when Music is playing (`Judul - Artis` + right badge).
+    pub fn music_max_width(self) -> f32 {
+        match self {
+            Self::Compact => 240.0,
+            Self::Standard => 290.0,
+            Self::Wide => 350.0,
+        }
+    }
+
+    /// Sleek compact width for Pure Stealth Idle (2 Purple Wolf Eyes centered in pill).
+    pub fn stealth_width(self) -> f32 {
+        match self {
+            Self::Compact => 68.0,
+            Self::Standard => 76.0,
+            Self::Wide => 86.0,
+        }
+    }
+
+    pub fn stealth_height_horizontal(self) -> f32 {
+        match self {
+            Self::Compact => 25.0,
+            Self::Standard => 27.0,
+            Self::Wide => 29.0,
+        }
+    }
+
+    pub fn stealth_width_vertical(self) -> f32 {
+        self.stealth_height_horizontal()
+    }
+
+    pub fn stealth_height_vertical(self) -> f32 {
+        self.stealth_width()
     }
 
     pub fn idle_height_horizontal(self) -> f32 {
         match self {
-            Self::Compact => 40.0,
-            Self::Standard => 42.0,
-            Self::Wide => 46.0,
+            Self::Compact => 28.0,
+            Self::Standard => 30.0,
+            Self::Wide => 33.0,
         }
     }
 
@@ -161,26 +195,26 @@ pub enum TypeScale {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
 pub enum HoverDwellSpeed {
-    Quick,  // 120ms
+    Quick,  // 300ms
     #[default]
-    Normal, // 400ms
-    Slow,   // 700ms
+    Normal, // 650ms
+    Slow,   // 1000ms
 }
 
 impl HoverDwellSpeed {
     pub fn ms(self) -> u64 {
         match self {
-            Self::Quick => 120,
-            Self::Normal => 400,
-            Self::Slow => 700,
+            Self::Quick => 300,
+            Self::Normal => 650,
+            Self::Slow => 1000,
         }
     }
 
     pub fn label(self) -> &'static str {
         match self {
-            Self::Quick => "Quick (120ms)",
-            Self::Normal => "Normal (400ms)",
-            Self::Slow => "Slow (700ms)",
+            Self::Quick => "Quick (300ms)",
+            Self::Normal => "Normal (650ms)",
+            Self::Slow => "Slow (1000ms)",
         }
     }
 
@@ -534,6 +568,60 @@ pub fn spring_step(
     }
 }
 
+/// Closed-form analytical damped harmonic spring solver (`MOTION_SYSTEM.md` §1.1).
+/// Evaluates `(x0, v0, dt)` directly so 60Hz–240Hz displays produce identical trajectories
+/// and mid-motion interruptions preserve velocity cleanly.
+#[allow(clippy::too_many_arguments)]
+pub fn spring_step_analytic(
+    cur: f32,
+    vel: f32,
+    target: f32,
+    freq_hz: f32,
+    zeta: f32,
+    dt: f32,
+    pos_eps: f32,
+    vel_eps: f32,
+) -> (f32, f32, bool) {
+    let x0 = cur - target;
+    if x0.abs() <= pos_eps && vel.abs() <= vel_eps {
+        return (target, 0.0, x0.abs() > 1e-5 || vel.abs() > 1e-5);
+    }
+    let dt = dt.clamp(0.0, 1.0 / 30.0);
+    if dt <= 1e-6 {
+        return (cur, vel, false);
+    }
+    let w = std::f32::consts::TAU * freq_hz.max(0.1);
+    let z = zeta.max(0.01);
+    let (nx, nv) = if (z - 1.0).abs() < 1e-3 {
+        let e = (-w * dt).exp();
+        let a = x0;
+        let b = vel + w * x0;
+        (target + (a + b * dt) * e, (vel - b * w * dt) * e)
+    } else if z < 1.0 {
+        let wd = w * (1.0 - z * z).sqrt();
+        let e = (-z * w * dt).exp();
+        let (sin, cos) = (wd * dt).sin_cos();
+        let c2 = (vel + z * w * x0) / wd;
+        let x = target + e * (x0 * cos + c2 * sin);
+        let v = e * ((c2 * wd - z * w * x0) * cos - (x0 * wd + z * w * c2) * sin);
+        (x, v)
+    } else {
+        let disc = (z * z - 1.0).sqrt();
+        let r1 = -w * (z - disc);
+        let r2 = -w * (z + disc);
+        let c2 = (vel - r1 * x0) / (r2 - r1);
+        let c1 = x0 - c2;
+        let e1 = (r1 * dt).exp();
+        let e2 = (r2 * dt).exp();
+        (target + c1 * e1 + c2 * e2, c1 * r1 * e1 + c2 * r2 * e2)
+    };
+    if (nx - target).abs() <= pos_eps && nv.abs() <= vel_eps {
+        (target, 0.0, true)
+    } else {
+        (nx, nv, true)
+    }
+}
+
 /// Smooth cubic ease-out curve for directional view/pane glides.
 pub fn ease_out_cubic(t: f32) -> f32 {
     let c = t.clamp(0.0, 1.0);
@@ -597,8 +685,9 @@ pub enum Action {
     DeleteTask(usize),
     ClearCompletedTasks,
     PasteAsTask,
-    ActivateShelfItem(usize),
-    DeleteShelfItem(usize),
+    ActivateShelfItem(u64),
+    DeleteShelfItem(u64),
+    UndoShelfRemove,
     ClearShelf,
     CaptureScreen,
     CaptureWindow,
@@ -664,17 +753,312 @@ pub struct TaskItem {
     pub completed: bool,
 }
 
+static NEXT_SHELF_ID: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
+
+pub fn next_shelf_item_id() -> u64 {
+    NEXT_SHELF_ID.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum ShelfKind {
     Text,
+    Url,
     File,
+    Image,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct ShelfItem {
+    #[serde(default = "next_shelf_item_id")]
+    pub id: u64,
     pub kind: ShelfKind,
     pub label: String,
     pub payload: String,
+}
+
+impl ShelfItem {
+    /// Returns true if this shelf entry is an image (`ShelfKind::Image` or an image file path).
+    pub fn is_image(&self) -> bool {
+        if self.kind == ShelfKind::Image {
+            return true;
+        }
+        if self.kind == ShelfKind::File {
+            let ext = std::path::Path::new(&self.payload)
+                .extension()
+                .or_else(|| std::path::Path::new(&self.label).extension())
+                .and_then(|e| e.to_str())
+                .unwrap_or("");
+            return matches!(
+                ext.to_ascii_lowercase().as_str(),
+                "png" | "jpg" | "jpeg" | "webp" | "bmp" | "gif" | "ico" | "svg" | "tif" | "tiff" | "avif"
+            );
+        }
+        false
+    }
+
+    /// Short uppercase format badge for Bento tiles (`PNG`, `JPG`, `SVG`, `TEXT`, `LINK`, `PDF`, etc.).
+    pub fn badge_label(&self) -> String {
+        if self.is_image() {
+            let ext = std::path::Path::new(&self.payload)
+                .extension()
+                .or_else(|| std::path::Path::new(&self.label).extension())
+                .and_then(|e| e.to_str())
+                .unwrap_or("IMG")
+                .to_ascii_uppercase();
+            return if ext == "JPEG" {
+                "JPG".to_string()
+            } else if ext.len() <= 4 && !ext.is_empty() {
+                ext
+            } else {
+                "IMG".to_string()
+            };
+        }
+        match self.kind {
+            ShelfKind::Text => "TEXT".to_string(),
+            ShelfKind::Url => "LINK".to_string(),
+            ShelfKind::Image => "IMG".to_string(),
+            ShelfKind::File => {
+                let ext = std::path::Path::new(&self.payload)
+                    .extension()
+                    .or_else(|| std::path::Path::new(&self.label).extension())
+                    .and_then(|e| e.to_str())
+                    .unwrap_or("FILE")
+                    .to_ascii_uppercase();
+                if ext.is_empty() || ext.len() > 5 {
+                    "FILE".to_string()
+                } else {
+                    ext
+                }
+            }
+        }
+    }
+
+    /// Splits a URL into `(domain_host, path_preview)` for Bento URL cards.
+    pub fn url_host_and_path(&self) -> (String, String) {
+        let raw = self.payload.trim();
+        let stripped = raw
+            .strip_prefix("https://")
+            .or_else(|| raw.strip_prefix("http://"))
+            .unwrap_or(raw);
+        let stripped = stripped.strip_prefix("www.").unwrap_or(stripped);
+        if let Some(slash) = stripped.find('/') {
+            let host = &stripped[..slash];
+            let rest = &stripped[slash..];
+            (
+                if host.is_empty() { "link".to_string() } else { host.to_string() },
+                if rest == "/" || rest.is_empty() {
+                    raw.to_string()
+                } else {
+                    rest.to_string()
+                },
+            )
+        } else {
+            (stripped.to_string(), raw.to_string())
+        }
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct ShelfUndoEntry {
+    pub item: ShelfItem,
+    pub removed_at: Instant,
+}
+
+pub const SHELF_UNDO_TTL_SECS: f32 = 8.0;
+pub const LIQUID_PLOP_DURATION_SECS: f32 = 0.38;
+pub const RAY_ABSORB_DURATION_SECS: f32 = 0.24;
+pub const RAY_ROW_ENTRY_DURATION_SECS: f32 = 0.12;
+pub const CLIPBOARD_PULSE_DURATION_SECS: f32 = 0.65;
+
+/// State driving the Shelf drag-over meniscus aura, impact ripples, droplets,
+/// damped buoyancy bobbing on newly dropped rows, and the Opsi A Skenario 2
+/// Specular Gold Rim Pulse (`Slow Lingering Peak -> Fast Snap-Off`) for copy/paste & screenshots.
+#[derive(Debug, Clone, Default)]
+pub struct LiquidPlopFx {
+    pub drag_hover_active: bool,
+    pub drag_cursor_target: (f32, f32),
+    pub drag_cursor_smooth: (f32, f32),
+    pub drag_hover_t: f32,
+    pub drag_pre_mode: Option<NotchMode>,
+    pub drag_pre_hovered: bool,
+    pub plop_origin: (f32, f32),
+    pub plop_started_at: Option<Instant>,
+    pub plop_item_id: Option<u64>,
+    pub plop_seed: u64,
+    pub clipboard_pulse_at: Option<Instant>,
+    pub clipboard_whip_fired: bool,
+}
+
+impl LiquidPlopFx {
+    pub fn is_plop_running(&self, now: Instant) -> bool {
+        self.plop_started_at
+            .is_some_and(|t| now.saturating_duration_since(t).as_secs_f32() < LIQUID_PLOP_DURATION_SECS)
+    }
+
+    pub fn is_clipboard_pulse_running(&self, now: Instant) -> bool {
+        self.clipboard_pulse_at.is_some_and(|t| {
+            now.saturating_duration_since(t).as_secs_f32() < CLIPBOARD_PULSE_DURATION_SECS
+        })
+    }
+
+    pub fn is_active(&self, now: Instant) -> bool {
+        self.drag_hover_active
+            || self.drag_hover_t > 0.005
+            || self.is_plop_running(now)
+            || self.is_clipboard_pulse_running(now)
+    }
+
+    pub fn trigger_clipboard_pulse(&mut self, now: Instant) {
+        self.clipboard_pulse_at = Some(now);
+        self.clipboard_whip_fired = false;
+    }
+
+    /// Evaluates Skenario 2 Cubic-Bezier Pulse (`Slow Lingering Peak -> Fast Snap-Off`) at `now`:
+    /// Returns `Some((intensity, progress_u))` in `(0.0..=1.0, 0.0..=1.0)`:
+    /// - **Slow Lingering Peak (`0..400ms`, `1.0 - u^3`)**: Immediately ignites at `1.0` and hovers slowly
+    ///   near peak (`1.00 -> 0.77`) so the eye comfortably catches the Brushed Metallic Gold glow.
+    /// - **Fast Snap-Off (`400..650ms`)**: Accelerates rapidly downward (`0.77 -> 0.0`, cubic ease-in snap)
+    ///   back to idle.
+    pub fn clipboard_pulse_curves(&self, now: Instant) -> Option<(f32, f32)> {
+        let started = self.clipboard_pulse_at?;
+        let elapsed = now.saturating_duration_since(started).as_secs_f32();
+        if !(0.0..CLIPBOARD_PULSE_DURATION_SECS).contains(&elapsed) {
+            return None;
+        }
+        let u = (elapsed / CLIPBOARD_PULSE_DURATION_SECS).clamp(0.0, 1.0);
+        let intensity = (1.0 - u * u * u).clamp(0.0, 1.0);
+        Some((intensity, u))
+    }
+
+    pub fn trigger_plop(&mut self, x: f32, y: f32, item_id: u64) {
+        self.plop_origin = (x, y);
+        self.plop_started_at = Some(Instant::now());
+        self.plop_item_id = Some(item_id);
+        self.plop_seed = item_id.wrapping_mul(0x9E37_79B9_7F4A_7C15).wrapping_add(1);
+    }
+
+    pub fn step(&mut self, dt: f32, anim_on: bool, now: Instant) -> bool {
+        let mut changed = false;
+        let tgt_hover = if self.drag_hover_active { 1.0 } else { 0.0 };
+        if !anim_on {
+            if (self.drag_hover_t - tgt_hover).abs() > 0.001 {
+                self.drag_hover_t = tgt_hover;
+                changed = true;
+            }
+            self.drag_cursor_smooth = self.drag_cursor_target;
+            if self.plop_started_at.is_some() {
+                self.plop_started_at = None;
+                self.plop_item_id = None;
+                changed = true;
+            }
+            if self.clipboard_pulse_at.is_some() {
+                self.clipboard_pulse_at = None;
+                self.clipboard_whip_fired = false;
+                changed = true;
+            }
+            return changed;
+        }
+
+        // Smooth hover aura fade (~85ms)
+        let k_hover = 1.0 - (-dt * 14.0).exp();
+        let next_h = self.drag_hover_t + (tgt_hover - self.drag_hover_t) * k_hover;
+        if (next_h - self.drag_hover_t).abs() > 0.0005 {
+            self.drag_hover_t = if (tgt_hover - next_h).abs() < 0.003 {
+                tgt_hover
+            } else {
+                next_h
+            };
+            changed = true;
+        }
+
+        // Critically damped cursor follow (~70ms lag)
+        if self.drag_hover_active || self.drag_hover_t > 0.005 {
+            let k_pos = 1.0 - (-dt * 14.5).exp();
+            let nx = self.drag_cursor_smooth.0
+                + (self.drag_cursor_target.0 - self.drag_cursor_smooth.0) * k_pos;
+            let ny = self.drag_cursor_smooth.1
+                + (self.drag_cursor_target.1 - self.drag_cursor_smooth.1) * k_pos;
+            if (nx - self.drag_cursor_smooth.0).abs() > 0.05
+                || (ny - self.drag_cursor_smooth.1).abs() > 0.05
+            {
+                self.drag_cursor_smooth = (nx, ny);
+                changed = true;
+            }
+        }
+
+        if let Some(started) = self.plop_started_at {
+            if now.saturating_duration_since(started).as_secs_f32() >= LIQUID_PLOP_DURATION_SECS {
+                self.plop_started_at = None;
+                self.plop_item_id = None;
+                changed = true;
+            } else {
+                changed = true;
+            }
+        }
+        if let Some(started) = self.clipboard_pulse_at {
+            if now.saturating_duration_since(started).as_secs_f32() >= CLIPBOARD_PULSE_DURATION_SECS
+            {
+                self.clipboard_pulse_at = None;
+                self.clipboard_whip_fired = false;
+                changed = true;
+            } else {
+                changed = true;
+            }
+        }
+        changed
+    }
+
+    /// Raycast Tactile row entry offset (`--ray-fast`, `120ms`, `+6px -> 0`, `0%` overshoot).
+    pub fn buoyancy_offset(&self, item_id: u64, now: Instant) -> f32 {
+        if self.plop_item_id != Some(item_id) {
+            return 0.0;
+        }
+        let Some(started) = self.plop_started_at else {
+            return 0.0;
+        };
+        let t = now.saturating_duration_since(started).as_secs_f32();
+        if t >= RAY_ROW_ENTRY_DURATION_SECS {
+            return 0.0;
+        }
+        let u = (t / RAY_ROW_ENTRY_DURATION_SECS).clamp(0.0, 1.0);
+        // Snappy cubic-out settle from +6.0px -> 0 with zero oscillation
+        6.0 * (1.0 - ease_out_cubic(u))
+    }
+
+    /// Raycast Tactile row entry opacity (`0 -> 1` over `120ms`).
+    pub fn row_entry_alpha(&self, item_id: u64, now: Instant) -> f32 {
+        if self.plop_item_id != Some(item_id) {
+            return 1.0;
+        }
+        let Some(started) = self.plop_started_at else {
+            return 1.0;
+        };
+        let t = now.saturating_duration_since(started).as_secs_f32();
+        if t >= RAY_ROW_ENTRY_DURATION_SECS {
+            return 1.0;
+        }
+        ease_out_cubic((t / RAY_ROW_ENTRY_DURATION_SECS).clamp(0.0, 1.0))
+    }
+
+    /// Raycast Mass Absorption card dip (`--ray-absorb`, `240ms`, `+3.5px` dip & smooth recover,
+    /// `0%` overshoot).
+    pub fn card_absorb_offset(&self, now: Instant) -> f32 {
+        let Some(started) = self.plop_started_at else {
+            return 0.0;
+        };
+        let t = now.saturating_duration_since(started).as_secs_f32();
+        if t <= 0.0 || t >= RAY_ABSORB_DURATION_SECS {
+            return 0.0;
+        }
+        let peak_t = 0.055_f32;
+        if t < peak_t {
+            let u = (t / peak_t).clamp(0.0, 1.0);
+            3.5 * ease_out_cubic(u)
+        } else {
+            let u = ((t - peak_t) / (RAY_ABSORB_DURATION_SECS - peak_t)).clamp(0.0, 1.0);
+            3.5 * (1.0 - ease_out_cubic(u))
+        }
+    }
 }
 
 #[derive(Debug, Clone, Default)]
@@ -752,6 +1136,35 @@ pub struct NotificationBanner {
     pub expires_at: Instant,
     pub grouped_count: u32,
     pub received_at: Instant,
+    /// Preserved remaining countdown duration while the notification is Auto-Stashed
+    /// inside the header Bell icon (expanded notch state).
+    pub paused_remaining: Option<std::time::Duration>,
+}
+
+impl NotificationBanner {
+    pub fn remaining_duration(&self, now: Instant) -> std::time::Duration {
+        if let Some(rem) = self.paused_remaining {
+            rem
+        } else {
+            self.expires_at.saturating_duration_since(now)
+        }
+    }
+
+    pub fn remaining_frac(&self, now: Instant) -> f32 {
+        (self.remaining_duration(now).as_secs_f32() / self.total_secs.max(1.0)).clamp(0.0, 1.0)
+    }
+
+    pub fn pause(&mut self, now: Instant) {
+        if self.paused_remaining.is_none() {
+            self.paused_remaining = Some(self.expires_at.saturating_duration_since(now));
+        }
+    }
+
+    pub fn resume(&mut self, now: Instant) {
+        if let Some(rem) = self.paused_remaining.take() {
+            self.expires_at = now + rem;
+        }
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -1031,8 +1444,19 @@ pub struct AppState {
     pub notif_history: VecDeque<NotifHistoryEntry>,
     pub show_notif_history: bool,
     pub purge_anim_until: Option<Instant>,
+    pub capture_anim_until: Option<Instant>,
+    pub anim_capsule_t: f32,
+    pub prev_capsule_title: String,
+    pub prev_capsule_sub: String,
+    pub cur_capsule_title: String,
+    pub cur_capsule_sub: String,
+    pub cur_capsule_sig: u64,
+    pub capsule_shrink_delay_until: Option<Instant>,
+    pub held_shrink_dims: Option<(f32, f32)>,
     pub shelf_items: Vec<ShelfItem>,
     pub shelf_scroll: usize,
+    pub shelf_undo: Option<ShelfUndoEntry>,
+    pub shelf_fx: LiquidPlopFx,
     pub tasks: Vec<TaskItem>,
     pub tasks_scroll: usize,
     pub anim_time: f32,
@@ -1201,7 +1625,7 @@ fn default_frosted_opacity() -> u32 {
     68
 }
 fn default_frosted_blur() -> u32 {
-    20
+    24
 }
 
 impl AppState {
@@ -1210,8 +1634,8 @@ impl AppState {
     pub const MINIMIZED_VERT_WIDTH: f32 = 18.0;
     pub const MINIMIZED_VERT_HEIGHT: f32 = 86.0;
 
-    pub const IDLE_WIDTH: f32 = 330.0;
-    pub const IDLE_HEIGHT: f32 = 42.0;
+    pub const IDLE_WIDTH: f32 = 228.0;
+    pub const IDLE_HEIGHT: f32 = 30.0;
     pub const VERT_IDLE_WIDTH: f32 = 52.0;
     pub const VERT_IDLE_HEIGHT: f32 = 204.0;
 
@@ -1326,20 +1750,165 @@ impl AppState {
 
     pub fn sync_collapsed_targets(&mut self) {
         if !self.is_hovered {
+            if let (Some(until), Some((hw, hh))) =
+                (self.capsule_shrink_delay_until, self.held_shrink_dims)
+                && Instant::now() < until
+            {
+                self.target_width = hw;
+                self.target_height = hh;
+                return;
+            }
             self.target_width = self.collapsed_width();
             self.target_height = self.collapsed_height();
         }
+    }
+
+    /// True when the collapsed capsule is in Pure Stealth Idle (2 Purple Wolf Eyes only).
+    pub fn is_stealth_idle(&self) -> bool {
+        !self.minimized_island
+            && self.notification.is_none()
+            && !self.media.is_playing
+            && self.idle_metric == IdleMetric::Minimal
+    }
+
+    /// Computes a deterministic signature of the active collapsed capsule state so transitions
+    /// between Stealth Idle, Music Playing (or track change), Metric modes, and Notifications
+    /// smoothly trigger staged roll-down/roll-in + spring morphs (while 1Hz telemetry ticks stay 0Hz-safe).
+    fn compute_capsule_sig_and_labels(&self) -> (u64, String, String) {
+        use std::hash::{Hash, Hasher};
+        let mut hasher = std::collections::hash_map::DefaultHasher::new();
+        if let Some(ref n) = self.notification {
+            100u8.hash(&mut hasher);
+            n.title.hash(&mut hasher);
+            n.subtitle.hash(&mut hasher);
+            (hasher.finish().max(1), n.title.clone(), n.subtitle.clone())
+        } else if self.media.is_playing {
+            200u8.hash(&mut hasher);
+            self.media.title.hash(&mut hasher);
+            self.media.artist.hash(&mut hasher);
+            (
+                hasher.finish().max(1),
+                self.media.title.clone(),
+                self.media.artist.clone(),
+            )
+        } else {
+            let metric_id = match self.idle_metric {
+                IdleMetric::Ram => 10u64,
+                IdleMetric::NetSpeed => 11u64,
+                IdleMetric::Cpu => 12u64,
+                IdleMetric::Clock => 13u64,
+                IdleMetric::Minimal => 14u64,
+            };
+            let (t, s) = match self.idle_metric {
+                IdleMetric::Minimal => (String::new(), String::new()),
+                IdleMetric::Ram => (
+                    format!("RAM {:.0}%", self.telemetry.memory_percent),
+                    format!(
+                        "{:.1} GB • CPU {:.0}%",
+                        self.telemetry.memory_used_gb, self.telemetry.cpu_usage
+                    ),
+                ),
+                IdleMetric::NetSpeed => (
+                    "Network".to_string(),
+                    format!(
+                        "↓ {:.0} KB/s   ↑ {:.0} KB/s",
+                        self.telemetry.net_down_kbps, self.telemetry.net_up_kbps
+                    ),
+                ),
+                IdleMetric::Cpu => (
+                    format!("CPU {:.0}%", self.telemetry.cpu_usage),
+                    format!(
+                        "RAM {:.0}% ({:.1}G)",
+                        self.telemetry.memory_percent, self.telemetry.memory_used_gb
+                    ),
+                ),
+                IdleMetric::Clock => (
+                    "Clock".to_string(),
+                    format!(
+                        "RAM {:.0}% • CPU {:.0}%",
+                        self.telemetry.memory_percent, self.telemetry.cpu_usage
+                    ),
+                ),
+            };
+            (metric_id, t, s)
+        }
+    }
+
+    /// Synchronizes collapsed dimensions and triggers staged state transitions:
+    /// - Music -> Stealth Idle: text rolls down -> Wolf Eyes appear -> THEN capsule gently shrinks.
+    /// - Song A -> Song B: Song A rolls down -> Song B rolls in from top.
+    /// - Idle -> Music: Wolf Eyes blink out & capsule expands -> Song title rolls in from top.
+    pub fn sync_capsule_state_transition(&mut self) {
+        let (sig, next_title, next_sub) = self.compute_capsule_sig_and_labels();
+        if self.cur_capsule_sig != 0 && self.cur_capsule_sig != sig {
+            self.prev_capsule_title = self.cur_capsule_title.clone();
+            self.prev_capsule_sub = self.cur_capsule_sub.clone();
+            let prev_tgt_w = self.target_width;
+            let prev_tgt_h = self.target_height;
+            let entering_stealth = next_title.is_empty() && !self.prev_capsule_title.is_empty();
+            if self.are_animations_active() && !self.is_hovered {
+                self.anim_capsule_t = 0.0;
+                if entering_stealth
+                    && (!self.placement.is_vertical() || prev_tgt_h >= prev_tgt_w)
+                {
+                    // Claude Fast: hold Music/Active capsule size for 220ms so text rolls down &
+                    // Wolf Eyes appear cleanly before the shell shrinks smoothly to Stealth pill size.
+                    self.held_shrink_dims = Some((prev_tgt_w, prev_tgt_h));
+                    self.capsule_shrink_delay_until =
+                        Some(Instant::now() + std::time::Duration::from_millis(220));
+                } else {
+                    self.held_shrink_dims = None;
+                    self.capsule_shrink_delay_until = None;
+                }
+                self.sync_collapsed_targets();
+                if (self.target_width - prev_tgt_w).abs() < 4.0
+                    && (self.target_height - prev_tgt_h).abs() < 4.0
+                {
+                    if self.placement.is_vertical() {
+                        self.anim_height_vel += 14.0;
+                        self.anim_width_vel += 3.0;
+                    } else {
+                        self.anim_width_vel += 16.0;
+                        self.anim_height_vel += 3.0;
+                    }
+                }
+            } else {
+                self.held_shrink_dims = None;
+                self.capsule_shrink_delay_until = None;
+                self.sync_collapsed_targets();
+                self.anim_capsule_t = 1.0;
+                if !self.is_hovered {
+                    self.current_width = self.target_width;
+                    self.current_height = self.target_height;
+                }
+            }
+        } else {
+            self.sync_collapsed_targets();
+        }
+        self.cur_capsule_sig = sig;
+        self.cur_capsule_title = next_title;
+        self.cur_capsule_sub = next_sub;
     }
 
     pub fn idle_width(&self) -> f32 {
         if self.placement.is_vertical() {
             if self.minimized_island {
                 self.size_preset.minimized_thickness()
+            } else if self.is_stealth_idle() {
+                (self.size_preset.stealth_width_vertical() * self.type_scale.idle_ui_scale())
+                    .round()
+            } else if self.media.is_playing {
+                (self.size_preset.idle_height_horizontal() * self.type_scale.idle_ui_scale())
+                    .round()
             } else {
                 (self.size_preset.idle_width_vertical() * self.type_scale.idle_ui_scale()).round()
             }
         } else if self.minimized_island {
             self.size_preset.minimized_length()
+        } else if self.is_stealth_idle() {
+            (self.size_preset.stealth_width() * self.type_scale.idle_ui_scale()).round()
+        } else if self.media.is_playing {
+            (self.size_preset.music_max_width() * self.type_scale.idle_ui_scale()).round()
         } else {
             (self.size_preset.idle_width() * self.type_scale.idle_ui_scale()).round()
         }
@@ -1349,11 +1918,18 @@ impl AppState {
         if self.placement.is_vertical() {
             if self.minimized_island {
                 self.size_preset.minimized_length()
+            } else if self.is_stealth_idle() {
+                (self.size_preset.stealth_height_vertical() * self.type_scale.idle_ui_scale())
+                    .round()
+            } else if self.media.is_playing {
+                (self.size_preset.music_max_width() * self.type_scale.idle_ui_scale()).round()
             } else {
                 (self.size_preset.idle_height_vertical() * self.type_scale.idle_ui_scale()).round()
             }
         } else if self.minimized_island {
             self.size_preset.minimized_thickness()
+        } else if self.is_stealth_idle() {
+            (self.size_preset.stealth_height_horizontal() * self.type_scale.idle_ui_scale()).round()
         } else {
             (self.size_preset.idle_height_horizontal() * self.type_scale.idle_ui_scale()).round()
         }
@@ -1373,7 +1949,7 @@ impl AppState {
             self.anim_expand_t.clamp(0.0, 1.0)
         };
         let idle_cap_r = if self.notification.is_some() {
-            21.0 * self.banner_scale()
+            36.0 * self.banner_scale()
         } else if self.minimized_island {
             21.0
         } else {
@@ -1381,16 +1957,11 @@ impl AppState {
         };
         let idle_r = (w.min(h) * 0.5).min(idle_cap_r);
         let exp_r = match self.expanded_size {
-            ExpandedSizePreset::Compact => 23.5,
-            ExpandedSizePreset::Standard => 26.0,
+            ExpandedSizePreset::Compact => 24.0,
+            ExpandedSizePreset::Standard => 28.0,
             ExpandedSizePreset::Large => 28.5,
         } * self.type_scale.ui_scale();
-        let r = idle_r + (exp_r - idle_r) * t;
-        if self.is_frosted_active() {
-            r.min(10.0)
-        } else {
-            r
-        }
+        idle_r + (exp_r - idle_r) * t
     }
 
     pub fn default_anchor_for_placement(_placement: NotchPlacement) -> (f32, f32) {
@@ -1747,6 +2318,7 @@ impl AppState {
             }
             Action::SetIdleMetric(metric) => {
                 self.idle_metric = metric;
+                self.sync_capsule_state_transition();
                 self.save_config();
             }
             Action::ToggleMinimizedIsland => {
@@ -1886,6 +2458,8 @@ impl AppState {
             Action::SendTestNotification => {
                 let now = Instant::now();
                 let secs = self.notification_secs.clamp(2, 10).max(4);
+                let dur = std::time::Duration::from_secs(secs as u64);
+                let was_active = self.notification.is_some() && !self.is_hovered;
                 self.notification = Some(NotificationBanner {
                     app_name: "Discord".to_string(),
                     aumid: None,
@@ -1896,10 +2470,18 @@ impl AppState {
                     kind: NotificationKind::SystemToast,
                     is_success: true,
                     total_secs: secs as f32,
-                    expires_at: now + std::time::Duration::from_secs(secs as u64),
+                    expires_at: now + dur,
                     grouped_count: 1,
                     received_at: now,
+                    paused_remaining: if self.is_hovered { Some(dur) } else { None },
                 });
+                if was_active {
+                    self.anim_width_vel += 140.0;
+                    self.anim_height_vel += 26.0;
+                    self.anim_notif_t = self.anim_notif_t.min(0.65);
+                } else {
+                    self.anim_notif_t = 0.0;
+                }
                 self.record_notif_history(
                     "Discord".to_string(),
                     None,
@@ -1924,10 +2506,29 @@ impl AppState {
                 eff.redraw_notch = true;
             }
             Action::ToggleNotifHistory => {
-                self.show_notif_history = !self.show_notif_history;
-                self.hover_target_idx = None;
-                self.hover_slots = [0.0; 48];
-                eff.redraw_notch = true;
+                if self.is_notification_stashed() && !self.show_notif_history {
+                    // Clicking Bell while a notification is Auto-Stashed peeks/restores it
+                    // back into the Dynamic Island capsule and resumes its countdown timer
+                    // with a readable minimum floor so a nearly-expired toast doesn't vanish mid-morph.
+                    if let Some(ref mut notif) = self.notification {
+                        let min_peek = std::time::Duration::from_secs(2)
+                            .min(std::time::Duration::from_secs_f32(notif.total_secs.max(1.0)));
+                        if let Some(rem) = notif.paused_remaining
+                            && rem < min_peek
+                        {
+                            notif.paused_remaining = Some(min_peek);
+                        }
+                    }
+                    self.is_pinned = false;
+                    self.set_hovered(false);
+                    self.anim_notif_t = 1.0;
+                    eff.redraw_notch = true;
+                } else {
+                    self.show_notif_history = !self.show_notif_history;
+                    self.hover_target_idx = None;
+                    self.hover_slots = [0.0; 48];
+                    eff.redraw_notch = true;
+                }
             }
             Action::DismissHistoryItem(idx) => {
                 if idx < self.notif_history.len() {
@@ -2072,9 +2673,6 @@ impl AppState {
     }
     fn tasks_path() -> std::path::PathBuf {
         Self::appdata_dir().join("tasks.json")
-    }
-    fn shelf_path() -> std::path::PathBuf {
-        Self::appdata_dir().join("shelf.json")
     }
 
     pub fn to_config_json(&self) -> String {
@@ -2381,19 +2979,7 @@ impl AppState {
     }
 
     pub fn save_shelf(&self) {
-        if !self.persistence_enabled {
-            return;
-        }
-        let _ = crate::persistence::atomic_write_json(&Self::shelf_path(), &self.shelf_items, true);
-    }
-
-    fn load_initial_shelf() -> Vec<ShelfItem> {
-        crate::persistence::load_json_with_recovery::<Vec<ShelfItem>, _>(
-            &Self::shelf_path(),
-            |_| true,
-        )
-        .into_option()
-        .unwrap_or_default()
+        // v0.3.1: Shelf is intentionally ephemeral (auto-clears on app restart).
     }
 
     pub fn new() -> Self {
@@ -2673,8 +3259,19 @@ impl AppState {
             notif_history: VecDeque::new(),
             show_notif_history: false,
             purge_anim_until: None,
-            shelf_items: Self::load_initial_shelf(),
+            capture_anim_until: None,
+            anim_capsule_t: 1.0,
+            prev_capsule_title: String::new(),
+            prev_capsule_sub: String::new(),
+            cur_capsule_title: String::new(),
+            cur_capsule_sub: String::new(),
+            cur_capsule_sig: 0,
+            capsule_shrink_delay_until: None,
+            held_shrink_dims: None,
+            shelf_items: Vec::new(),
             shelf_scroll: 0,
+            shelf_undo: None,
+            shelf_fx: LiquidPlopFx::default(),
             tasks: Self::load_initial_tasks(),
             tasks_scroll: 0,
             anim_time: 0.0,
@@ -2688,6 +3285,11 @@ impl AppState {
         st.anim_dock_x = dx;
         st.anim_dock_w = dw;
         st.sync_switches_immediate();
+        st.sync_capsule_state_transition();
+        if !st.is_hovered {
+            st.current_width = st.target_width;
+            st.current_height = st.target_height;
+        }
         if needs_migration_save {
             st.save_config();
         }
@@ -2736,7 +3338,7 @@ impl AppState {
             lyric_style: LyricStyle::ClassicList,
             frosted_glass_enabled: true,
             frosted_opacity_pct: 68,
-            frosted_blur_px: 20,
+            frosted_blur_px: 24,
             windows_transparency_enabled: false,
             windows_animations_enabled: true,
             remove_windows_borders: false,
@@ -2799,24 +3401,38 @@ impl AppState {
             notif_history: VecDeque::new(),
             show_notif_history: false,
             purge_anim_until: None,
+            capture_anim_until: None,
+            anim_capsule_t: 1.0,
+            prev_capsule_title: String::new(),
+            prev_capsule_sub: String::new(),
+            cur_capsule_title: String::new(),
+            cur_capsule_sub: String::new(),
+            cur_capsule_sig: 0,
+            capsule_shrink_delay_until: None,
+            held_shrink_dims: None,
             shelf_items: vec![
                 ShelfItem {
-                    kind: ShelfKind::Text,
+                    id: next_shelf_item_id(),
+                    kind: ShelfKind::Url,
                     label: "https://iamlayzee.com/".to_string(),
                     payload: "https://iamlayzee.com/".to_string(),
                 },
                 ShelfItem {
+                    id: next_shelf_item_id(),
                     kind: ShelfKind::Text,
                     label: "cargo build --release".to_string(),
                     payload: "cargo build --release".to_string(),
                 },
                 ShelfItem {
+                    id: next_shelf_item_id(),
                     kind: ShelfKind::File,
                     label: "CyNotch_Design_Spec.pdf".to_string(),
                     payload: "Documents\\CyNotch_Design_Spec.pdf".to_string(),
                 },
             ],
             shelf_scroll: 0,
+            shelf_undo: None,
+            shelf_fx: LiquidPlopFx::default(),
             tasks: vec![
                 TaskItem {
                     text: "Update CSM tns kalo sempet".to_string(),
@@ -2852,7 +3468,7 @@ impl AppState {
             && self.notification_sound != crate::sound::NotificationSound::Mute
     }
 
-    pub const HOVER_DWELL_MS: u64 = 400;
+    pub const HOVER_DWELL_MS: u64 = 650;
 
     pub fn hover_dwell_ms(&self) -> u64 {
         self.hover_dwell_speed.ms()
@@ -2912,6 +3528,12 @@ impl AppState {
         false
     }
 
+    /// True when an active notification is Auto-Stashed inside the header Bell icon
+    /// because the notch is currently expanded (zero overlap with workspace).
+    pub fn is_notification_stashed(&self) -> bool {
+        self.is_hovered && self.notification.is_some()
+    }
+
     pub fn set_hovered(&mut self, hovered: bool) {
         if hovered {
             self.cancel_hover_dwell();
@@ -2919,11 +3541,19 @@ impl AppState {
         if self.is_hovered == hovered {
             return;
         }
+        let now = Instant::now();
         self.is_hovered = hovered;
         if hovered {
+            if let Some(ref mut notif) = self.notification {
+                notif.pause(now);
+            }
             self.target_width = self.expanded_width();
             self.target_height = self.expanded_height();
         } else {
+            if let Some(ref mut notif) = self.notification {
+                notif.resume(now);
+                self.anim_notif_t = 1.0;
+            }
             self.target_width = self.collapsed_width();
             self.target_height = self.collapsed_height();
         }
@@ -3109,7 +3739,9 @@ impl AppState {
             NotificationKind::General => "CyNotch".to_string(),
         };
         let secs = self.notification_secs.clamp(2, 10);
+        let dur = std::time::Duration::from_secs(secs as u64);
         let now = Instant::now();
+        let was_active = self.notification.is_some() && !self.is_hovered;
         self.notification = Some(NotificationBanner {
             app_name,
             aumid: None,
@@ -3118,11 +3750,18 @@ impl AppState {
             kind,
             is_success,
             total_secs: secs as f32,
-            expires_at: now + std::time::Duration::from_secs(secs as u64),
+            expires_at: now + dur,
             grouped_count: 1,
             received_at: now,
+            paused_remaining: if self.is_hovered { Some(dur) } else { None },
         });
-        self.anim_notif_t = 0.0;
+        if was_active {
+            self.anim_width_vel += 140.0;
+            self.anim_height_vel += 26.0;
+            self.anim_notif_t = self.anim_notif_t.min(0.65);
+        } else {
+            self.anim_notif_t = 0.0;
+        }
         self.sync_collapsed_targets();
     }
 
@@ -3142,6 +3781,8 @@ impl AppState {
         }
         let now = Instant::now();
         let secs = self.notification_secs.clamp(2, 10).max(4);
+        let dur = std::time::Duration::from_secs(secs as u64);
+        let was_active = self.notification.is_some() && !self.is_hovered;
         self.notification = Some(NotificationBanner {
             app_name,
             aumid,
@@ -3150,11 +3791,18 @@ impl AppState {
             kind: NotificationKind::SystemToast,
             is_success: true,
             total_secs: secs as f32,
-            expires_at: now + std::time::Duration::from_secs(secs as u64),
+            expires_at: now + dur,
             grouped_count: 1,
             received_at: now,
+            paused_remaining: if self.is_hovered { Some(dur) } else { None },
         });
-        self.anim_notif_t = 0.0;
+        if was_active {
+            self.anim_width_vel += 140.0;
+            self.anim_height_vel += 26.0;
+            self.anim_notif_t = self.anim_notif_t.min(0.65);
+        } else {
+            self.anim_notif_t = 0.0;
+        }
         self.sync_collapsed_targets();
     }
 
@@ -3192,6 +3840,35 @@ impl AppState {
         }
     }
 
+    /// Returns true if an incoming Windows system toast comes from Windows Snipping Tool / Screen Sketch
+    /// or external screenshot utilities (so we trigger Skenario 2 Gold Pulse instead of an intrusive banner).
+    pub fn is_screenshot_or_snip_toast(
+        app_name: &str,
+        aumid: Option<&str>,
+        title: &str,
+        subtitle: &str,
+    ) -> bool {
+        let app_low = app_name.to_ascii_lowercase();
+        let aumid_low = aumid.unwrap_or("").to_ascii_lowercase();
+        let title_low = title.to_ascii_lowercase();
+        let sub_low = subtitle.to_ascii_lowercase();
+
+        app_low.contains("snipping")
+            || app_low.contains("screen snip")
+            || app_low.contains("screensketch")
+            || app_low.contains("cuplikan layar")
+            || app_low.contains("lightshot")
+            || app_low.contains("sharex")
+            || app_low.contains("greenshot")
+            || aumid_low.contains("screensketch")
+            || aumid_low.contains("snippingtool")
+            || title_low.contains("screenshot copied")
+            || title_low.contains("snip copied")
+            || title_low.contains("snip saved")
+            || sub_low.contains("screenshot copied to clipboard")
+            || sub_low.contains("snip copied to clipboard")
+    }
+
     /// Enqueues a system toast with per-app coalescing and history recording.
     pub fn push_system_toast(
         &mut self,
@@ -3206,12 +3883,20 @@ impl AppState {
             title.clone(),
             subtitle.clone(),
         );
+        // Snipping Tool & screenshot toasts use Skenario 2 Gold Pulse instead of a 4s popup banner.
+        if Self::is_screenshot_or_snip_toast(&app_name, aumid.as_deref(), &title, &subtitle) {
+            self.capture_anim_until =
+                Some(Instant::now() + std::time::Duration::from_millis(650));
+            self.trigger_clipboard_pulse();
+            return;
+        }
         if !self.notifications_enabled {
             return;
         }
         let now = Instant::now();
         let secs = self.notification_secs.clamp(2, 10).max(4);
-        let expires_at = now + std::time::Duration::from_secs(secs as u64);
+        let dur = std::time::Duration::from_secs(secs as u64);
+        let expires_at = now + dur;
 
         // Coalesce with the currently displayed banner if it came from the same source app.
         if let Some(ref mut active) = self.notification
@@ -3229,11 +3914,19 @@ impl AppState {
             active.total_secs = secs as f32;
             active.expires_at = expires_at;
             active.received_at = now;
-            self.anim_notif_t = self.anim_notif_t.min(0.86);
+            if self.is_hovered {
+                active.paused_remaining = Some(dur);
+            } else {
+                active.paused_remaining = None;
+                // Dynamic Island coalesced replacement micro-pulse velocity kick
+                self.anim_width_vel += 140.0;
+                self.anim_height_vel += 26.0;
+                self.anim_notif_t = self.anim_notif_t.min(0.65);
+            }
             return;
         }
 
-        // If no banner is currently visible, show immediately with full slide-in.
+        // If no banner is currently visible, show immediately (or auto-stash if notch is open).
         if self.notification.is_none() {
             self.notification = Some(NotificationBanner {
                 app_name,
@@ -3246,9 +3939,10 @@ impl AppState {
                 expires_at,
                 grouped_count: 1,
                 received_at: now,
+                paused_remaining: if self.is_hovered { Some(dur) } else { None },
             });
             self.anim_notif_t = 0.0;
-            self.sync_collapsed_targets();
+            self.sync_capsule_state_transition();
             return;
         }
 
@@ -3279,6 +3973,7 @@ impl AppState {
             expires_at,
             grouped_count: 1,
             received_at: now,
+            paused_remaining: None,
         });
     }
 
@@ -3287,89 +3982,178 @@ impl AppState {
     pub fn advance_notification_queue(&mut self) -> bool {
         if let Some(mut next) = self.notif_queue.pop_front() {
             let secs = self.notification_secs.clamp(2, 10).max(4);
+            let dur = std::time::Duration::from_secs(secs as u64);
             let now = Instant::now();
             next.total_secs = secs as f32;
-            next.expires_at = now + std::time::Duration::from_secs(secs as u64);
-            let was_open = self.notification.is_some();
+            next.expires_at = now + dur;
+            next.paused_remaining = if self.is_hovered { Some(dur) } else { None };
+            let was_open = self.notification.is_some() && !self.is_hovered;
             self.notification = Some(next);
-            self.anim_notif_t = if was_open { 0.78 } else { 0.0 };
-            self.sync_collapsed_targets();
+            if was_open {
+                self.anim_width_vel += 140.0;
+                self.anim_height_vel += 26.0;
+                self.anim_notif_t = 0.65;
+            } else {
+                self.anim_notif_t = 0.0;
+            }
+            self.sync_capsule_state_transition();
             true
         } else {
             self.notification = None;
-            self.sync_collapsed_targets();
+            self.sync_capsule_state_transition();
             false
         }
+    }
+
+    pub fn is_likely_url(text: &str) -> bool {
+        let t = text.trim();
+        !t.contains(char::is_whitespace)
+            && (t.starts_with("http://") || t.starts_with("https://"))
+            && t.len() > 10
+    }
+
+    /// Inserts an item at the top of the ephemeral Shelf (deduped by kind+payload, capped at 24).
+    /// Returns the item's stable `u64` ID.
+    pub fn push_shelf_item(&mut self, kind: ShelfKind, label: String, payload: String) -> u64 {
+        if let Some(pos) = self
+            .shelf_items
+            .iter()
+            .position(|s| s.kind == kind && s.payload == payload)
+        {
+            let existing = self.shelf_items.remove(pos);
+            let id = existing.id;
+            self.shelf_items.insert(0, existing);
+            self.shelf_scroll = 0;
+            return id;
+        }
+        let id = next_shelf_item_id();
+        self.shelf_items.insert(
+            0,
+            ShelfItem {
+                id,
+                kind,
+                label,
+                payload,
+            },
+        );
+        if self.shelf_items.len() > 24 {
+            self.shelf_items.pop();
+        }
+        self.shelf_scroll = 0;
+        id
+    }
+
+    pub fn remove_shelf_item_by_id(&mut self, id: u64, record_undo: bool) -> Option<ShelfItem> {
+        let pos = self.shelf_items.iter().position(|s| s.id == id)?;
+        let item = self.shelf_items.remove(pos);
+        let vis = if self.placement.is_vertical() { 6 } else { 3 };
+        let max_s = self.shelf_items.len().saturating_sub(vis);
+        self.shelf_scroll = self.shelf_scroll.min(max_s);
+        if record_undo {
+            self.shelf_undo = Some(ShelfUndoEntry {
+                item: item.clone(),
+                removed_at: Instant::now(),
+            });
+        }
+        Some(item)
+    }
+
+    pub fn undo_shelf_remove(&mut self) -> bool {
+        let Some(entry) = self.shelf_undo.take() else {
+            return false;
+        };
+        if entry.removed_at.elapsed().as_secs_f32() > SHELF_UNDO_TTL_SECS {
+            return false;
+        }
+        let item = entry.item;
+        if !self.shelf_items.iter().any(|s| s.id == item.id) {
+            self.shelf_items.insert(0, item);
+            if self.shelf_items.len() > 24 {
+                self.shelf_items.pop();
+            }
+            self.shelf_scroll = 0;
+        }
+        true
+    }
+
+    pub fn has_active_shelf_undo(&self) -> bool {
+        self.shelf_undo
+            .as_ref()
+            .is_some_and(|u| u.removed_at.elapsed().as_secs_f32() <= SHELF_UNDO_TTL_SECS)
+    }
+
+    pub fn expire_shelf_undo(&mut self) -> bool {
+        if let Some(ref u) = self.shelf_undo
+            && u.removed_at.elapsed().as_secs_f32() > SHELF_UNDO_TTL_SECS
+        {
+            self.shelf_undo = None;
+            return true;
+        }
+        false
+    }
+
+    /// Triggers Opsi A Specular Gold Rim Pulse + Micro-Absorption (zero intrusive popup banner).
+    pub fn trigger_clipboard_pulse(&mut self) {
+        if !self.are_animations_active() {
+            return;
+        }
+        self.shelf_fx.trigger_clipboard_pulse(Instant::now());
     }
 
     pub fn push_clipboard(&mut self, text: String, app_name: &str) {
         let words = text.split_whitespace().count();
         self.quick_note = format!("{} words · {}", words, app_name);
         let single_line = text.lines().next().unwrap_or(&text).trim().to_string();
-        if !self
-            .shelf_items
-            .iter()
-            .any(|s| s.kind == ShelfKind::Text && s.payload == text)
-        {
-            self.shelf_items.insert(
-                0,
-                ShelfItem {
-                    kind: ShelfKind::Text,
-                    label: single_line,
-                    payload: text,
-                },
-            );
-            if self.shelf_items.len() > 24 {
-                self.shelf_items.pop();
-            }
-            self.shelf_scroll = 0;
-            self.save_shelf();
-        }
-        self.set_notification(
-            "Pasted".to_string(),
-            self.quick_note.clone(),
-            NotificationKind::Pasted,
-            true,
-        );
+        let kind = if Self::is_likely_url(&text) {
+            ShelfKind::Url
+        } else {
+            ShelfKind::Text
+        };
+        let id = self.push_shelf_item(kind, single_line, text);
+        self.shelf_fx.trigger_plop(160.0, 72.0, id);
+        self.trigger_clipboard_pulse();
     }
 
-    pub fn push_dropped_file(&mut self, full_path: String) {
+    /// Parks a copied image or Snipping Tool bitmap on the Bento Shelf and fires Skenario 2 Gold Pulse.
+    pub fn push_clipboard_image(&mut self, filename: String, full_path: String) {
+        self.quick_note = format!("Image · {}", filename);
+        let id = self.push_shelf_item(ShelfKind::Image, filename, full_path);
+        self.shelf_fx.trigger_plop(160.0, 72.0, id);
+        self.capture_anim_until =
+            Some(Instant::now() + std::time::Duration::from_millis(650));
+        self.trigger_clipboard_pulse();
+    }
+
+    /// Parks a built-in screenshot capture on the Bento Shelf and fires Skenario 2 Gold Pulse (no popup banner).
+    pub fn record_capture_pulse(&mut self, filename: String, full_path: String) {
+        let id = self.push_shelf_item(ShelfKind::Image, filename, full_path);
+        self.shelf_fx.trigger_plop(160.0, 72.0, id);
+        self.capture_anim_until =
+            Some(Instant::now() + std::time::Duration::from_millis(650));
+        self.trigger_clipboard_pulse();
+    }
+
+    pub fn push_dropped_file(&mut self, full_path: String) -> u64 {
         let label = std::path::Path::new(&full_path)
             .file_name()
             .and_then(|s| s.to_str())
             .unwrap_or(&full_path)
             .to_string();
-        if !self
-            .shelf_items
-            .iter()
-            .any(|s| s.kind == ShelfKind::File && s.payload == full_path)
-        {
-            self.shelf_items.insert(
-                0,
-                ShelfItem {
-                    kind: ShelfKind::File,
-                    label: label.clone(),
-                    payload: full_path,
-                },
-            );
-            if self.shelf_items.len() > 24 {
-                self.shelf_items.pop();
-            }
-            self.shelf_scroll = 0;
-            self.save_shelf();
-        }
+        let id = self.push_shelf_item(ShelfKind::File, label.clone(), full_path);
         self.set_notification(
             "Parked on Shelf".to_string(),
             label,
             NotificationKind::Pasted,
             true,
         );
+        id
     }
 
     pub fn expire_notification(&mut self) -> bool {
         let now = Instant::now();
         let mut changed = false;
         if let Some(ref notif) = self.notification
+            && notif.paused_remaining.is_none()
             && now >= notif.expires_at
         {
             self.advance_notification_queue();
@@ -3381,6 +4165,12 @@ impl AppState {
             self.purge_anim_until = None;
             changed = true;
         }
+        if let Some(until) = self.capture_anim_until
+            && now >= until
+        {
+            self.capture_anim_until = None;
+            changed = true;
+        }
         changed
     }
 
@@ -3390,7 +4180,9 @@ impl AppState {
             || matches!(self.purge_anim_until, Some(until) if Instant::now() < until)
         {
             MascotMood::Purging
-        } else if matches!(&self.notification, Some(n) if n.kind == NotificationKind::Capture) {
+        } else if matches!(&self.notification, Some(n) if n.kind == NotificationKind::Capture)
+            || matches!(self.capture_anim_until, Some(until) if Instant::now() < until)
+        {
             MascotMood::Capture
         } else if self.media.is_playing {
             MascotMood::Music
@@ -3416,12 +4208,14 @@ impl AppState {
 
     pub fn is_size_moving(&self) -> bool {
         let expand_target = if self.is_hovered { 1.0 } else { 0.0 };
-        (self.target_width - self.current_width).abs() >= 0.5
-            || (self.target_height - self.current_height).abs() >= 0.5
+        (self.target_width - self.current_width).abs() >= 0.04
+            || (self.target_height - self.current_height).abs() >= 0.04
             || (self.are_animations_active()
-                && (self.anim_width_vel.abs() >= 4.0 || self.anim_height_vel.abs() >= 4.0))
-            || (expand_target - self.anim_expand_t).abs() >= 0.01
+                && (self.anim_width_vel.abs() >= 0.4 || self.anim_height_vel.abs() >= 0.4))
+            || (expand_target - self.anim_expand_t).abs() >= 0.005
             || (self.are_animations_active() && self.anim_mode_t < 0.992)
+            || (self.are_animations_active() && self.anim_capsule_t < 0.992)
+            || (self.are_animations_active() && self.capsule_shrink_delay_until.is_some())
             || (self.notification.is_some()
                 && !self.is_hovered
                 && (1.0 - self.anim_notif_t).abs() >= 0.01)
@@ -3434,10 +4228,10 @@ impl AppState {
             return false;
         }
         let (dx, dw) = self.active_dock_target();
-        if (dx - self.anim_dock_x).abs() >= 0.35
-            || (dw - self.anim_dock_w).abs() >= 0.35
-            || self.anim_dock_x_vel.abs() >= 3.0
-            || self.anim_dock_w_vel.abs() >= 3.0
+        if (dx - self.anim_dock_x).abs() >= 0.25
+            || (dw - self.anim_dock_w).abs() >= 0.25
+            || self.anim_dock_x_vel.abs() >= 2.0
+            || self.anim_dock_w_vel.abs() >= 2.0
         {
             return true;
         }
@@ -3497,8 +4291,13 @@ impl AppState {
     }
 
     pub fn needs_settings_timer_ms(&self) -> Option<u32> {
-        if self.settings_open && self.is_settings_animating() {
+        if !self.settings_open {
+            return None;
+        }
+        if self.is_settings_animating() {
             Some(self.desired_active_interval_ms())
+        } else if self.show_mascot && self.are_animations_active() {
+            Some(33)
         } else {
             None
         }
@@ -3517,18 +4316,27 @@ impl AppState {
 
     /// Returns desired high-frequency timer interval (ms) or None when static.
     pub fn needs_animation_timer_ms(&self) -> Option<u32> {
+        let notif_ring_ticking = self.notification.is_some() && !self.is_hovered;
         if !self.are_animations_active() {
             // Even with Windows Animation Effects disabled, keep a lightweight timer
-            // while hover dwell is counting down or RAM purge is running.
+            // while hover dwell is counting down, RAM purge is running, or a visible
+            // notification countdown ring is ticking (stashed/paused notifications stay 0 Hz).
             if (self.is_hover_pending && !self.is_hovered) || self.mem_reduct.is_purging {
                 return Some(25);
+            }
+            if notif_ring_ticking {
+                return Some(33);
             }
             return None;
         }
         let act = self.desired_active_interval_ms();
-        if self.is_size_moving() || self.is_micro_animating() || self.mem_reduct.is_purging {
+        if self.is_size_moving()
+            || self.is_micro_animating()
+            || self.mem_reduct.is_purging
+            || self.shelf_fx.is_active(Instant::now())
+        {
             Some(act)
-        } else if (self.is_hover_pending && !self.is_hovered) || self.anim_edge_glow_t > 0.003 {
+        } else if self.anim_edge_glow_t > 0.003 {
             Some(16)
         } else {
             let mascot_vis = self.is_mascot_visible();
@@ -3539,7 +4347,7 @@ impl AppState {
                 Some(25)
             } else if self.is_equalizer_visible() || (mascot_vis && mood == MascotMood::Music) {
                 Some(25)
-            } else if mascot_vis {
+            } else if notif_ring_ticking || mascot_vis {
                 Some(33)
             } else {
                 None
@@ -3552,24 +4360,32 @@ impl AppState {
         if anim_on {
             self.anim_time += dt;
         }
-        let expired = self.expire_notification();
+        let now_inst = std::time::Instant::now();
+        let mut shrink_released = false;
+        if let Some(until) = self.capsule_shrink_delay_until
+            && now_inst >= until
+        {
+            self.capsule_shrink_delay_until = None;
+            self.held_shrink_dims = None;
+            shrink_released = true;
+        }
+        let expired = self.expire_notification() | self.expire_shelf_undo();
+        self.sync_capsule_state_transition();
+        let plop_moved = self.shelf_fx.step(dt, anim_on, now_inst);
 
-        let mut moved = self.update_hover_dwell(std::time::Instant::now());
+        let mut moved = self.update_hover_dwell(now_inst) || plop_moved || shrink_released;
         let expand_tgt = if self.is_hovered { 1.0 } else { 0.0 };
         let (dx_tgt, dw_tgt) = self.active_dock_target();
 
         if !anim_on {
             // Exclusive Windows Animation Effects gate: snap every motion cleanly with zero animation.
-            let target_glow = if self.is_hover_pending && !self.is_hovered {
-                1.0
-            } else {
-                0.0
-            };
+            let target_glow = 0.0;
             let snapped = (self.anim_edge_glow_t - target_glow).abs() > 0.001
                 || (self.current_width - self.target_width).abs() > 0.5
                 || (self.current_height - self.target_height).abs() > 0.5
                 || (self.anim_expand_t - expand_tgt).abs() > 0.005
                 || (self.anim_mode_t - 1.0).abs() > 0.005
+                || (self.anim_capsule_t - 1.0).abs() > 0.005
                 || (self.anim_anchor_x - self.target_anchor_x).abs() > 0.005
                 || (self.anim_anchor_y - self.target_anchor_y).abs() > 0.005
                 || (self.anim_dock_x - dx_tgt).abs() > 0.35
@@ -3582,6 +4398,7 @@ impl AppState {
             self.anim_expand_t = expand_tgt;
             self.anim_expand_vel = 0.0;
             self.anim_mode_t = 1.0;
+            self.anim_capsule_t = 1.0;
             self.anim_notif_t = if self.notification.is_some() { 1.0 } else { 0.0 };
             self.anim_anchor_x = self.target_anchor_x;
             self.anim_anchor_y = self.target_anchor_y;
@@ -3594,114 +4411,113 @@ impl AppState {
             for (i, slot) in self.hover_slots.iter_mut().enumerate() {
                 *slot = if self.hover_target_idx == Some(i) { 1.0 } else { 0.0 };
             }
-            return moved || snapped || expired || self.mem_reduct.is_purging;
+            let notif_ticking = self.notification.is_some() && !self.is_hovered;
+            return moved || snapped || expired || self.mem_reduct.is_purging || notif_ticking;
         }
 
         let k_fast = 26.0;
 
-        if self.is_hover_pending && !self.is_hovered {
-            let t = self.hover_dwell_t.clamp(0.0, 1.0);
-            // Smootherstep: t^3 * (t * (t * 6 - 15) + 10) for portal opening effect
-            let smooth_t = t * t * t * (t * (t * 6.0 - 15.0) + 10.0);
-            let (ng, mg) = ease_exp(self.anim_edge_glow_t, smooth_t, 10.5, dt, 0.002);
-            self.anim_edge_glow_t = ng;
-            moved |= mg;
-        } else if self.anim_edge_glow_t > 0.0 {
-            // Slow, silky, atmospheric fade-out (~1.2s luxurious dissipation)
-            let (ng, mg) = ease_exp(self.anim_edge_glow_t, 0.0, 1.6, dt, 0.002);
+        // Hover edge-glow disabled: capsule stays calm until hover dwell opens it.
+        if self.anim_edge_glow_t > 0.0 {
+            let (ng, mg) = ease_exp(self.anim_edge_glow_t, 0.0, 6.0, dt, 0.002);
             self.anim_edge_glow_t = if ng <= 0.002 { 0.0 } else { ng };
             moved |= mg;
         }
 
-        let banner_sliding = self.notification.is_some() && !self.is_hovered;
-        let (nw, mw, nh, mh) = if banner_sliding {
-            // Snap to full banner size immediately so the banner slides in from the
-            // notch's edge instead of scaling from small to large.
-            let w_chg = (self.target_width - self.current_width).abs() > 0.5;
-            let h_chg = (self.target_height - self.current_height).abs() > 0.5;
-            self.anim_width_vel = 0.0;
-            self.anim_height_vel = 0.0;
-            (self.target_width, w_chg, self.target_height, h_chg)
+        // Coupled closed-form iOS/macOS Dynamic Island springs (Claude Fast ~250-320ms settle):
+        let notif_open = self.notification.is_some() && !self.is_hovered;
+        let (fw, zw, fh, zh) = if self.is_hovered {
+            (3.40, 0.86, 3.20, 0.86)
+        } else if notif_open {
+            (3.10, 0.86, 2.90, 0.88)
         } else {
-            // Framer-Motion critically/slightly-underdamped spring for silky organic morphs
-            let (nw, vw, mw) = spring_step(
-                self.current_width,
-                self.anim_width_vel,
-                self.target_width,
-                360.0,
-                33.0,
-                dt,
-                0.45,
-                4.0,
-            );
-            let (nh, vh, mh) = spring_step(
-                self.current_height,
-                self.anim_height_vel,
-                self.target_height,
-                360.0,
-                33.0,
-                dt,
-                0.45,
-                4.0,
-            );
-            self.anim_width_vel = vw;
-            self.anim_height_vel = vh;
-            (nw, mw, nh, mh)
+            (2.75, 0.92, 2.85, 0.92)
         };
+        let (nw, vw, mw) = spring_step_analytic(
+            self.current_width,
+            self.anim_width_vel,
+            self.target_width,
+            fw,
+            zw,
+            dt,
+            0.04,
+            0.4,
+        );
+        let (nh, vh, mh) = spring_step_analytic(
+            self.current_height,
+            self.anim_height_vel,
+            self.target_height,
+            fh,
+            zh,
+            dt,
+            0.04,
+            0.4,
+        );
+        self.anim_width_vel = vw;
+        self.anim_height_vel = vh;
         self.current_width = nw;
         self.current_height = nh;
 
         let mut m_notif = false;
-        if banner_sliding {
-            let (nn, mn) = ease_exp(self.anim_notif_t, 1.0, 20.0, dt, 0.005);
+        if notif_open {
+            let (nn, mn) = ease_exp(self.anim_notif_t, 1.0, 16.0, dt, 0.005);
             self.anim_notif_t = nn;
             m_notif = mn;
         } else if self.notification.is_none() {
             self.anim_notif_t = 0.0;
         }
 
-        let (nt, vt, mt) = spring_step(
+        let (expand_f, expand_z) = if self.is_hovered { (3.20, 0.86) } else { (2.90, 0.92) };
+        let (nt, vt, mt) = spring_step_analytic(
             self.anim_expand_t,
             self.anim_expand_vel,
             expand_tgt,
-            340.0,
-            32.0,
+            expand_f,
+            expand_z,
             dt,
-            0.006,
-            0.05,
+            0.004,
+            0.03,
         );
         self.anim_expand_t = nt.clamp(0.0, 1.0);
         self.anim_expand_vel = vt;
 
-        let (nmt, mmt) = ease_exp(self.anim_mode_t, 1.0, 14.5, dt, 0.006);
+        let (nmt, mmt) = ease_exp(self.anim_mode_t, 1.0, 22.0, dt, 0.006);
         self.anim_mode_t = nmt;
+
+        let mct = if self.anim_capsule_t < 1.0 {
+            self.anim_capsule_t = (self.anim_capsule_t + dt / 0.42).min(1.0);
+            true
+        } else {
+            false
+        };
 
         let (nax, max_chg) = ease_exp(self.anim_anchor_x, self.target_anchor_x, k_fast, dt, 0.005);
         let (nay, may_chg) = ease_exp(self.anim_anchor_y, self.target_anchor_y, k_fast, dt, 0.005);
         self.anim_anchor_x = nax;
         self.anim_anchor_y = nay;
-        moved |= mw || mh || mt || mmt || m_notif || max_chg || may_chg;
+        moved |= mw || mh || mt || mmt || mct || m_notif || max_chg || may_chg;
 
         if self.micro_interactions {
-            let (ndx, vdx, mdx) = spring_step(
+            // Raycast Tactile 140ms critically damped mode dock indicator pill (0% overshoot)
+            let (ndx, vdx, mdx) = spring_step_analytic(
                 self.anim_dock_x,
                 self.anim_dock_x_vel,
                 dx_tgt,
-                420.0,
-                34.0,
+                5.4,
+                1.0,
                 dt,
-                0.35,
-                3.0,
+                0.25,
+                2.0,
             );
-            let (ndw, vdw, mdw) = spring_step(
+            let (ndw, vdw, mdw) = spring_step_analytic(
                 self.anim_dock_w,
                 self.anim_dock_w_vel,
                 dw_tgt,
-                420.0,
-                34.0,
+                5.4,
+                1.0,
                 dt,
-                0.35,
-                3.0,
+                0.25,
+                2.0,
             );
             self.anim_dock_x = ndx;
             self.anim_dock_w = ndw;
@@ -3727,7 +4543,9 @@ impl AppState {
                 } else {
                     0.0
                 };
-                let (next, chg) = ease_exp(*slot, tgt, k_fast * 1.1, dt, 0.012);
+                // Smooth hover bloom ease (gentle in, crisp out)
+                let rate = if tgt > *slot { 11.0 } else { 16.0 };
+                let (next, chg) = ease_exp(*slot, tgt, rate, dt, 0.012);
                 *slot = next;
                 moved |= chg;
             }
@@ -3740,9 +4558,15 @@ impl AppState {
             self.anim_ram_pct = (self.telemetry.memory_percent / 100.0).clamp(0.0, 1.0);
         }
 
-        // Redraw on active morphs, equalizer, expiration, or continuous mascot animations.
+        // Redraw on active morphs, equalizer, expiration, visible countdown ring, or mascot animations.
         let mascot_anim = self.is_mascot_visible();
-        moved || self.is_equalizer_visible() || mascot_anim || self.mem_reduct.is_purging || expired
+        let notif_ticking = self.notification.is_some() && !self.is_hovered;
+        moved
+            || self.is_equalizer_visible()
+            || mascot_anim
+            || self.mem_reduct.is_purging
+            || expired
+            || notif_ticking
     }
 
     pub fn update_settings_animation(&mut self, dt: f32) -> bool {
@@ -3848,6 +4672,7 @@ impl AppState {
         self.anim_expand_t = if self.is_hovered { 1.0 } else { 0.0 };
         self.anim_expand_vel = 0.0;
         self.anim_mode_t = 1.0;
+        self.anim_capsule_t = 1.0;
         self.anim_notif_t = if self.notification.is_some() {
             1.0
         } else {

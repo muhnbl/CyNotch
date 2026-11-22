@@ -1,8 +1,8 @@
 #![allow(unsafe_op_in_unsafe_fn, clippy::too_many_arguments)]
 
-use crate::backdrop::{self, Backdrop};
-use crate::backdrop_geom::{self, ShellGeom};
+use crate::backdrop;
 use crate::composition::DCompHost;
+use crate::dcomp_blur::{BlurSpec, CALIBRATED_BLUR_PX};
 use crate::font_d2d::{DWriteTextCache, Weight};
 use crate::icons::{self, Icon};
 use crate::models::{
@@ -41,31 +41,6 @@ pub static SETTINGS_HWND: AtomicIsize = AtomicIsize::new(0);
 static CLASS_REGISTERED: AtomicBool = AtomicBool::new(false);
 static SETTINGS_STATE: Mutex<Option<Arc<Mutex<AppState>>>> = Mutex::new(None);
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum SettingsSliderId {
-    FrostedOpacity,
-    FrostedBlur,
-}
-
-#[derive(Debug, Clone, Copy)]
-struct SliderHit {
-    id: SettingsSliderId,
-    track_x: f32,
-    track_w: f32,
-    hit_y: f32,
-    hit_h: f32,
-    min_val: u32,
-    max_val: u32,
-}
-
-fn slider_value_from_x(hit: SliderHit, px: f32) -> u32 {
-    let t = ((px - hit.track_x) / hit.track_w.max(1.0)).clamp(0.0, 1.0);
-    let span = hit.max_val.saturating_sub(hit.min_val) as f32;
-    (hit.min_val as f32 + t * span)
-        .round()
-        .clamp(hit.min_val as f32, hit.max_val as f32) as u32
-}
-
 #[derive(Default)]
 struct SettingsUi {
     width: u32,
@@ -74,8 +49,6 @@ struct SettingsUi {
     fonts: Option<DWriteTextCache>,
     hits: Vec<Hit>,
     slot_map: Vec<usize>,
-    sliders: Vec<SliderHit>,
-    active_slider: Option<SliderHit>,
     dragging_scrollbar: bool,
     last_max_scroll: f32,
     dcomp: Option<DCompHost>,
@@ -85,14 +58,6 @@ struct SettingsUi {
     drag_origin: Option<(POINT, POINT)>,
     timer_ms: u32,
     last_anim: Option<std::time::Instant>,
-    /// Paired frosted-blur window (see `backdrop.rs`).
-    backdrop: Option<Backdrop>,
-    backdrop_wanted: bool,
-    backdrop_geom: Option<ShellGeom>,
-}
-
-thread_local! {
-    static SETTINGS_BACKDROP_SYNCING: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
 }
 
 thread_local! {
@@ -343,7 +308,12 @@ unsafe fn tick_settings_animation(hwnd: HWND) {
     if let Some(state_mutex) = get_settings_state()
         && let Ok(mut st) = state_mutex.lock()
     {
+        let prev_t = st.anim_time;
         changed |= st.update_settings_animation(dt);
+        if st.show_mascot && st.are_animations_active() && (st.anim_time - prev_t).abs() < 1e-6 {
+            st.anim_time += dt;
+            changed = true;
+        }
         desired_ms = st.needs_settings_timer_ms();
     }
     sync_settings_timer(hwnd, desired_ms);
@@ -383,65 +353,6 @@ unsafe fn sync_settings_timer(hwnd: HWND, desired_ms: Option<u32>) {
     }
 }
 
-/// Keeps the paired blur window under the Preferences window. Same contract as
-/// `window::sync_notch_backdrop`: no `AppState` lock, skips if `SETTINGS_UI`
-/// is mid-borrow, ignores re-entrancy.
-unsafe fn sync_settings_backdrop(hwnd: HWND, visible_override: Option<bool>) {
-    if SETTINGS_BACKDROP_SYNCING.get() {
-        return;
-    }
-    SETTINGS_BACKDROP_SYNCING.set(true);
-    sync_settings_backdrop_inner(hwnd, visible_override);
-    SETTINGS_BACKDROP_SYNCING.set(false);
-}
-
-unsafe fn sync_settings_backdrop_inner(hwnd: HWND, visible_override: Option<bool>) {
-    let snap = SETTINGS_UI
-        .try_with(|c| {
-            c.try_borrow()
-                .ok()
-                .map(|ui| (ui.backdrop_wanted, ui.backdrop_geom, ui.backdrop.is_some()))
-        })
-        .ok()
-        .flatten();
-    let Some((wanted, geom, has)) = snap else {
-        return;
-    };
-    if !wanted && !has {
-        return;
-    }
-    let visible = visible_override.unwrap_or_else(|| IsWindowVisible(hwnd).as_bool());
-    let placement = if wanted && visible {
-        geom.and_then(|g| {
-            let mut rc = RECT::default();
-            if GetWindowRect(hwnd, &mut rc).is_ok() {
-                backdrop_geom::placement(rc.left, rc.top, &g, backdrop::REST_INSET)
-            } else {
-                None
-            }
-        })
-    } else {
-        None
-    };
-    let taken = SETTINGS_UI
-        .try_with(|c| c.try_borrow_mut().ok().map(|mut ui| ui.backdrop.take()))
-        .ok()
-        .flatten();
-    let Some(mut slot) = taken else {
-        return;
-    };
-    let failed = backdrop::sync_slot(&mut slot, hwnd, placement);
-    let _ = SETTINGS_UI.try_with(|c| {
-        if let Ok(mut ui) = c.try_borrow_mut() {
-            ui.backdrop = slot;
-        }
-    });
-    if failed {
-        crate::window::post_redraw();
-        post_redraw();
-    }
-}
-
 #[allow(dead_code)]
 unsafe fn redraw_settings(hwnd: HWND) {
     redraw_settings_with_cache(hwnd, false);
@@ -467,17 +378,20 @@ unsafe fn redraw_settings_with_cache(hwnd: HWND, _allow_pane_cache: bool) {
     let full_pane_h = (pane_content_height(snapshot.settings_category) + 10.0).max(PANE_H);
     let pane_h_px = (full_pane_h * s).round().max(1.0) as u32;
 
-    {
-        // Cache the window silhouette before any SetWindowPos below so the
-        // WM_WINDOWPOSCHANGED hook positions the blur from fresh numbers.
-        backdrop::set_blur_px(snapshot.frosted_blur_px);
-        let wanted = snapshot.is_frosted_active() && backdrop::blur_available();
-        let geom = ShellGeom::whole_window(int_w, int_h, 10.0 * s);
-        SETTINGS_UI.with_borrow_mut(|ui| {
-            ui.backdrop_wanted = wanted;
-            ui.backdrop_geom = Some(geom);
-        });
-    }
+    let blur_spec = if snapshot.is_frosted_active() && backdrop::blur_available() {
+        backdrop::set_blur_px(CALIBRATED_BLUR_PX);
+        let r = 22.0 * s;
+        Some(BlurSpec {
+            x: 0.0,
+            y: 0.0,
+            w: int_w as f32,
+            h: int_h as f32,
+            radii: (r, r, r, r),
+            blur_px: CALIBRATED_BLUR_PX,
+        })
+    } else {
+        None
+    };
 
     let mut cur_rc = RECT::default();
     if GetWindowRect(hwnd, &mut cur_rc).is_ok() {
@@ -519,11 +433,9 @@ unsafe fn redraw_settings_with_cache(hwnd: HWND, _allow_pane_cache: bool) {
             ref mut fonts,
             ref mut hits,
             ref mut slot_map,
-            ref mut sliders,
             ref mut last_max_scroll,
             ref mut dcomp,
             pointer,
-            active_slider,
             ..
         } = *ui;
         let Some(fonts) = fonts.as_mut() else {
@@ -533,8 +445,8 @@ unsafe fn redraw_settings_with_cache(hwnd: HWND, _allow_pane_cache: bool) {
             *d2d_cache = None;
             *dcomp = DCompHost::new(hwnd, int_w as u32, int_h as u32).ok();
         }
-        let active_slider_id = active_slider.map(|s| s.id);
         let mut ok = false;
+        let mut blur_failed = false;
         if let Some(host) = dcomp.as_mut() {
             let resize_ok = host.resize(int_w as u32, int_h as u32).is_ok();
             if resize_ok && let Ok(ctx) = host.begin_d2d_draw() {
@@ -542,7 +454,7 @@ unsafe fn redraw_settings_with_cache(hwnd: HWND, _allow_pane_cache: bool) {
                     *d2d_cache = D2DResourceCache::new(&ctx).ok();
                 }
                 if let Some(cache) = d2d_cache.as_mut() {
-                    let (new_hits, new_slots, new_sliders, max_scroll) = render_settings_d2d_inner(
+                    let (new_hits, new_slots, max_scroll) = render_settings_d2d(
                         &ctx,
                         cache,
                         fonts,
@@ -550,14 +462,18 @@ unsafe fn redraw_settings_with_cache(hwnd: HWND, _allow_pane_cache: bool) {
                         int_h as u32,
                         &snapshot,
                         pointer,
-                        active_slider_id,
                     );
                     *hits = new_hits;
                     *slot_map = new_slots;
-                    *sliders = new_sliders;
                     *last_max_scroll = max_scroll;
                 }
                 ok = host.end_d2d_draw_and_present().is_ok();
+                if ok {
+                    let blur_ok = host.set_blur(blur_spec);
+                    if blur_spec.is_some() && !blur_ok {
+                        blur_failed = true;
+                    }
+                }
             }
         }
         if !ok {
@@ -568,29 +484,35 @@ unsafe fn redraw_settings_with_cache(hwnd: HWND, _allow_pane_cache: bool) {
                 if let Ok(ctx) = new_host.begin_d2d_draw() {
                     *d2d_cache = D2DResourceCache::new(&ctx).ok();
                     if let Some(cache) = d2d_cache.as_mut() {
-                        let (new_hits, new_slots, new_sliders, max_scroll) =
-                            render_settings_d2d_inner(
-                                &ctx,
-                                cache,
-                                fonts,
-                                int_w as u32,
-                                int_h as u32,
-                                &snapshot,
-                                pointer,
-                                active_slider_id,
-                            );
+                        let (new_hits, new_slots, max_scroll) = render_settings_d2d(
+                            &ctx,
+                            cache,
+                            fonts,
+                            int_w as u32,
+                            int_h as u32,
+                            &snapshot,
+                            pointer,
+                        );
                         *hits = new_hits;
                         *slot_map = new_slots;
-                        *sliders = new_sliders;
                         *last_max_scroll = max_scroll;
                     }
-                    let _ = new_host.end_d2d_draw_and_present();
+                    if new_host.end_d2d_draw_and_present().is_ok() {
+                        let blur_ok = new_host.set_blur(blur_spec);
+                        if blur_spec.is_some() && !blur_ok {
+                            blur_failed = true;
+                        }
+                    }
                 }
                 *dcomp = Some(new_host);
             }
         }
+        if blur_failed {
+            backdrop::mark_unavailable();
+            crate::window::post_redraw();
+            post_redraw();
+        }
     });
-    sync_settings_backdrop(hwnd, None);
 }
 
 unsafe fn refresh_hover_after_redraw(hwnd: HWND) {
@@ -644,9 +566,8 @@ unsafe fn hide_settings_window(hwnd: HWND) {
     // SETTINGS_UI mutably — release the RefCell borrow BEFORE calling ReleaseCapture.
     let had_capture = SETTINGS_UI.with_borrow_mut(|ui| {
         let had_drag = ui.drag_origin.take().is_some();
-        let had_slider = ui.active_slider.take().is_some();
         let had_sb = std::mem::replace(&mut ui.dragging_scrollbar, false);
-        had_drag || had_slider || had_sb
+        had_drag || had_sb
     });
     if had_capture {
         let _ = ReleaseCapture();
@@ -656,11 +577,6 @@ unsafe fn hide_settings_window(hwnd: HWND) {
 
 unsafe fn settings_wnd_proc_inner(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPARAM) -> LRESULT {
     match msg {
-        WM_WINDOWPOSCHANGED => {
-            let r = DefWindowProcW(hwnd, msg, wparam, lparam);
-            sync_settings_backdrop(hwnd, None);
-            r
-        }
         WM_DPICHANGED => {
             if lparam.0 != 0 {
                 let suggested = *(lparam.0 as *const RECT);
@@ -686,12 +602,6 @@ unsafe fn settings_wnd_proc_inner(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: 
             });
             redraw_settings(hwnd);
             LRESULT(0)
-        }
-        WM_SHOWWINDOW => {
-            let r = DefWindowProcW(hwnd, msg, wparam, lparam);
-            // IsWindowVisible is not yet updated inside this message: use wparam.
-            sync_settings_backdrop(hwnd, Some(wparam.0 != 0));
-            r
         }
         WM_APP_SETTINGS_REDRAW => {
             redraw_settings_with_cache(hwnd, true);
@@ -848,12 +758,11 @@ unsafe fn settings_wnd_proc_inner(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: 
         WM_MOUSEMOVE => {
             let px = (lparam.0 & 0xffff) as i16 as f32;
             let py = ((lparam.0 >> 16) & 0xffff) as i16 as f32;
-            let (drag_origin, active_slider, dragging_sb, ui_h, max_scroll) =
+            let (drag_origin, dragging_sb, ui_h, max_scroll) =
                 SETTINGS_UI.with_borrow_mut(|ui| {
                     ui.pointer = Some((px, py));
                     (
                         ui.drag_origin,
-                        ui.active_slider,
                         ui.dragging_scrollbar,
                         ui.height,
                         ui.last_max_scroll,
@@ -882,24 +791,6 @@ unsafe fn settings_wnd_proc_inner(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: 
                 }
                 if moved {
                     redraw_settings_with_cache(hwnd, true);
-                }
-                return LRESULT(0);
-            }
-
-            if let Some(slider) = active_slider {
-                let next_val = slider_value_from_x(slider, px);
-                let mut changed = false;
-                if let Some(state_mutex) = get_settings_state()
-                    && let Ok(mut st) = state_mutex.lock()
-                {
-                    changed = match slider.id {
-                        SettingsSliderId::FrostedOpacity => st.set_frosted_opacity_live(next_val),
-                        SettingsSliderId::FrostedBlur => st.set_frosted_blur_live(next_val),
-                    };
-                }
-                if changed {
-                    redraw_settings_with_cache(hwnd, true);
-                    crate::window::post_redraw();
                 }
                 return LRESULT(0);
             }
@@ -986,42 +877,20 @@ unsafe fn settings_wnd_proc_inner(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: 
             LRESULT(0)
         }
         WM_CAPTURECHANGED => {
-            let had_slider = SETTINGS_UI.with_borrow_mut(|ui| {
+            SETTINGS_UI.with_borrow_mut(|ui| {
                 ui.drag_origin = None;
                 ui.dragging_scrollbar = false;
-                ui.active_slider.take().is_some()
             });
-            if had_slider {
-                if let Some(state_mutex) = get_settings_state()
-                    && let Ok(st) = state_mutex.lock()
-                {
-                    st.save_config();
-                }
-                redraw_settings_with_cache(hwnd, true);
-            }
             LRESULT(0)
         }
         WM_LBUTTONUP => {
-            let (was_dragging, was_slider, was_sb) = SETTINGS_UI.with_borrow_mut(|ui| {
+            let (was_dragging, was_sb) = SETTINGS_UI.with_borrow_mut(|ui| {
                 let sb = ui.dragging_scrollbar;
                 ui.dragging_scrollbar = false;
-                (
-                    ui.drag_origin.take().is_some(),
-                    ui.active_slider.take().is_some(),
-                    sb,
-                )
+                (ui.drag_origin.take().is_some(), sb)
             });
-            if was_dragging || was_slider || was_sb {
+            if was_dragging || was_sb {
                 let _ = ReleaseCapture();
-            }
-            if was_slider {
-                if let Some(state_mutex) = get_settings_state()
-                    && let Ok(st) = state_mutex.lock()
-                {
-                    st.save_config();
-                }
-                redraw_settings_with_cache(hwnd, true);
-                crate::window::post_redraw();
             }
             LRESULT(0)
         }
@@ -1062,40 +931,6 @@ unsafe fn settings_wnd_proc_inner(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: 
                     st.set_settings_scroll_immediate(cat, frac * max_scroll);
                 }
                 redraw_settings_with_cache(hwnd, true);
-                return LRESULT(0);
-            }
-
-            let hit_slider = SETTINGS_UI.with_borrow(|ui| {
-                ui.sliders.iter().copied().find(|sl| {
-                    px >= sl.track_x - 14.0
-                        && px <= sl.track_x + sl.track_w + 14.0
-                        && py >= sl.hit_y
-                        && py <= sl.hit_y + sl.hit_h
-                })
-            });
-
-            if let Some(slider) = hit_slider {
-                SETTINGS_UI.with_borrow_mut(|ui| {
-                    ui.active_slider = Some(slider);
-                });
-                SetCapture(hwnd);
-                let next_val = slider_value_from_x(slider, px);
-                if let Some(state_mutex) = get_settings_state()
-                    && let Ok(mut st) = state_mutex.lock()
-                {
-                    st.windows_transparency_enabled =
-                        notifications::is_windows_transparency_enabled();
-                    match slider.id {
-                        SettingsSliderId::FrostedOpacity => {
-                            let _ = st.set_frosted_opacity_live(next_val);
-                        }
-                        SettingsSliderId::FrostedBlur => {
-                            let _ = st.set_frosted_blur_live(next_val);
-                        }
-                    }
-                }
-                redraw_settings_with_cache(hwnd, true);
-                crate::window::post_redraw();
                 return LRESULT(0);
             }
 
@@ -1264,7 +1099,7 @@ const CTRL_X_OFF: f32 = 188.0;
 
 fn pane_content_height(cat: SettingsCategory) -> f32 {
     match cat {
-        SettingsCategory::General => 262.0 + CARD_GAP + 568.0,
+        SettingsCategory::General => 262.0 + CARD_GAP + 484.0,
         SettingsCategory::Motion => 208.0 + CARD_GAP + 172.0,
         SettingsCategory::Modules => 244.0 + 14.0 + 138.0 + 14.0 + 196.0,
         SettingsCategory::Notifications => 208.0 + 14.0 + 236.0 + 14.0 + 134.0,
@@ -1281,21 +1116,6 @@ pub fn render_settings_d2d(
     state: &AppState,
     pointer: Option<(f32, f32)>,
 ) -> (Vec<Hit>, Vec<usize>, f32) {
-    let (hits, slot_map, _sliders, max_scroll) =
-        render_settings_d2d_inner(ctx, cache, fonts, width, height, state, pointer, None);
-    (hits, slot_map, max_scroll)
-}
-
-fn render_settings_d2d_inner(
-    ctx: &windows::Win32::Graphics::Direct2D::ID2D1DeviceContext,
-    cache: &mut D2DResourceCache,
-    fonts: &mut DWriteTextCache,
-    width: u32,
-    height: u32,
-    state: &AppState,
-    pointer: Option<(f32, f32)>,
-    active_slider: Option<SettingsSliderId>,
-) -> (Vec<Hit>, Vec<usize>, Vec<SliderHit>, f32) {
     unsafe {
         ctx.Clear(Some(&windows::Win32::Graphics::Direct2D::Common::D2D1_COLOR_F {
             r: 0.0,
@@ -1309,7 +1129,7 @@ fn render_settings_d2d_inner(
         .max(0.5);
     let w = AppState::SETTINGS_WIDTH;
     let h = AppState::SETTINGS_HEIGHT;
-    let r = 10.0;
+    let r = 22.0;
     let frosted = state.is_frosted_active();
 
     let pane_top_pad = 4.0;
@@ -1343,7 +1163,7 @@ fn render_settings_d2d_inner(
         );
 
         let well_col = if frosted {
-            tok::scale_frosted(tok::surface_well_frosted(), state.frosted_alpha_pct())
+            tok::surface_well_frosted()
         } else {
             tok::surface_well()
         };
@@ -1352,22 +1172,15 @@ fn render_settings_d2d_inner(
         let sb_w = 204.0;
         let sb_h = 620.0;
 
-        // 1. Volumetric Obsidian Outer Shell + Static Header Text & Sidebar Shell
+        // 1. Borderless Volumetric Obsidian Outer Shell (Option B calibrated glass)
         {
             let (shell_top, shell_bot) = if frosted {
-                (
-                    tok::scale_frosted(tok::obsidian_shell_frosted(), state.frosted_alpha_pct()),
-                    tok::scale_frosted(tok::obsidian_deep_frosted(), state.frosted_alpha_pct()),
-                )
+                (tok::obsidian_shell_frosted(), tok::obsidian_deep_frosted())
             } else {
                 (tok::obsidian_shell(), tok::obsidian_deep())
             };
             p.rrect_vertical_gradient(0.0, 0.0, w, h, r, shell_top, shell_bot);
-            let glow_scale = if frosted {
-                (state.frosted_alpha_pct() as f32 / 68.0).clamp(0.25, 1.0)
-            } else {
-                1.0
-            };
+            let glow_scale = if frosted { 0.38 } else { 1.0 };
             if p.prepare_rrect_clip(0.0, 0.0, w, h, r) {
                 p.radial_glow(
                     92.0,
@@ -1413,7 +1226,7 @@ fn render_settings_d2d_inner(
                 tok::text1(),
             );
             p.text(
-                "Mahamatra Command Center · v0.3.0",
+                "Mahamatra Command Center · v0.3.1",
                 62.0,
                 45.5,
                 10.2,
@@ -1428,8 +1241,8 @@ fn render_settings_d2d_inner(
                 sb_y,
                 sb_w,
                 sb_h,
-                16.0,
-                Some((48.0, 34.0, 74.0, tok::cyno_violet())),
+                20.0,
+                None,
             );
             p.text(
                 "SECTIONS",
@@ -1442,17 +1255,7 @@ fn render_settings_d2d_inner(
 
             let foot_y = sb_y + sb_h - 122.0;
             let foot_h = 108.0;
-            p.rrect(sb_x + 12.0, foot_y, sb_w - 24.0, foot_h, 12.0, well_col);
-            p.rrect_bevel_stroke(
-                sb_x + 12.0,
-                foot_y,
-                sb_w - 24.0,
-                foot_h,
-                12.0,
-                1.0,
-                rgba(255, 255, 255, 26),
-                rgba(255, 255, 255, 10),
-            );
+            p.rrect(sb_x + 12.0, foot_y, sb_w - 24.0, foot_h, 14.0, well_col);
             p.text(
                 "Global Hotkeys",
                 sb_x + 22.0,
@@ -1615,7 +1418,6 @@ fn render_settings_d2d_inner(
     let scroll_px = (scroll_y * s).round();
 
     let mut pane_hits = Vec::new();
-    let mut pane_sliders = Vec::new();
     let pane_anim_e = if state.are_animations_active() {
         crate::models::ease_out_cubic(state.anim_settings_pane_t)
     } else {
@@ -1657,15 +1459,7 @@ fn render_settings_d2d_inner(
             );
         }
         match state.settings_category {
-            SettingsCategory::General => draw_general_pane(
-                &mut pp,
-                state,
-                0.0,
-                0.0,
-                PANE_W,
-                active_slider,
-                &mut pane_sliders,
-            ),
+            SettingsCategory::General => draw_general_pane(&mut pp, state, 0.0, 0.0, PANE_W),
             SettingsCategory::Motion => draw_motion_pane(&mut pp, state, 0.0, 0.0, PANE_W),
             SettingsCategory::Modules => draw_modules_pane(&mut pp, state, 0.0, 0.0, PANE_W),
             SettingsCategory::Notifications => {
@@ -1675,19 +1469,6 @@ fn render_settings_d2d_inner(
         }
         unsafe {
             ctx.PopAxisAlignedClip();
-        }
-    }
-
-    let mut sliders = Vec::new();
-    for sl in pane_sliders {
-        let y0 = sl.hit_y.max(pane_y_px);
-        let y1 = (sl.hit_y + sl.hit_h).min(pane_y_px + pane_h_px);
-        if y1 - y0 >= 8.0 * s {
-            sliders.push(SliderHit {
-                hit_y: y0,
-                hit_h: y1 - y0,
-                ..sl
-            });
         }
     }
 
@@ -1742,7 +1523,7 @@ fn render_settings_d2d_inner(
         );
     }
 
-    (hits, slot_map, sliders, max_scroll)
+    (hits, slot_map, max_scroll)
 }
 
 fn switch_val(state: &AppState, id: ToggleId) -> f32 {
@@ -1831,24 +1612,27 @@ fn draw_toggle_row(
     action: Action,
 ) {
     let ht = p.hot_t(x - 6.0, y, w + 12.0, 40.0);
+    let dy = -0.8 * ht;
     if ht > 0.02 {
         p.rrect(
             x - 8.0,
-            y + 1.0,
+            y + 1.0 + dy,
             w + 16.0,
             38.0,
             9.0,
-            fade(rgba(168, 85, 247, 22), ht),
+            fade(rgba(255, 255, 255, 15), ht),
         );
     }
+    // 2026 Linear/macOS 1px inset hairline separator below row
+    p.rrect(x, y + 43.5, w, 1.0, 0.0, rgba(255, 255, 255, 12));
     let max_text_w = (w - 64.0).max(80.0);
     let t_ell = p.ellipsize(title, 12.0, Weight::Semibold, max_text_w);
     let s_ell = p.ellipsize(sub, 9.8, Weight::Regular, max_text_w);
-    p.text(&t_ell, x, y + 14.5, 12.0, Weight::Semibold, tok::text1());
+    p.text(&t_ell, x, y + 14.5 + dy, 12.0, Weight::Semibold, tok::text1());
     p.text(
         &s_ell,
         x,
-        y + 32.0,
+        y + 32.0 + dy,
         9.8,
         Weight::Regular,
         lerp_color(tok::text2(), tok::text_soft(), ht * 0.5),
@@ -1856,170 +1640,13 @@ fn draw_toggle_row(
     let sw_w = 46.0;
     let sw_h = 22.0;
     let sw_x = x + w - sw_w;
-    let sw_y = y + 8.0;
+    let sw_y = y + 8.0 + dy * 0.5;
     let st = switch_val(state, id);
     p.draw_toggle_switch(sw_x, sw_y, sw_w, sw_h, st, ht);
     p.hit(x - 6.0, y, w + 12.0, 40.0, action);
 }
 
-/// Draws a smooth, draggable glassmorphic slider row without percentage badges.
-/// Registers a `SliderHit` in physical client pixels for live click-jump & drag.
-fn draw_slider_row(
-    p: &mut PainterD2D,
-    state: &AppState,
-    label: &str,
-    left_cue: &str,
-    right_cue: &str,
-    label_x: f32,
-    y: f32,
-    ctrl_x: f32,
-    ctrl_w: f32,
-    value: u32,
-    min_val: u32,
-    max_val: u32,
-    slider_id: SettingsSliderId,
-    active_slider: Option<SettingsSliderId>,
-    sliders: &mut Vec<SliderHit>,
-) {
-    let row_h = 34.0;
-    p.text(
-        label,
-        label_x,
-        y + 20.5,
-        11.5,
-        Weight::Semibold,
-        tok::text1(),
-    );
-
-    let cue_w = 34.0;
-    let track_x = ctrl_x + cue_w + 6.0;
-    let track_w = (ctrl_w - (cue_w + 6.0) * 2.0).max(80.0);
-    let track_h = 7.0;
-    let track_y = y + (row_h - track_h) * 0.5;
-    let cy = track_y + track_h * 0.5;
-
-    let span = max_val.saturating_sub(min_val).max(1) as f32;
-    let norm = ((value.clamp(min_val, max_val) - min_val) as f32 / span).clamp(0.0, 1.0);
-    let thumb_x = track_x + norm * track_w;
-
-    let is_dragging = active_slider == Some(slider_id);
-    let is_hot = p.hot(track_x - 12.0, y, track_w + 24.0, row_h);
-    let focus_t = if is_dragging {
-        1.0
-    } else if is_hot {
-        0.65
-    } else {
-        0.0
-    };
-
-    // Subtle endpoint cues (Airy / Solid, Soft / Ultra) — no numeric percentage clutter
-    p.text(
-        left_cue,
-        ctrl_x,
-        y + 20.0,
-        9.4,
-        Weight::Semibold,
-        lerp_color(tok::text3(), tok::text2(), (1.0 - norm) * 0.6 + focus_t * 0.3),
-    );
-    p.text_right(
-        right_cue,
-        ctrl_x + ctrl_w,
-        y + 20.0,
-        9.4,
-        Weight::Semibold,
-        lerp_color(tok::text3(), tok::text2(), norm * 0.6 + focus_t * 0.3),
-    );
-
-    // Recessed obsidian track well
-    let well_col = if state.is_frosted_active() {
-        tok::scale_frosted(tok::surface_well_frosted(), state.frosted_alpha_pct())
-    } else {
-        tok::surface_well()
-    };
-    p.rrect(track_x, track_y, track_w, track_h, 3.5, well_col);
-    p.rrect_bevel_stroke(
-        track_x,
-        track_y,
-        track_w,
-        track_h,
-        3.5,
-        1.0,
-        rgba(0, 0, 0, 130),
-        rgba(255, 255, 255, 22),
-    );
-
-    // Luminous violet-orchid filled progress track
-    let fill_w = (thumb_x - track_x).clamp(6.0, track_w);
-    p.rrect_vertical_gradient(
-        track_x,
-        track_y,
-        fill_w,
-        track_h,
-        3.5,
-        tok::cyno_orchid(),
-        tok::cyno_indigo(),
-    );
-    p.rrect_bevel_stroke(
-        track_x,
-        track_y,
-        fill_w,
-        track_h,
-        3.5,
-        0.8,
-        rgba(255, 255, 255, 68),
-        rgba(124, 58, 237, 45),
-    );
-
-    // Soft thumb bloom halo
-    let halo_r = 14.5 + 4.5 * focus_t;
-    p.radial_glow(
-        thumb_x,
-        cy,
-        halo_r,
-        fade(tok::cyno_violet(), 0.38 + 0.34 * focus_t),
-        BlendMode::Plus,
-        false,
-    );
-
-    // Tactile porcelain-lavender slider thumb
-    let thumb_r = 7.4 + 1.3 * focus_t;
-    p.circle(thumb_x, cy + 1.0, thumb_r + 0.4, rgba(0, 0, 0, 115));
-    p.circle(thumb_x, cy, thumb_r, rgba(248, 245, 255, 255));
-    p.circle_stroke(
-        thumb_x,
-        cy,
-        thumb_r,
-        1.5,
-        lerp_color(tok::cyno_violet(), tok::cyno_orchid(), focus_t),
-    );
-    p.circle(
-        thumb_x,
-        cy,
-        2.3 + 0.5 * focus_t,
-        lerp_color(tok::cyno_indigo(), tok::cyno_violet(), focus_t),
-    );
-
-    // Register physical client-space drag hit region
-    sliders.push(SliderHit {
-        id: slider_id,
-        track_x: p.origin_x + track_x * p.s,
-        track_w: track_w * p.s,
-        hit_y: p.origin_y + y * p.s,
-        hit_h: row_h * p.s,
-        min_val,
-        max_val,
-    });
-}
-
-fn draw_general_pane(
-    p: &mut PainterD2D,
-    state: &AppState,
-    px: f32,
-    py: f32,
-    pw: f32,
-    active_slider: Option<SettingsSliderId>,
-    sliders: &mut Vec<SliderHit>,
-) {
+fn draw_general_pane(p: &mut PainterD2D, state: &AppState, px: f32, py: f32, pw: f32) {
     let ix = px + PAD;
     let inner_w = pw - PAD * 2.0;
     let ctrl_x = px + CTRL_X_OFF;
@@ -2034,7 +1661,7 @@ fn draw_general_pane(
         pw,
         c1_h,
         16.0,
-        Some((pw - 44.0, 28.0, 76.0, tok::cyno_violet())),
+        None,
     );
     p.text(
         "Notch Shell & Placement",
@@ -2229,16 +1856,16 @@ fn draw_general_pane(
     );
     p.hit(ctr_x, row5_y, btn_w, 28.0, Action::ResetPosition);
 
-    // Card 2: Interaction, Type Scale & Idle Visuals (h = 568)
+    // Card 2: Interaction, Type Scale & Idle Visuals (h = 484; fixed calibrated 15px glass, zero sliders)
     let c2_y = py + c1_h + CARD_GAP;
-    let c2_h = 568.0;
+    let c2_h = 484.0;
     p.elevated_card(
         px,
         c2_y,
         pw,
         c2_h,
         16.0,
-        Some((pw - 44.0, 28.0, 76.0, tok::cyno_orchid())),
+        None,
     );
     p.text(
         "Interaction & Idle Visuals",
@@ -2365,8 +1992,8 @@ fn draw_general_pane(
         ix,
         t_base + TOGGLE_PITCH * 3.0,
         inner_w,
-        "Show Cyno Mascot",
-        "Display animated Cyber-Anubis mascot across notch states",
+        "Show Liquid Glass Spirit",
+        "Display animated Liquid Glass Spirit mascot across notch states",
         ToggleId::ShowMascot,
         Action::ToggleShowMascot,
     );
@@ -2394,7 +2021,7 @@ fn draw_general_pane(
     );
     let frost_y = t_base + TOGGLE_PITCH * 6.0;
     let frost_sub = if state.windows_transparency_enabled {
-        "Translucent acrylic blur backdrop behind notch & settings"
+        "Calibrated 15px airy obsidian liquid glass with optical luminosity clamp"
     } else {
         "Requires Windows Transparency Effects (currently Off in Windows)"
     };
@@ -2404,7 +2031,7 @@ fn draw_general_pane(
         ix,
         frost_y,
         inner_w,
-        "Frosted Blur & Transparency",
+        "Obsidian Liquid Glass",
         frost_sub,
         ToggleId::FrostedGlass,
         Action::ToggleFrostedGlass,
@@ -2420,14 +2047,14 @@ fn draw_general_pane(
             win_btn_y,
             win_btn_w,
             win_btn_h,
-            7.0,
+            11.0,
             wb_ht,
             Some(tok::cyno_violet()),
         );
         p.text_center_fit(
             "Enable in Win",
             win_btn_x + win_btn_w * 0.5,
-            win_btn_y + 14.5 - 0.4 * wb_ht,
+            win_btn_y + 14.5,
             9.0,
             Weight::Bold,
             tok::text1(),
@@ -2441,40 +2068,6 @@ fn draw_general_pane(
             Action::OpenWinPersonalizeColors,
         );
     }
-    draw_slider_row(
-        p,
-        state,
-        "Glass Opacity",
-        "Airy",
-        "Solid",
-        ix,
-        t_base + TOGGLE_PITCH * 7.0,
-        ctrl_x,
-        ctrl_w,
-        state.frosted_opacity_pct,
-        25,
-        95,
-        SettingsSliderId::FrostedOpacity,
-        active_slider,
-        sliders,
-    );
-    draw_slider_row(
-        p,
-        state,
-        "Blur Intensity",
-        "Soft",
-        "Ultra",
-        ix,
-        t_base + TOGGLE_PITCH * 7.0 + SEG_PITCH,
-        ctrl_x,
-        ctrl_w,
-        state.frosted_blur_px,
-        4,
-        40,
-        SettingsSliderId::FrostedBlur,
-        active_slider,
-        sliders,
-    );
 }
 
 fn draw_motion_pane(p: &mut PainterD2D, state: &AppState, px: f32, py: f32, pw: f32) {
@@ -2483,7 +2076,7 @@ fn draw_motion_pane(p: &mut PainterD2D, state: &AppState, px: f32, py: f32, pw: 
     let ctrl_x = px + CTRL_X_OFF;
     let ctrl_w = pw - CTRL_X_OFF - PAD;
     let well_col = if state.is_frosted_active() {
-        tok::scale_frosted(tok::surface_well_frosted(), state.frosted_alpha_pct())
+        tok::surface_well_frosted()
     } else {
         tok::surface_well()
     };
@@ -2496,7 +2089,7 @@ fn draw_motion_pane(p: &mut PainterD2D, state: &AppState, px: f32, py: f32, pw: 
         pw,
         c1_h,
         16.0,
-        Some((pw - 44.0, 28.0, 82.0, tok::cyno_violet())),
+        None,
     );
     p.text(
         "Fluid Motion Engine",
@@ -2557,20 +2150,6 @@ fn draw_motion_pane(p: &mut PainterD2D, state: &AppState, px: f32, py: f32, pw: 
 
     let info_y = py + 150.0;
     p.rrect(ix, info_y, inner_w, 34.0, 9.0, well_col);
-    p.rrect_bevel_stroke(
-        ix,
-        info_y,
-        inner_w,
-        34.0,
-        9.0,
-        1.0,
-        rgba(255, 255, 255, 20),
-        if state.windows_animations_enabled {
-            rgba(168, 85, 247, 26)
-        } else {
-            rgba(251, 191, 36, 30)
-        },
-    );
     let dot_col = if state.windows_animations_enabled {
         rgba(52, 211, 153, 255)
     } else {
@@ -2604,7 +2183,7 @@ fn draw_motion_pane(p: &mut PainterD2D, state: &AppState, px: f32, py: f32, pw: 
         pw,
         c2_h,
         16.0,
-        Some((pw - 44.0, 28.0, 76.0, tok::cyno_orchid())),
+        None,
     );
     p.text(
         "Micro-Interactions & Audio Spectrum",
@@ -2653,7 +2232,7 @@ fn draw_notifications_pane(p: &mut PainterD2D, state: &AppState, px: f32, py: f3
     let ctrl_x = px + CTRL_X_OFF;
     let ctrl_w = pw - CTRL_X_OFF - PAD;
     let well_col = if state.is_frosted_active() {
-        tok::scale_frosted(tok::surface_well_frosted(), state.frosted_alpha_pct())
+        tok::surface_well_frosted()
     } else {
         tok::surface_well()
     };
@@ -2668,7 +2247,7 @@ fn draw_notifications_pane(p: &mut PainterD2D, state: &AppState, px: f32, py: f3
         pw,
         c1_h,
         16.0,
-        Some((pw - 44.0, 28.0, 78.0, tok::cyno_orchid())),
+        None,
     );
     p.text(
         "Notch Banner & Fullscreen Rules",
@@ -2734,7 +2313,7 @@ fn draw_notifications_pane(p: &mut PainterD2D, state: &AppState, px: f32, py: f3
         pw,
         c2_h,
         16.0,
-        Some((pw - 44.0, 28.0, 78.0, tok::cyno_violet())),
+        None,
     );
     p.text(
         "Windows Notifications Bridge",
@@ -2906,7 +2485,7 @@ fn draw_notifications_pane(p: &mut PainterD2D, state: &AppState, px: f32, py: f3
         pw,
         c3_h,
         16.0,
-        Some((pw - 44.0, 28.0, 78.0, tok::cyno_orchid())),
+        None,
     );
     p.text(
         "Notification Chime & Audio",
@@ -2968,16 +2547,6 @@ fn draw_notifications_pane(p: &mut PainterD2D, state: &AppState, px: f32, py: f3
     let well_y = c3_y + 54.0;
     let well_h = 30.0;
     p.rrect(ix, well_y, inner_w, well_h, 9.0, well_col);
-    p.rrect_bevel_stroke(
-        ix,
-        well_y,
-        inner_w,
-        well_h,
-        9.0,
-        1.0,
-        rgba(255, 255, 255, 18),
-        rgba(255, 255, 255, 8),
-    );
 
     let sounds = crate::sound::NotificationSound::ALL;
     let pad_in = 3.0;
@@ -3104,7 +2673,7 @@ fn draw_modules_pane(p: &mut PainterD2D, state: &AppState, px: f32, py: f32, pw:
         pw,
         c1_h,
         16.0,
-        Some((pw - 44.0, 28.0, 78.0, tok::cyno_violet())),
+        None,
     );
     p.text(
         "Dock Modules",
@@ -3168,7 +2737,7 @@ fn draw_modules_pane(p: &mut PainterD2D, state: &AppState, px: f32, py: f32, pw:
         ),
     ];
 
-    let col_gap = 12.0;
+    let col_gap = 18.0;
     let row_gap = 9.0;
     let tile_w = (inner_w - col_gap) / 2.0;
     let tile_h = 36.0;
@@ -3181,45 +2750,53 @@ fn draw_modules_pane(p: &mut PainterD2D, state: &AppState, px: f32, py: f32, pw:
         let ty = grid_y + (row as f32) * (tile_h + row_gap);
         let active = state.toggle_target(*tid);
         let ht = p.hot_t(tx, ty, tile_w, tile_h);
+        let dy = -0.8 * ht;
 
-        p.tactile_surface_pill_t(tx, ty, tile_w, tile_h, 10.0, ht, None);
-        if active {
+        // 2026 Borderless List Paradigm: zero box border at rest, soft glass hover highlight + 1px hairline
+        if ht > 0.02 {
             p.rrect(
-                tx,
-                ty - 0.55 * ht,
-                tile_w,
+                tx - 4.0,
+                ty + dy,
+                tile_w + 8.0,
                 tile_h,
-                10.0,
-                fade(rgba(124, 58, 237, 28), 0.7 + 0.3 * ht),
+                9.0,
+                fade(rgba(255, 255, 255, 16), ht),
             );
         }
-        let dy = -0.55 * ht;
+        p.rrect(
+            tx + 4.0,
+            ty + tile_h + 2.0,
+            tile_w - 8.0,
+            1.0,
+            0.0,
+            rgba(255, 255, 255, 11),
+        );
         icons::draw(
             p,
             *ic,
-            tx + 12.0,
+            tx + 8.0,
             ty + 11.0 + dy,
             14.0,
             if active {
                 tok::cyno_violet_hi()
             } else {
-                tok::text2()
+                tok::text3()
             },
         );
         p.text(
             name,
-            tx + 34.0,
+            tx + 30.0,
             ty + 22.0 + dy,
             11.4,
             Weight::Semibold,
             if active {
                 tok::text1()
             } else {
-                tok::text_soft()
+                tok::text2()
             },
         );
         let st = switch_val(state, *tid);
-        p.draw_toggle_switch(tx + tile_w - 48.0, ty + 9.0 + dy, 38.0, 18.0, st, ht);
+        p.draw_toggle_switch(tx + tile_w - 44.0, ty + 9.0 + dy * 0.5, 38.0, 18.0, st, ht);
         p.hit(tx, ty, tile_w, tile_h, Action::ToggleModule(*mode));
     }
 
@@ -3232,7 +2809,7 @@ fn draw_modules_pane(p: &mut PainterD2D, state: &AppState, px: f32, py: f32, pw:
         pw,
         c2_h,
         16.0,
-        Some((pw - 44.0, 28.0, 76.0, tok::cyno_violet())),
+        None,
     );
     p.text(
         "Music Lyrics Display",
@@ -3319,7 +2896,7 @@ fn draw_modules_pane(p: &mut PainterD2D, state: &AppState, px: f32, py: f32, pw:
         pw,
         c3_h,
         16.0,
-        Some((pw - 44.0, 28.0, 76.0, tok::cyno_orchid())),
+        None,
     );
     p.text(
         "Background Listeners",
@@ -3377,7 +2954,7 @@ fn draw_system_pane(p: &mut PainterD2D, state: &AppState, px: f32, py: f32, pw: 
     let ix = px + PAD;
     let inner_w = pw - PAD * 2.0;
     let well_col = if state.is_frosted_active() {
-        tok::scale_frosted(tok::surface_well_frosted(), state.frosted_alpha_pct())
+        tok::surface_well_frosted()
     } else {
         tok::surface_well()
     };
@@ -3391,7 +2968,7 @@ fn draw_system_pane(p: &mut PainterD2D, state: &AppState, px: f32, py: f32, pw: 
         pw,
         c1_h,
         16.0,
-        Some((pw - 44.0, 28.0, 82.0, tok::cyno_violet())),
+        None,
     );
     p.text(
         "Mem Reduct Engine",
@@ -3454,16 +3031,6 @@ fn draw_system_pane(p: &mut PainterD2D, state: &AppState, px: f32, py: f32, pw: 
     let well_y = py + 41.0;
     let well_h = 30.0;
     p.rrect(ix, well_y, inner_w, well_h, 8.5, well_col);
-    p.rrect_bevel_stroke(
-        ix,
-        well_y,
-        inner_w,
-        well_h,
-        8.5,
-        1.0,
-        rgba(255, 255, 255, 22),
-        rgba(168, 85, 247, 16),
-    );
     let pool_cw = inner_w / 3.0;
     let phys_txt = format!(
         "Phys {:.1}/{:.1}G ({:.0}%)",
@@ -3661,7 +3228,7 @@ fn draw_system_pane(p: &mut PainterD2D, state: &AppState, px: f32, py: f32, pw: 
             Action::ToggleArea(7),
         ),
     ];
-    let col_gap = 12.0;
+    let col_gap = 18.0;
     let row_gap = 7.0;
     let tile_w = (inner_w - col_gap) / 2.0;
     let tile_h = 34.0;
@@ -3674,45 +3241,53 @@ fn draw_system_pane(p: &mut PainterD2D, state: &AppState, px: f32, py: f32, pw: 
         let ty = grid_y + (row as f32) * (tile_h + row_gap);
         let active = state.toggle_target(tid);
         let ht = p.hot_t(tx, ty, tile_w, tile_h);
+        let dy = -0.8 * ht;
 
-        p.tactile_surface_pill_t(tx, ty, tile_w, tile_h, 9.5, ht, None);
-        if active {
+        // 2026 Borderless List Paradigm: zero box border at rest, soft glass hover highlight + 1px hairline
+        if ht > 0.02 {
             p.rrect(
-                tx,
-                ty - 0.55 * ht,
-                tile_w,
+                tx - 4.0,
+                ty + dy,
+                tile_w + 8.0,
                 tile_h,
-                9.5,
-                fade(rgba(124, 58, 237, 28), 0.7 + 0.3 * ht),
+                9.0,
+                fade(rgba(255, 255, 255, 16), ht),
             );
         }
-        let dy = -0.55 * ht;
+        p.rrect(
+            tx + 4.0,
+            ty + tile_h + 1.5,
+            tile_w - 8.0,
+            1.0,
+            0.0,
+            rgba(255, 255, 255, 11),
+        );
         icons::draw(
             p,
             ic,
-            tx + 12.0,
+            tx + 8.0,
             ty + 10.0 + dy,
             14.0,
             if active {
                 tok::cyno_violet_hi()
             } else {
-                tok::text2()
+                tok::text3()
             },
         );
         p.text(
             name,
-            tx + 34.0,
+            tx + 30.0,
             ty + 21.0 + dy,
             11.4,
             Weight::Semibold,
             if active {
                 tok::text1()
             } else {
-                tok::text_soft()
+                tok::text2()
             },
         );
         let st = switch_val(state, tid);
-        p.draw_toggle_switch(tx + tile_w - 48.0, ty + 8.0 + dy, 38.0, 18.0, st, ht);
+        p.draw_toggle_switch(tx + tile_w - 44.0, ty + 8.0 + dy * 0.5, 38.0, 18.0, st, ht);
         p.hit(tx, ty, tile_w, tile_h, act);
     }
 
@@ -3809,8 +3384,8 @@ fn draw_system_pane(p: &mut PainterD2D, state: &AppState, px: f32, py: f32, pw: 
         inner_w,
         6.0,
         bar_pct,
-        tok::cyno_deep(),
-        tok::cyno_violet_hi(),
+        tok::gold_deep(),
+        tok::gold_champagne(),
     );
 
     // Card 2: OS Integration & Maintenance (h = 162)
@@ -3822,7 +3397,7 @@ fn draw_system_pane(p: &mut PainterD2D, state: &AppState, px: f32, py: f32, pw: 
         pw,
         c2_h,
         16.0,
-        Some((pw - 44.0, 28.0, 74.0, tok::cyno_orchid())),
+        None,
     );
     p.text(
         "OS Integration & Maintenance",
@@ -3861,32 +3436,38 @@ fn draw_system_pane(p: &mut PainterD2D, state: &AppState, px: f32, py: f32, pw: 
     for (i, &(title, sub, tid, act)) in os_tiles.iter().enumerate() {
         let tx = ix + (i as f32) * (tile_w + t_gap);
         let ht = p.hot_t(tx, tile_y, tile_w, tile_h);
-        let active = state.toggle_target(tid);
-        p.tactile_surface_pill_t(tx, tile_y, tile_w, tile_h, 10.0, ht, None);
-        if active {
+        let dy = -0.8 * ht;
+        if ht > 0.02 {
             p.rrect(
                 tx,
-                tile_y - 0.5 * ht,
+                tile_y + dy,
                 tile_w,
                 tile_h,
                 10.0,
-                fade(rgba(124, 58, 237, 24), 0.7 + 0.3 * ht),
+                fade(rgba(255, 255, 255, 16), ht),
             );
         }
-        let dy = -0.5 * ht;
+        p.rrect(
+            tx + 6.0,
+            tile_y + tile_h - 1.0,
+            tile_w - 12.0,
+            1.0,
+            0.0,
+            rgba(255, 255, 255, 11),
+        );
         p.text(
             title,
-            tx + 14.0,
+            tx + 10.0,
             tile_y + 21.5 + dy,
             11.2,
             Weight::Bold,
             tok::text1(),
         );
         let st = switch_val(state, tid);
-        p.draw_toggle_switch(tx + tile_w - 50.0, tile_y + 9.0 + dy, 38.0, 18.0, st, ht);
+        p.draw_toggle_switch(tx + tile_w - 46.0, tile_y + 9.0 + dy * 0.5, 38.0, 18.0, st, ht);
         p.text(
             sub,
-            tx + 14.0,
+            tx + 10.0,
             tile_y + 41.5 + dy,
             9.6,
             Weight::Regular,

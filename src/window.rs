@@ -1,11 +1,13 @@
 #![allow(unsafe_op_in_unsafe_fn)]
 
 use crate::audio::set_master_volume;
-use crate::backdrop::{self, Backdrop};
-use crate::backdrop_geom::{self, ShellGeom};
+use crate::backdrop;
+use crate::backdrop_geom::ShellGeom;
+use crate::dcomp_blur::BlurSpec;
 use crate::capture::{
     capture_foreground_window_rect, copy_text_to_clipboard, grab_full_desktop_frame,
-    grab_rect_frame, pictures_capture_dir, read_clipboard_text, save_frame, shell_open_path,
+    grab_rect_frame, has_clipboard_image, pictures_capture_dir, read_clipboard_dib_to_shelf,
+    read_clipboard_text, save_frame, shell_open_path,
 };
 use crate::composition::DCompHost;
 use crate::media::{next_track, prev_track, seek_to_position_ms, toggle_play_pause};
@@ -16,7 +18,7 @@ use crate::models::{
 };
 use crate::notifications;
 use crate::renderer::Renderer;
-use std::cell::{Cell, RefCell};
+use std::cell::RefCell;
 use std::sync::atomic::{AtomicBool, AtomicI32, AtomicIsize, AtomicU32, Ordering};
 use std::sync::{Arc, Mutex};
 use windows::Win32::Foundation::*;
@@ -61,6 +63,8 @@ const WINDOW_NAME: PCWSTR = w!("CyNotch");
 const TIMER_ANIMATION_ID: usize = 1;
 const TIMER_POLL_ID: usize = 2;
 const TIMER_HOVER_OPEN_ID: usize = 3;
+const TIMER_DRAG_LEAVE_ID: usize = 4;
+const TIMER_DRAG_EXPAND_ID: usize = 5;
 const WM_MOUSELEAVE_CODE: u32 = 0x02A3;
 const WM_CLIPBOARDUPDATE: u32 = 0x031D;
 const WM_DROPFILES_CODE: u32 = 0x0233;
@@ -491,6 +495,11 @@ enum DragMode {
     MusicScrubber {
         moved: bool,
     },
+    ShelfItemPending {
+        item_id: u64,
+        start_x: i32,
+        start_y: i32,
+    },
 }
 
 unsafe fn get_monitor_rect(hwnd: HWND) -> RECT {
@@ -820,17 +829,14 @@ struct NotchUi {
     last_rgn: Option<(i32, i32, i32, i32, i32, u8, u8, u8)>,
     idle_since: Option<std::time::Instant>,
     idle_caches_trimmed: bool,
-    /// Paired frosted-blur window (see `backdrop.rs`). `None` until first needed.
-    backdrop: Option<Backdrop>,
-    backdrop_wanted: bool,
-    backdrop_geom: Option<ShellGeom>,
-    backdrop_inset: i32,
     /// Click-through physical screen-edge purple glow overlay (see `edge_glow.rs`).
     edge_glow: Option<crate::edge_glow::EdgeGlowOverlay>,
-}
-
-thread_local! {
-    static BACKDROP_SYNCING: Cell<bool> = const { Cell::new(false) };
+    /// Last timestamp OLE DragEnter/DragOver was observed (for 550ms stuck-drag watchdog).
+    ole_drag_last_seen: Option<std::time::Instant>,
+    /// True when LBUTTON is held near the collapsed pill to invisibly inflate the drop hit area.
+    ole_drag_hotzone: bool,
+    /// True while waiting for the 120ms drag-enter dwell before expanding a collapsed notch.
+    ole_drag_pending_expand: bool,
 }
 
 thread_local! {
@@ -899,7 +905,31 @@ pub fn compute_window_region_spec(state: &AppState) -> (i32, i32, i32, i32, i32,
 unsafe fn sync_notch_window_region(hwnd: HWND, state: &AppState, cw: i32, ch: i32) {
     let cw = cw.max(1);
     let ch = ch.max(1);
-    let spec = compute_window_region_spec_for_canvas(state, cw, ch);
+    let hotzone = NOTCH_UI
+        .try_with(|cell| {
+            cell.try_borrow()
+                .map(|ui| ui.ole_drag_hotzone)
+                .unwrap_or(false)
+        })
+        .unwrap_or(false);
+    let mut spec = compute_window_region_spec_for_canvas(state, cw, ch);
+    if state.shelf_fx.drag_hover_active {
+        // Freeze region to full canvas during active OLE drag so expand animation
+        // never thrashes SetWindowRgn / DragLeave.
+        spec = (0, 0, cw, ch, 0, 250, spec.6, 0);
+    } else if hotzone {
+        // Tight +24px drop hot-zone around collapsed pill only after user has actively dragged >= 12px.
+        spec = (
+            (spec.0 - 24).max(0),
+            (spec.1 - 12).max(0),
+            (spec.2 + 24).min(cw),
+            (spec.3 + 18).min(ch),
+            0,
+            251,
+            spec.6,
+            0,
+        );
+    }
     let unchanged = NOTCH_UI
         .try_with(|cell| {
             cell.try_borrow()
@@ -911,52 +941,19 @@ unsafe fn sync_notch_window_region(hwnd: HWND, state: &AppState, cw: i32, ch: i3
         return;
     }
 
-    let (x0, y0, x1, y1, diam, style_key, place_key, sharp_mask) = spec;
-    let x0 = (x0 - 2).max(0);
-    let y0 = (y0 - 2).max(0);
-    let x1 = (x1 + 2).min(cw);
-    let y1 = (y1 + 2).min(ch);
-    let rgn_diam = (diam + 4).clamp(2, (x1 - x0).min(y1 - y0).max(2));
-    let hrgn = if style_key == 0 {
-        CreateRoundRectRgn(x0, y0, x1, y1, rgn_diam, rgn_diam)
-    } else {
-        let ext = (rgn_diam / 2).max(4);
-        let (rx0, ry0, rx1, ry1) = match place_key {
-            0 => (x0, y0 - ext, x1, y1),
-            1 => (x0 - ext, y0, x1, y1),
-            _ => (x0, y0, x1 + ext, y1),
-        };
-        let r_round = CreateRoundRectRgn(rx0, ry0, rx1, ry1, rgn_diam, rgn_diam);
-        if !r_round.is_invalid() {
-            let r_box = CreateRectRgn(x0, y0, x1, y1);
-            if !r_box.is_invalid() {
-                let _ = CombineRgn(r_round, r_round, r_box, RGN_AND);
-                let _ = DeleteObject(HGDIOBJ(r_box.0));
-            }
-        }
-        r_round
-    };
+    let (x0, y0, x1, y1, _diam, _style_key, _place_key, _sharp_mask) = spec;
+    // Use a rectangular input-passthrough region with +1px outward margin so
+    // GDI 1-bit SetWindowRgn NEVER clips any Direct2D / CompositionMaskBrush
+    // anti-aliased rounded corner pixels, while clicks immediately outside/below
+    // the shell (e.g. top-center browser tabs) pass straight through to other apps.
+    let x0 = (x0 - 1).max(0);
+    let y0 = (y0 - 1).max(0);
+    let x1 = (x1 + 1).min(cw);
+    let y1 = (y1 + 1).min(ch);
+    let hrgn = CreateRectRgn(x0, y0, x1, y1);
 
     if hrgn.is_invalid() {
         return;
-    }
-    if sharp_mask != 0 {
-        let rad = ((diam + 1) / 2).max(2);
-        let corners = [
-            (1u8, x0, y0, (x0 + rad).min(x1), (y0 + rad).min(y1)),
-            (2u8, (x1 - rad).max(x0), y0, x1, (y0 + rad).min(y1)),
-            (4u8, (x1 - rad).max(x0), (y1 - rad).max(y0), x1, y1),
-            (8u8, x0, (y1 - rad).max(y0), (x0 + rad).min(x1), y1),
-        ];
-        for (bit, cx0, cy0, cx1, cy1) in corners {
-            if sharp_mask & bit != 0 && cx1 > cx0 && cy1 > cy0 {
-                let patch = CreateRectRgn(cx0, cy0, cx1, cy1);
-                if !patch.is_invalid() {
-                    let _ = CombineRgn(hrgn, hrgn, patch, RGN_OR);
-                    let _ = DeleteObject(HGDIOBJ(patch.0));
-                }
-            }
-        }
     }
     if SetWindowRgn(hwnd, hrgn, false) != 0 {
         let _ = NOTCH_UI.try_with(|cell| {
@@ -1009,71 +1006,6 @@ pub fn notch_backdrop_geom(state: &AppState, cw: i32, ch: i32) -> Option<ShellGe
         place,
         sharp_mask,
     )
-}
-
-/// Keeps the paired blur window glued under the notch using the geometry cached
-/// by the last `redraw_window`. Safe to call from any window message: it never
-/// locks `AppState`, skips quietly if `NOTCH_UI` is mid-borrow, and ignores
-/// re-entrant calls.
-unsafe fn sync_notch_backdrop(hwnd: HWND, visible_override: Option<bool>) {
-    if BACKDROP_SYNCING.get() {
-        return;
-    }
-    BACKDROP_SYNCING.set(true);
-    sync_notch_backdrop_inner(hwnd, visible_override);
-    BACKDROP_SYNCING.set(false);
-}
-
-unsafe fn sync_notch_backdrop_inner(hwnd: HWND, visible_override: Option<bool>) {
-    let snap = NOTCH_UI
-        .try_with(|c| {
-            c.try_borrow()
-                .ok()
-                .map(|ui| (ui.backdrop_wanted, ui.backdrop_geom, ui.backdrop_inset))
-        })
-        .ok()
-        .flatten();
-    let Some((wanted, geom, inset)) = snap else {
-        return;
-    };
-    let visible = visible_override.unwrap_or_else(|| IsWindowVisible(hwnd).as_bool());
-    let placement = if wanted && visible {
-        geom.and_then(|g| {
-            let mut rc = RECT::default();
-            if GetWindowRect(hwnd, &mut rc).is_ok() {
-                backdrop_geom::placement(rc.left, rc.top, &g, inset)
-            } else {
-                None
-            }
-        })
-    } else {
-        None
-    };
-    if placement.is_none() && !wanted {
-        // Nothing to show: avoid creating a window just to hide it.
-        let has = NOTCH_UI
-            .try_with(|c| c.try_borrow().map(|ui| ui.backdrop.is_some()).unwrap_or(false))
-            .unwrap_or(false);
-        if !has {
-            return;
-        }
-    }
-    let taken = NOTCH_UI
-        .try_with(|c| c.try_borrow_mut().ok().map(|mut ui| ui.backdrop.take()))
-        .ok()
-        .flatten();
-    let Some(mut slot) = taken else {
-        return;
-    };
-    let failed = backdrop::sync_slot(&mut slot, hwnd, placement);
-    let _ = NOTCH_UI.try_with(|c| {
-        if let Ok(mut ui) = c.try_borrow_mut() {
-            ui.backdrop = slot;
-        }
-    });
-    if failed {
-        post_redraw();
-    }
 }
 
 unsafe fn sync_animation_timer(hwnd: HWND, desired_ms: Option<u32>) {
@@ -1387,7 +1319,6 @@ unsafe fn ensure_topmost_zorder(hwnd: HWND) {
                                 | "XamlExplorerHostIslandWindow"
                                 | "SearchHost"
                                 | "StartMenuExperienceHost"
-                                | backdrop::CLASS_NAME_STR
                                 | crate::edge_glow::CLASS_NAME_STR
                         );
                         if !transient_shell {
@@ -1439,7 +1370,10 @@ unsafe fn attach_hwnd_resources(hwnd: HWND) {
     );
 
     let _ = AddClipboardFormatListener(hwnd);
-    DragAcceptFiles(hwnd, 1);
+    if !crate::shelf_dnd::register_drop_target(hwnd) {
+        // Fallback to legacy WM_DROPFILES only if OLE RegisterDragDrop fails.
+        DragAcceptFiles(hwnd, 1);
+    }
 
     add_tray_icon(hwnd);
 
@@ -1452,6 +1386,10 @@ unsafe fn attach_hwnd_resources(hwnd: HWND) {
 unsafe fn detach_hwnd_resources(hwnd: HWND) {
     let _ = KillTimer(hwnd, TIMER_ANIMATION_ID);
     let _ = KillTimer(hwnd, TIMER_POLL_ID);
+    let _ = KillTimer(hwnd, TIMER_HOVER_OPEN_ID);
+    let _ = KillTimer(hwnd, TIMER_DRAG_LEAVE_ID);
+    let _ = KillTimer(hwnd, TIMER_DRAG_EXPAND_ID);
+    crate::shelf_dnd::revoke_drop_target(hwnd);
     set_high_res_slot(1, false);
     remove_tray_icon(hwnd);
     let _ = RemoveClipboardFormatListener(hwnd);
@@ -1990,13 +1928,7 @@ unsafe fn perform_capture_async(hwnd: HWND, active_window_only: bool) {
                 state.capture.total_captures += 1;
 
                 chime = state.chime_enabled;
-                let dims_label = state.capture.last_dims.clone();
-                state.set_notification(
-                    "Screenshot Captured".to_string(),
-                    format!("{} ({})", cap.filename, dims_label),
-                    NotificationKind::Capture,
-                    true,
-                );
+                state.record_capture_pulse(cap.filename, cap.path);
             } else {
                 state.set_notification(
                     "Capture Failed".to_string(),
@@ -2084,17 +2016,6 @@ unsafe extern "system" fn wnd_proc(
 unsafe fn wnd_proc_inner(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPARAM) -> LRESULT {
     match msg {
         WM_MOUSEACTIVATE => LRESULT(MA_NOACTIVATE as isize),
-        WM_WINDOWPOSCHANGED => {
-            let r = DefWindowProcW(hwnd, msg, wparam, lparam);
-            sync_notch_backdrop(hwnd, None);
-            r
-        }
-        WM_SHOWWINDOW => {
-            let r = DefWindowProcW(hwnd, msg, wparam, lparam);
-            // IsWindowVisible is not yet updated inside this message: use wparam.
-            sync_notch_backdrop(hwnd, Some(wparam.0 != 0));
-            r
-        }
         WM_WINDOWPOSCHANGING => {
             if lparam.0 != 0 {
                 let wp = &mut *(lparam.0 as *mut WINDOWPOS);
@@ -2193,14 +2114,14 @@ unsafe fn wnd_proc_inner(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPARAM) -
             LRESULT(0)
         }
         WM_NCHITTEST => {
-            let is_dragging = NOTCH_UI
+            let (is_dragging, ole_hotzone) = NOTCH_UI
                 .try_with(|cell| {
                     cell.try_borrow()
-                        .map(|ui| !matches!(ui.drag_mode, DragMode::None))
-                        .unwrap_or(false)
+                        .map(|ui| (!matches!(ui.drag_mode, DragMode::None), ui.ole_drag_hotzone))
+                        .unwrap_or((false, false))
                 })
-                .unwrap_or(false);
-            if is_dragging {
+                .unwrap_or((false, false));
+            if is_dragging || ole_hotzone {
                 return LRESULT(1); // HTCLIENT
             }
             let sx = (lparam.0 & 0xffff) as i16 as i32;
@@ -2210,6 +2131,9 @@ unsafe fn wnd_proc_inner(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPARAM) -
             let in_capsule = if let Some(state_mutex) = get_global_state()
                 && let Ok(st) = state_mutex.lock()
             {
+                if st.shelf_fx.drag_hover_active {
+                    return LRESULT(1); // HTCLIENT across full canvas during OLE drag
+                }
                 let (cw, ch) = NOTCH_UI.with_borrow(|ui| {
                     if ui.prev_dib_w > 0 && ui.prev_dib_h > 0 {
                         (ui.prev_dib_w as f32, ui.prev_dib_h as f32)
@@ -2337,7 +2261,7 @@ unsafe fn wnd_proc_inner(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPARAM) -
             let cmd = wparam.0 & 0xffff;
             match cmd {
                 MENU_TOGGLE => {
-                    NOTCH_UI.with_borrow_mut(|ui| {
+                NOTCH_UI.with_borrow_mut(|ui| {
                         ui.hidden_for_fullscreen = false;
                     });
                     let _ = ShowWindow(hwnd, SW_SHOWNOACTIVATE);
@@ -2365,7 +2289,7 @@ unsafe fn wnd_proc_inner(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPARAM) -
                     trigger_purge_ram_async(hwnd);
                 }
                 MENU_PIN => {
-                    NOTCH_UI.with_borrow_mut(|ui| {
+                NOTCH_UI.with_borrow_mut(|ui| {
                         ui.hidden_for_fullscreen = false;
                     });
                     let _ = ShowWindow(hwnd, SW_SHOWNOACTIVATE);
@@ -2397,7 +2321,7 @@ unsafe fn wnd_proc_inner(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPARAM) -
                     redraw_window(hwnd);
                 }
                 MENU_MINIMIZE => {
-                    NOTCH_UI.with_borrow_mut(|ui| {
+                NOTCH_UI.with_borrow_mut(|ui| {
                         ui.hidden_for_fullscreen = false;
                     });
                     let _ = ShowWindow(hwnd, SW_SHOWNOACTIVATE);
@@ -2472,6 +2396,10 @@ unsafe fn wnd_proc_inner(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPARAM) -
             if !watch_enabled {
                 return LRESULT(0);
             }
+            // Respect password managers & Windows Clipboard History privacy flags.
+            if crate::shelf_dnd::is_clipboard_sensitive(hwnd) {
+                return LRESULT(0);
+            }
             if let Some(text) = read_clipboard_text(hwnd) {
                 let app =
                     crate::screentime::get_active_app_name().unwrap_or_else(|| "App".to_string());
@@ -2480,6 +2408,30 @@ unsafe fn wnd_proc_inner(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPARAM) -
                     && let Ok(mut state) = state_mutex.lock()
                 {
                     state.push_clipboard(text, &app);
+                    updated = true;
+                }
+                if updated {
+                    redraw_window(hwnd);
+                }
+            } else if let Some((filename, full_path)) = read_clipboard_dib_to_shelf(hwnd) {
+                let mut updated = false;
+                if let Some(state_mutex) = get_global_state()
+                    && let Ok(mut state) = state_mutex.lock()
+                {
+                    state.push_clipboard_image(filename, full_path);
+                    updated = true;
+                }
+                if updated {
+                    redraw_window(hwnd);
+                }
+            } else if has_clipboard_image() {
+                let mut updated = false;
+                if let Some(state_mutex) = get_global_state()
+                    && let Ok(mut state) = state_mutex.lock()
+                {
+                    state.capture_anim_until =
+                        Some(std::time::Instant::now() + std::time::Duration::from_millis(650));
+                    state.trigger_clipboard_pulse();
                     updated = true;
                 }
                 if updated {
@@ -2628,7 +2580,7 @@ unsafe fn wnd_proc_inner(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPARAM) -
                             };
                             let desired = state.needs_animation_timer_ms();
                             let active_iv = state.desired_active_interval_ms();
-                            NOTCH_UI.with_borrow_mut(|ui| {
+                NOTCH_UI.with_borrow_mut(|ui| {
                                 if placement_changed {
                                     ui.drag_mode = DragMode::Grip {
                                         start_cursor_x: pt.x,
@@ -2688,7 +2640,7 @@ unsafe fn wnd_proc_inner(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPARAM) -
                             || (pt.y - start_cursor_y).abs() > 4;
                         if now_moved {
                             if !moved {
-                                NOTCH_UI.with_borrow_mut(|ui| {
+                NOTCH_UI.with_borrow_mut(|ui| {
                                     ui.drag_mode = DragMode::IdlePressOrDrag {
                                         start_cursor_x,
                                         start_cursor_y,
@@ -2724,7 +2676,7 @@ unsafe fn wnd_proc_inner(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPARAM) -
                                 };
                                 let desired = state.needs_animation_timer_ms();
                                 let active_iv = state.desired_active_interval_ms();
-                                NOTCH_UI.with_borrow_mut(|ui| {
+                NOTCH_UI.with_borrow_mut(|ui| {
                                     if placement_changed {
                                         ui.drag_mode = DragMode::IdlePressOrDrag {
                                             start_cursor_x: pt.x,
@@ -2815,7 +2767,7 @@ unsafe fn wnd_proc_inner(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPARAM) -
                 }
                 DragMode::MusicScrubber { .. } => {
                     let mut min_iv_ms = 12u32;
-                    NOTCH_UI.with_borrow_mut(|ui| {
+                NOTCH_UI.with_borrow_mut(|ui| {
                         ui.drag_mode = DragMode::MusicScrubber { moved: true };
                     });
                     if let Some(state_mutex) = get_global_state()
@@ -2857,6 +2809,72 @@ unsafe fn wnd_proc_inner(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPARAM) -
                     });
                     if do_redraw {
                         redraw_window(hwnd);
+                    }
+                    return LRESULT(0);
+                }
+                DragMode::ShelfItemPending {
+                    item_id,
+                    start_x,
+                    start_y,
+                } => {
+                    let mut cur = POINT::default();
+                    if GetCursorPos(&mut cur).is_ok() {
+                        let dpi = windows::Win32::UI::HiDpi::GetDpiForWindow(hwnd).max(96);
+                        let dx_thr = windows::Win32::UI::HiDpi::GetSystemMetricsForDpi(
+                            SM_CXDRAG,
+                            dpi,
+                        )
+                        .max(4);
+                        let dy_thr = windows::Win32::UI::HiDpi::GetSystemMetricsForDpi(
+                            SM_CYDRAG,
+                            dpi,
+                        )
+                        .max(4);
+                        if (cur.x - start_x).abs() >= dx_thr || (cur.y - start_y).abs() >= dy_thr {
+                            // Release capture & drag_mode BEFORE entering modal DoDragDrop loop.
+                            let _ = ReleaseCapture();
+                NOTCH_UI.with_borrow_mut(|ui| {
+                                ui.drag_mode = DragMode::None;
+                            });
+                            // Snapshot item & drop AppState lock to prevent re-entrancy deadlock.
+                            let snapshot = get_global_state().and_then(|m| {
+                                m.lock()
+                                    .ok()
+                                    .and_then(|s| s.shelf_items.iter().find(|it| it.id == item_id).cloned())
+                            });
+                            if let Some(item) = snapshot {
+                                let missing_file = matches!(
+                                    item.kind,
+                                    ShelfKind::File | ShelfKind::Image
+                                ) && !std::path::Path::new(&item.payload).exists();
+                                if missing_file {
+                                    if let Some(m) = get_global_state()
+                                        && let Ok(mut s) = m.lock()
+                                    {
+                                        s.remove_shelf_item_by_id(item_id, false);
+                                        s.set_notification(
+                                            "File Missing".to_string(),
+                                            item.label,
+                                            NotificationKind::General,
+                                            false,
+                                        );
+                                    }
+                                    redraw_window(hwnd);
+                                    return LRESULT(0);
+                                }
+                                let accepted = crate::shelf_dnd::start_shelf_drag_out(hwnd, &item);
+                                if accepted {
+                                    // Auto-remove row with 8s Undo chip; keep temp image on disk until exit/restart.
+                                    if let Some(m) = get_global_state()
+                                        && let Ok(mut s) = m.lock()
+                                    {
+                                        s.remove_shelf_item_by_id(item_id, true);
+                                    }
+                                }
+                                sync_cursor_hover_after_ole(hwnd);
+                                redraw_window(hwnd);
+                            }
+                        }
                     }
                     return LRESULT(0);
                 }
@@ -3086,7 +3104,7 @@ unsafe fn wnd_proc_inner(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPARAM) -
                             state.save_config();
                         }
                         if glide_on_release {
-                            NOTCH_UI.with_borrow_mut(|ui| {
+                NOTCH_UI.with_borrow_mut(|ui| {
                                 ui.snap_glide_active = true;
                                 ui.last_anim_instant = Some(std::time::Instant::now());
                             });
@@ -3118,6 +3136,56 @@ unsafe fn wnd_proc_inner(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPARAM) -
                         }
                         if let Some(pos) = seek_pos {
                             seek_to_position_ms(pos);
+                        }
+                        redraw_window(hwnd);
+                    }
+                    DragMode::ShelfItemPending { item_id, .. } => {
+                        // Click (< drag threshold): activate item (copy text/URL or open file/image).
+                        let mut clip_copy: Option<String> = None;
+                        let mut open_path: Option<String> = None;
+                        let mut chime_to_play = false;
+                        if let Some(state_mutex) = get_global_state()
+                            && let Ok(mut state) = state_mutex.lock()
+                            && let Some(item) = state.shelf_items.iter().find(|it| it.id == item_id).cloned()
+                        {
+                            match item.kind {
+                                ShelfKind::Text | ShelfKind::Url => {
+                                    clip_copy = Some(item.payload);
+                                    state.trigger_clipboard_pulse();
+                                }
+                                ShelfKind::File | ShelfKind::Image => {
+                                    if std::path::Path::new(&item.payload).exists() {
+                                        open_path = Some(item.payload);
+                                        state.set_notification(
+                                            "Opened File".to_string(),
+                                            item.label,
+                                            NotificationKind::Pasted,
+                                            true,
+                                        );
+                                    } else {
+                                        state.remove_shelf_item_by_id(item_id, false);
+                                        state.set_notification(
+                                            "File Missing".to_string(),
+                                            item.label,
+                                            NotificationKind::General,
+                                            false,
+                                        );
+                                    }
+                                }
+                            }
+                            chime_to_play = state.chime_enabled;
+                        }
+                        if let Some(text) = clip_copy {
+                            IGNORE_NEXT_CLIPBOARD.store(true, Ordering::Release);
+                            if !copy_text_to_clipboard(hwnd, &text) {
+                                IGNORE_NEXT_CLIPBOARD.store(false, Ordering::Release);
+                            }
+                        }
+                        if let Some(path) = open_path {
+                            shell_open_path(&path);
+                        }
+                        if chime_to_play {
+                            play_chime_async(0);
                         }
                         redraw_window(hwnd);
                     }
@@ -3160,14 +3228,14 @@ unsafe fn wnd_proc_inner(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPARAM) -
             let mut cap_trigger: Option<bool> = None;
             let mut purge_trigger = false;
             let mut chime_to_play: Option<u32> = None;
-            let mut open_path: Option<String> = None;
-            let mut clip_copy: Option<String> = None;
+            let open_path: Option<String> = None;
+            let clip_copy: Option<String> = None;
             let mut create_capture_dir = false;
             let mut autostart_update: Option<bool> = None;
             let mut open_settings_win = false;
             let mut notify_settings = false;
             let mut start_grip_offset: Option<i32> = None;
-            let mut start_idle_press: Option<i32> = None;
+            let start_idle_press: Option<i32> = None;
             let mut new_drag_mode: Option<DragMode> = None;
             let mut extra_effects: Option<SettingEffects> = None;
             let mut activate_notif: Option<(String, Option<String>)> = None;
@@ -3198,7 +3266,7 @@ unsafe fn wnd_proc_inner(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPARAM) -
                             state.reset_anchor_for_placement();
                             state.save_config();
                             notify_settings = true;
-                            NOTCH_UI.with_borrow_mut(|ui| {
+                NOTCH_UI.with_borrow_mut(|ui| {
                                 ui.snap_glide_active = true;
                                 ui.last_anim_instant = Some(std::time::Instant::now());
                             });
@@ -3311,47 +3379,25 @@ unsafe fn wnd_proc_inner(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPARAM) -
                                 );
                             }
                         }
-                        Action::ActivateShelfItem(idx) => {
-                            if let Some(item) = state.shelf_items.get(idx).cloned() {
-                                match item.kind {
-                                    ShelfKind::Text => {
-                                        let char_len = item.payload.chars().count();
-                                        clip_copy = Some(item.payload);
-                                        state.set_notification(
-                                            "Copied to Clipboard".to_string(),
-                                            format!("{} chars ready to paste", char_len),
-                                            NotificationKind::Pasted,
-                                            true,
-                                        );
-                                    }
-                                    ShelfKind::File => {
-                                        open_path = Some(item.payload);
-                                        state.set_notification(
-                                            "Opened File".to_string(),
-                                            item.label,
-                                            NotificationKind::Pasted,
-                                            true,
-                                        );
-                                    }
-                                }
-                                if state.chime_enabled {
-                                    chime_to_play = Some(0);
-                                }
-                            }
+                        Action::ActivateShelfItem(item_id) => {
+                            let mut cur = POINT::default();
+                            let _ = GetCursorPos(&mut cur);
+                            new_drag_mode = Some(DragMode::ShelfItemPending {
+                                item_id,
+                                start_x: cur.x,
+                                start_y: cur.y,
+                            });
                         }
-                        Action::DeleteShelfItem(idx) => {
-                            if idx < state.shelf_items.len() {
-                                state.shelf_items.remove(idx);
-                                let vis = if state.placement.is_vertical() { 6 } else { 3 };
-                                let max_s = state.shelf_items.len().saturating_sub(vis);
-                                state.shelf_scroll = state.shelf_scroll.min(max_s);
-                                state.save_shelf();
-                            }
+                        Action::DeleteShelfItem(item_id) => {
+                            state.remove_shelf_item_by_id(item_id, true);
+                        }
+                        Action::UndoShelfRemove => {
+                            state.undo_shelf_remove();
                         }
                         Action::ClearShelf => {
                             state.shelf_items.clear();
+                            state.shelf_undo = None;
                             state.shelf_scroll = 0;
-                            state.save_shelf();
                         }
                         Action::CaptureScreen => {
                             cap_trigger = Some(false);
@@ -3484,21 +3530,14 @@ unsafe fn wnd_proc_inner(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPARAM) -
                         }
                     }
                 } else if !state.is_hovered {
-                    start_idle_press = Some(if state.placement.is_vertical() {
-                        state.y_offset
-                    } else {
-                        state.x_offset
-                    });
-                } else {
-                    let (cw, ch) = (state.canvas_width() as f32, state.canvas_height() as f32);
-                    let (_ox, oy) = Renderer::compute_origin(&state, cw, ch);
-                    let ly = (y - oy) / state.expanded_scale().max(0.5);
-                    if (0.0..=56.0).contains(&ly) {
-                        start_grip_offset = Some(if state.placement.is_vertical() {
-                            state.y_offset
-                        } else {
-                            state.x_offset
-                        });
+                    // Only expand on click when "Expand Click Only" (`click_to_open`) is enabled.
+                    // Dragging notch position is strictly via the 6-dot `Action::StartGripDrag` handle.
+                    if state.click_to_open {
+                        state.set_hovered(true);
+                        if state.record_notch_expand_for_hint() {
+                            state.save_config();
+                        }
+                        notify_settings = true;
                     }
                 }
             }
@@ -3506,7 +3545,7 @@ unsafe fn wnd_proc_inner(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPARAM) -
             if let Some(start_offset) = start_grip_offset {
                 let mut pt = POINT::default();
                 if GetCursorPos(&mut pt).is_ok() {
-                    NOTCH_UI.with_borrow_mut(|ui| {
+                NOTCH_UI.with_borrow_mut(|ui| {
                         ui.drag_mode = DragMode::Grip {
                             start_cursor_x: pt.x,
                             start_cursor_y: pt.y,
@@ -3518,7 +3557,7 @@ unsafe fn wnd_proc_inner(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPARAM) -
             } else if let Some(start_offset) = start_idle_press {
                 let mut pt = POINT::default();
                 if GetCursorPos(&mut pt).is_ok() {
-                    NOTCH_UI.with_borrow_mut(|ui| {
+                NOTCH_UI.with_borrow_mut(|ui| {
                         ui.drag_mode = DragMode::IdlePressOrDrag {
                             start_cursor_x: pt.x,
                             start_cursor_y: pt.y,
@@ -3721,7 +3760,7 @@ unsafe fn wnd_proc_inner(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPARAM) -
                     }
                 }
                 if cursor_left {
-                    NOTCH_UI.with_borrow_mut(|ui| {
+                NOTCH_UI.with_borrow_mut(|ui| {
                         ui.is_tracking_mouse = false;
                         ui.pointer_pos = None;
                         ui.hover_hit_idx = None;
@@ -3730,7 +3769,31 @@ unsafe fn wnd_proc_inner(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPARAM) -
                 if should_redraw {
                     redraw_window(hwnd);
                 }
+            } else if wparam.0 == TIMER_DRAG_EXPAND_ID {
+                let _ = KillTimer(hwnd, TIMER_DRAG_EXPAND_ID);
+                let pending = NOTCH_UI.with_borrow_mut(|ui| {
+                    let p = ui.ole_drag_pending_expand;
+                    ui.ole_drag_pending_expand = false;
+                    p
+                });
+                if pending {
+                    let mut post_ms = None;
+                    if let Some(state_mutex) = get_global_state()
+                        && let Ok(mut state) = state_mutex.lock()
+                        && state.shelf_fx.drag_hover_active
+                    {
+                        state.mode = NotchMode::Shelf;
+                        state.set_hovered(true);
+                        post_ms = state.needs_animation_timer_ms();
+                    }
+                    sync_animation_timer(hwnd, post_ms);
+                    redraw_window(hwnd);
+                }
+            } else if wparam.0 == TIMER_DRAG_LEAVE_ID {
+                let _ = KillTimer(hwnd, TIMER_DRAG_LEAVE_ID);
+                finish_ole_drag_leave(hwnd);
             } else if wparam.0 == TIMER_POLL_ID {
+                poll_ole_drag_hotzone_and_watchdog(hwnd);
                 let now = std::time::Instant::now();
                 let one_sec_elapsed = NOTCH_UI.with_borrow_mut(|ui| match ui.last_second_tick {
                     Some(prev)
@@ -3749,6 +3812,18 @@ unsafe fn wnd_proc_inner(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPARAM) -
                 let mut hide_fullscreen_pref = false;
                 let mut is_protected = false;
                 let mut idle_collapsed = false;
+                let mut start_dwell_ms: Option<u32> = None;
+                let mut cancel_dwell = false;
+                let (cw_poll, ch_poll, hidden_poll) = NOTCH_UI.with_borrow(|ui| {
+                    (ui.prev_dib_w, ui.prev_dib_h, ui.hidden_for_fullscreen)
+                });
+                let mut cur_poll = POINT::default();
+                let cursor_poll_ok = !hidden_poll
+                    && IsWindowVisible(hwnd).as_bool()
+                    && GetCursorPos(&mut cur_poll).is_ok();
+                if cursor_poll_ok {
+                    let _ = ScreenToClient(hwnd, &mut cur_poll);
+                }
                 if let Some(state_mutex) = get_global_state()
                     && let Ok(mut state) = state_mutex.lock()
                 {
@@ -3759,6 +3834,35 @@ unsafe fn wnd_proc_inner(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPARAM) -
                         || state.notification_overlays_fullscreen();
                     if state.notification.is_some() && state.expire_notification() {
                         needs_redraw = true;
+                    }
+                    // When collapsed with click-through (`WS_EX_TRANSPARENT`), WM_MOUSEMOVE does not fire;
+                    // poll cursor position here so hover dwell still opens the panel reliably.
+                    if cursor_poll_ok
+                        && !state.click_to_open
+                        && !state.is_hovered
+                        && state.notification.is_none()
+                    {
+                        let (w, h) = if cw_poll > 0 && ch_poll > 0 {
+                            (cw_poll as f32, ch_poll as f32)
+                        } else {
+                            (state.canvas_width() as f32, state.canvas_height() as f32)
+                        };
+                        let in_cap = Renderer::point_in_capsule(
+                            &state,
+                            w,
+                            h,
+                            cur_poll.x as f32,
+                            cur_poll.y as f32,
+                        );
+                        if in_cap {
+                            if !state.is_hover_pending {
+                                state.begin_hover_dwell(now);
+                                start_dwell_ms = Some(state.hover_dwell_speed.ms() as u32);
+                            }
+                        } else if state.is_hover_pending {
+                            state.cancel_hover_dwell();
+                            cancel_dwell = true;
+                        }
                     }
                     if one_sec_elapsed
                         && state.media.is_playing
@@ -3790,6 +3894,12 @@ unsafe fn wnd_proc_inner(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPARAM) -
                             }
                         }
                     }
+                }
+
+                if let Some(ms) = start_dwell_ms {
+                    SetTimer(hwnd, TIMER_HOVER_OPEN_ID, ms.max(100), None);
+                } else if cancel_dwell {
+                    let _ = KillTimer(hwnd, TIMER_HOVER_OPEN_ID);
                 }
 
                 NOTCH_UI.with_borrow_mut(|ui| {
@@ -3893,9 +4003,6 @@ unsafe fn wnd_proc_inner(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPARAM) -
                 ui.last_rgn = None;
                 ui.idle_since = None;
                 ui.idle_caches_trimmed = false;
-                ui.backdrop = None;
-                ui.backdrop_wanted = false;
-                ui.backdrop_geom = None;
                 ui.edge_glow = None;
             });
             crate::composition::release_thread_locals();
@@ -3994,31 +4101,20 @@ unsafe fn redraw_window(hwnd: HWND) {
         });
     let force_full = !prev_init || size_changed || pos_changed;
 
-    {
-        // Cache the shell silhouette BEFORE any SetWindowPos so the
-        // WM_WINDOWPOSCHANGED hook positions the blur from fresh numbers.
-        // Only apply extra inset when capsule geometry is actually resizing (not on idle mascot/dwell).
-        let geom_moving = state_snapshot.is_size_moving();
-        let wanted = state_snapshot.is_frosted_active()
-            && backdrop::blur_available()
-            && !(backdrop::HIDE_WHILE_ANIMATING && geom_moving);
-        backdrop::set_blur_px(state_snapshot.frosted_blur_px);
-        let geom = notch_backdrop_geom(&state_snapshot, canvas_w, canvas_h);
-        let base_inset = geom
-            .as_ref()
-            .map(|g| backdrop::inset_for_radius(g.diam as f32 * 0.5))
-            .unwrap_or(backdrop::REST_INSET);
-        let inset = if geom_moving {
-            base_inset + backdrop::ANIMATION_EXTRA_INSET
-        } else {
-            base_inset
-        };
-        NOTCH_UI.with_borrow_mut(|ui| {
-            ui.backdrop_wanted = wanted;
-            ui.backdrop_geom = geom;
-            ui.backdrop_inset = inset;
-        });
-    }
+    let blur_spec = if state_snapshot.is_frosted_active() && backdrop::blur_available() {
+        let (ox, oy) = Renderer::compute_origin(&state_snapshot, canvas_w as f32, canvas_h as f32);
+        backdrop::set_blur_px(crate::dcomp_blur::CALIBRATED_BLUR_PX);
+        Some(BlurSpec {
+            x: ox,
+            y: oy,
+            w: state_snapshot.current_width.max(1.0),
+            h: state_snapshot.current_height.max(1.0),
+            radii: state_snapshot.corner_radii(),
+            blur_px: crate::dcomp_blur::CALIBRATED_BLUR_PX,
+        })
+    } else {
+        None
+    };
 
     let Some(mut ren) = ren_opt else {
         if let Some(h) = host_opt {
@@ -4035,6 +4131,7 @@ unsafe fn redraw_window(hwnd: HWND) {
         host_opt = DCompHost::new(hwnd, canvas_w as u32, canvas_h as u32).ok();
     }
     let mut ok = false;
+    let mut blur_failed = false;
     if let Some(host) = host_opt.as_mut() {
         let resize_res = if !prev_init {
             host.rebind_for_dpi_change(canvas_w as u32, canvas_h as u32)
@@ -4046,6 +4143,12 @@ unsafe fn redraw_window(hwnd: HWND) {
         {
             ren.render_d2d(&ctx, &state_snapshot, pointer_pos);
             ok = host.end_d2d_draw_and_present().is_ok();
+            if ok {
+                let blur_ok = host.set_blur(blur_spec);
+                if blur_spec.is_some() && !blur_ok {
+                    blur_failed = true;
+                }
+            }
         }
     }
     if !ok {
@@ -4057,9 +4160,19 @@ unsafe fn redraw_window(hwnd: HWND) {
             if let Ok(ctx) = new_host.begin_d2d_draw() {
                 ren.render_d2d(&ctx, &state_snapshot, pointer_pos);
                 ok = new_host.end_d2d_draw_and_present().is_ok();
+                if ok {
+                    let blur_ok = new_host.set_blur(blur_spec);
+                    if blur_spec.is_some() && !blur_ok {
+                        blur_failed = true;
+                    }
+                }
             }
             host_opt = Some(new_host);
         }
+    }
+    if blur_failed {
+        backdrop::mark_unavailable();
+        post_redraw();
     }
 
     // BH-18: Restore renderer & dcomp to NOTCH_UI BEFORE calling SetWindowPos so any
@@ -4110,8 +4223,8 @@ unsafe fn redraw_window(hwnd: HWND) {
     // while WM_NCHITTEST enforces sub-pixel precision inside it.
     unsafe {
         sync_notch_window_region(hwnd, &state_snapshot, canvas_w, canvas_h);
+        sync_click_through_ex_style(hwnd, &state_snapshot);
     }
-    sync_notch_backdrop(hwnd, None);
 
     // Sync the dedicated click-through physical screen-edge purple glow overlay.
     let glow_intensity = state_snapshot.anim_edge_glow_t;
@@ -4154,4 +4267,345 @@ unsafe fn redraw_window(hwnd: HWND) {
             }
         });
     }
+}
+
+// ── OLE Drag-and-Drop Lifecycle & Hot-Zone Helpers ───────────────────────────
+
+unsafe fn poll_ole_drag_hotzone_and_watchdog(hwnd: HWND) {
+    let lbutton_down =
+        (windows::Win32::UI::Input::KeyboardAndMouse::GetAsyncKeyState(0x01) as u16 & 0x8000) != 0;
+    let dragging_out = crate::shelf_dnd::IS_DRAGGING_OUT_SHELF.load(Ordering::Acquire);
+
+    // 1. Stuck-drag watchdog: if DragOver hasn't fired for >550ms and LBUTTON is up, reset.
+    let stale_drag = NOTCH_UI.with_borrow(|ui| {
+        ui.ole_drag_last_seen
+            .is_some_and(|t| t.elapsed() >= std::time::Duration::from_millis(550) && !lbutton_down)
+    });
+    if stale_drag {
+        finish_ole_drag_leave(hwnd);
+    }
+
+    // 2. Invisible drag hot-zone: when collapsed, LBUTTON is held AND user has dragged >= 14px,
+    //    and cursor is within 28px of the collapsed pill, inflate SetWindowRgn so WindowFromPoint hits CyNotch.
+    std::thread_local! {
+        static LBTN_ORIGIN: std::cell::Cell<Option<(i32, i32)>> = const { std::cell::Cell::new(None) };
+    }
+    let mut want_hotzone = false;
+    if !lbutton_down {
+        LBTN_ORIGIN.with(|c| c.set(None));
+    } else if !dragging_out && IsWindowVisible(hwnd).as_bool() {
+        let mut cur = POINT::default();
+        if GetCursorPos(&mut cur).is_ok() {
+            let (ox, oy) = LBTN_ORIGIN.with(|c| match c.get() {
+                Some(pt) => pt,
+                None => {
+                    c.set(Some((cur.x, cur.y)));
+                    (cur.x, cur.y)
+                }
+            });
+            let dragged = (cur.x - ox).abs() + (cur.y - oy).abs() >= 14;
+            if dragged {
+                let mut wr = RECT::default();
+                if GetWindowRect(hwnd, &mut wr).is_ok() {
+                    let pad = 28;
+                    if cur.x >= wr.left - pad
+                        && cur.x <= wr.right + pad
+                        && cur.y >= wr.top - pad
+                        && cur.y <= wr.bottom + pad
+                    {
+                        if let Some(m) = get_global_state()
+                            && let Ok(st) = m.lock()
+                        {
+                            want_hotzone = !st.is_hovered && !st.shelf_fx.drag_hover_active;
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    let hotzone_changed = NOTCH_UI.with_borrow_mut(|ui| {
+        if ui.ole_drag_hotzone != want_hotzone {
+            ui.ole_drag_hotzone = want_hotzone;
+            ui.last_rgn = None;
+            true
+        } else {
+            false
+        }
+    });
+    if hotzone_changed
+        && let Some(m) = get_global_state()
+        && let Ok(st) = m.lock()
+    {
+        let (cw, ch) = NOTCH_UI.with_borrow(|ui| (ui.prev_dib_w, ui.prev_dib_h));
+        if cw > 0 && ch > 0 {
+            sync_notch_window_region(hwnd, &st, cw, ch);
+        }
+        sync_click_through_ex_style(hwnd, &st);
+    }
+}
+
+/// Keeps the collapsed notch click-through (`WS_EX_TRANSPARENT`) unless `click_to_open` is ON,
+/// the panel is expanded, a notification is active, or an external drag-in is entering the hot-zone.
+unsafe fn sync_click_through_ex_style(hwnd: HWND, state: &AppState) {
+    let (ole_hotzone, is_dragging) = NOTCH_UI
+        .try_with(|cell| {
+            cell.try_borrow()
+                .map(|ui| (ui.ole_drag_hotzone, !matches!(ui.drag_mode, DragMode::None)))
+                .unwrap_or((false, false))
+        })
+        .unwrap_or((false, false));
+    let want_transparent = !state.click_to_open
+        && !state.is_hovered
+        && state.notification.is_none()
+        && !state.shelf_fx.drag_hover_active
+        && !ole_hotzone
+        && !is_dragging;
+    let mask = WS_EX_LAYERED.0 | WS_EX_TRANSPARENT.0;
+    let ex_style = GetWindowLongW(hwnd, GWL_EXSTYLE) as u32;
+    let has_transparent = (ex_style & mask) == mask;
+    if want_transparent != has_transparent {
+        let next_style = if want_transparent {
+            ex_style | mask
+        } else {
+            ex_style & !mask
+        };
+        SetWindowLongW(hwnd, GWL_EXSTYLE, next_style as i32);
+        let _ = SetWindowPos(
+            hwnd,
+            HWND::default(),
+            0,
+            0,
+            0,
+            0,
+            SWP_NOMOVE | SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE | SWP_FRAMECHANGED,
+        );
+    }
+}
+
+unsafe fn sync_cursor_hover_after_ole(hwnd: HWND) {
+    let mut cur = POINT::default();
+    let ok = GetCursorPos(&mut cur).is_ok() && IsWindowVisible(hwnd).as_bool();
+    let mut inside = false;
+    if ok {
+        let mut client = cur;
+        let _ = ScreenToClient(hwnd, &mut client);
+        if let Some(m) = get_global_state()
+            && let Ok(st) = m.lock()
+        {
+            let (cw, ch) = NOTCH_UI.with_borrow(|ui| {
+                if ui.prev_dib_w > 0 && ui.prev_dib_h > 0 {
+                    (ui.prev_dib_w as f32, ui.prev_dib_h as f32)
+                } else {
+                    (st.canvas_width() as f32, st.canvas_height() as f32)
+                }
+            });
+            inside = Renderer::point_in_capsule(&st, cw, ch, client.x as f32, client.y as f32);
+        }
+    }
+    if !inside {
+        NOTCH_UI.with_borrow_mut(|ui| {
+            ui.is_tracking_mouse = false;
+            ui.pointer_pos = None;
+            ui.hover_hit_idx = None;
+        });
+        if let Some(m) = get_global_state()
+            && let Ok(mut st) = m.lock()
+            && !st.is_pinned
+            && st.is_hovered
+        {
+            st.set_hovered(false);
+        }
+    }
+}
+
+unsafe fn finish_ole_drag_leave(hwnd: HWND) {
+    let _ = KillTimer(hwnd, TIMER_DRAG_EXPAND_ID);
+    let _ = KillTimer(hwnd, TIMER_DRAG_LEAVE_ID);
+    NOTCH_UI.with_borrow_mut(|ui| {
+        ui.ole_drag_last_seen = None;
+        ui.ole_drag_pending_expand = false;
+        ui.ole_drag_hotzone = false;
+        ui.last_rgn = None;
+    });
+    let mut post_ms = None;
+    if let Some(state_mutex) = get_global_state()
+        && let Ok(mut state) = state_mutex.lock()
+    {
+        state.shelf_fx.drag_hover_active = false;
+        if let Some(prev_mode) = state.shelf_fx.drag_pre_mode.take() {
+            state.mode = prev_mode;
+        }
+        let was_hovered = state.shelf_fx.drag_pre_hovered;
+        if !was_hovered && !state.is_pinned {
+            state.set_hovered(false);
+        }
+        post_ms = state.needs_animation_timer_ms();
+    }
+    sync_animation_timer(hwnd, post_ms);
+    redraw_window(hwnd);
+}
+
+pub(crate) unsafe fn on_ole_drag_enter(hwnd: HWND, client_x: f32, client_y: f32) {
+    let _ = KillTimer(hwnd, TIMER_DRAG_LEAVE_ID);
+    let _ = KillTimer(hwnd, TIMER_HOVER_OPEN_ID);
+    let now = std::time::Instant::now();
+    NOTCH_UI.with_borrow_mut(|ui| {
+        ui.ole_drag_last_seen = Some(now);
+        ui.ole_drag_hotzone = false;
+    });
+    let mut need_dwell_expand = false;
+    let mut post_ms = None;
+    if let Some(state_mutex) = get_global_state()
+        && let Ok(mut state) = state_mutex.lock()
+    {
+        let (cw, ch) = NOTCH_UI.with_borrow(|ui| {
+            if ui.prev_dib_w > 0 && ui.prev_dib_h > 0 {
+                (ui.prev_dib_w as f32, ui.prev_dib_h as f32)
+            } else {
+                (state.canvas_width() as f32, state.canvas_height() as f32)
+            }
+        });
+        let (ox, oy) = Renderer::compute_origin(&state, cw, ch);
+        let sc = state.expanded_scale().max(0.5);
+        let lx = (client_x - ox) / sc;
+        let ly = (client_y - oy) / sc;
+
+        if !state.shelf_fx.drag_hover_active {
+            state.shelf_fx.drag_pre_mode = Some(state.mode);
+            state.shelf_fx.drag_pre_hovered = state.is_hovered;
+            state.shelf_fx.drag_cursor_smooth = (lx, ly);
+        }
+        state.shelf_fx.drag_hover_active = true;
+        state.shelf_fx.drag_cursor_target = (lx, ly);
+
+        if state.is_hovered {
+            state.mode = NotchMode::Shelf;
+        } else {
+            need_dwell_expand = true;
+        }
+        post_ms = state.needs_animation_timer_ms();
+    }
+    if need_dwell_expand {
+        NOTCH_UI.with_borrow_mut(|ui| {
+            ui.ole_drag_pending_expand = true;
+        });
+        // 120ms dwell avoids accidental expansion when dragging toward browser tab bar.
+        SetTimer(hwnd, TIMER_DRAG_EXPAND_ID, 120, None);
+    }
+    sync_animation_timer(hwnd, post_ms);
+    redraw_window(hwnd);
+}
+
+pub(crate) unsafe fn on_ole_drag_over(hwnd: HWND, client_x: f32, client_y: f32) {
+    let _ = KillTimer(hwnd, TIMER_DRAG_LEAVE_ID);
+    NOTCH_UI.with_borrow_mut(|ui| {
+        ui.ole_drag_last_seen = Some(std::time::Instant::now());
+    });
+    if let Some(state_mutex) = get_global_state()
+        && let Ok(mut state) = state_mutex.lock()
+    {
+        let (cw, ch) = NOTCH_UI.with_borrow(|ui| {
+            if ui.prev_dib_w > 0 && ui.prev_dib_h > 0 {
+                (ui.prev_dib_w as f32, ui.prev_dib_h as f32)
+            } else {
+                (state.canvas_width() as f32, state.canvas_height() as f32)
+            }
+        });
+        let (ox, oy) = Renderer::compute_origin(&state, cw, ch);
+        let sc = state.expanded_scale().max(0.5);
+        state.shelf_fx.drag_cursor_target = ((client_x - ox) / sc, (client_y - oy) / sc);
+    }
+}
+
+pub(crate) unsafe fn on_ole_drag_leave(hwnd: HWND) {
+    let _ = KillTimer(hwnd, TIMER_DRAG_EXPAND_ID);
+    NOTCH_UI.with_borrow_mut(|ui| {
+        ui.ole_drag_pending_expand = false;
+    });
+    // 200ms debounce avoids false collapse if SetWindowPos/SetWindowRgn briefly perturbs hit-test.
+    SetTimer(hwnd, TIMER_DRAG_LEAVE_ID, 200, None);
+}
+
+pub(crate) unsafe fn on_ole_drop(
+    hwnd: HWND,
+    client_x: f32,
+    client_y: f32,
+    payloads: Vec<crate::shelf_dnd::DroppedPayload>,
+) {
+    let _ = KillTimer(hwnd, TIMER_DRAG_LEAVE_ID);
+    let _ = KillTimer(hwnd, TIMER_DRAG_EXPAND_ID);
+    NOTCH_UI.with_borrow_mut(|ui| {
+        ui.ole_drag_last_seen = None;
+        ui.ole_drag_pending_expand = false;
+        ui.ole_drag_hotzone = false;
+        ui.last_rgn = None;
+    });
+
+    if payloads.is_empty() {
+        finish_ole_drag_leave(hwnd);
+        return;
+    }
+
+    let mut play_plop = false;
+    let mut suppressed_fs = false;
+    let mut post_ms = None;
+
+    if let Some(state_mutex) = get_global_state()
+        && let Ok(mut state) = state_mutex.lock()
+    {
+        state.shelf_fx.drag_hover_active = false;
+        state.shelf_fx.drag_pre_mode = None;
+        state.mode = NotchMode::Shelf;
+        state.set_hovered(true);
+
+        let (cw, ch) = NOTCH_UI.with_borrow(|ui| {
+            if ui.prev_dib_w > 0 && ui.prev_dib_h > 0 {
+                (ui.prev_dib_w as f32, ui.prev_dib_h as f32)
+            } else {
+                (state.canvas_width() as f32, state.canvas_height() as f32)
+            }
+        });
+        let (ox, oy) = Renderer::compute_origin(&state, cw, ch);
+        let sc = state.expanded_scale().max(0.5);
+        let lx = (client_x - ox) / sc;
+        let ly = (client_y - oy) / sc;
+
+        let mut last_id = 0u64;
+        for payload in payloads {
+            match payload {
+                crate::shelf_dnd::DroppedPayload::File(path) => {
+                    let label = std::path::Path::new(&path)
+                        .file_name()
+                        .and_then(|s| s.to_str())
+                        .unwrap_or(&path)
+                        .to_string();
+                    last_id = state.push_shelf_item(ShelfKind::File, label, path);
+                }
+                crate::shelf_dnd::DroppedPayload::Image { label, path } => {
+                    last_id = state.push_shelf_item(ShelfKind::Image, label, path);
+                }
+                crate::shelf_dnd::DroppedPayload::Url(url) => {
+                    let label = url.trim().to_string();
+                    last_id = state.push_shelf_item(ShelfKind::Url, label, url);
+                }
+                crate::shelf_dnd::DroppedPayload::Text(text) => {
+                    let label = text.lines().next().unwrap_or(&text).trim().to_string();
+                    last_id = state.push_shelf_item(ShelfKind::Text, label, text);
+                }
+            }
+        }
+        if last_id != 0 {
+            state.shelf_fx.trigger_plop(lx, ly, last_id);
+        }
+        play_plop = state.chime_enabled;
+        suppressed_fs = NOTCH_UI.with_borrow(|ui| ui.hidden_for_fullscreen);
+        post_ms = state.needs_animation_timer_ms();
+    }
+
+    if play_plop {
+        crate::sound::play_water_plop(true, suppressed_fs);
+    }
+    sync_animation_timer(hwnd, post_ms);
+    redraw_window(hwnd);
 }

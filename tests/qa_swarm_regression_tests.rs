@@ -324,7 +324,8 @@ fn qa_iss03_iss10_iss12_iss15_notch_renderer_hitboxes_and_overlays() -> Result<(
         }
     }
 
-    // 3. ISS-12: Vertical expanded view with active toast still renders module dock hit boxes
+    // 3. ISS-12 (updated for v0.3.1 Auto-Stash): Vertical expanded view with active notification
+    // auto-stashes into the header Bell icon (zero floating overlay collision) and keeps dock tabs clickable.
     {
         let mut s = AppState::new_for_preview();
         s.placement = NotchPlacement::Left;
@@ -332,6 +333,10 @@ fn qa_iss03_iss10_iss12_iss15_notch_renderer_hitboxes_and_overlays() -> Result<(
         let _ = s.apply_setting_action(Action::SendTestNotification);
         s.set_hovered(true);
         s.sync_preview_settled();
+        assert!(
+            s.is_notification_stashed(),
+            "Active notification must Auto-Stash into header Bell when vertical notch expands"
+        );
         let (w, h) = (
             s.current_width.round().max(1.0) as u32,
             s.current_height.round().max(1.0) as u32,
@@ -348,13 +353,19 @@ fn qa_iss03_iss10_iss12_iss15_notch_renderer_hitboxes_and_overlays() -> Result<(
                 r.hits
                     .iter()
                     .any(|hb| hb.action == Action::SetMode(NotchMode::Music)),
-                "Vertical expanded view with active toast overlay must keep module dock tabs clickable"
+                "Vertical expanded view with stashed notification must keep module dock tabs clickable"
             );
             assert!(
                 r.hits
                     .iter()
-                    .any(|hb| hb.action == Action::DismissNotification),
-                "Vertical expanded view with active toast overlay must have DismissNotification hit box"
+                    .any(|hb| hb.action == Action::ToggleNotifHistory),
+                "Vertical expanded view with stashed notification must expose header Bell peek hit box"
+            );
+            assert!(
+                r.hits
+                    .iter()
+                    .all(|hb| hb.action != Action::DismissNotification),
+                "Vertical expanded view must not render legacy floating toast overlay"
             );
         }
     }

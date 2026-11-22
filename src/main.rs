@@ -12,7 +12,8 @@ use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::{Duration, Instant};
 use windows::Win32::Foundation::*;
-use windows::Win32::System::Com::{COINIT_APARTMENTTHREADED, COINIT_MULTITHREADED, CoInitializeEx};
+use windows::Win32::System::Com::{COINIT_MULTITHREADED, CoInitializeEx};
+use windows::Win32::System::Ole::{OleInitialize, OleUninitialize};
 use windows::Win32::System::Threading::CreateMutexW;
 use windows::Win32::UI::HiDpi::{
     DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2, SetProcessDpiAwarenessContext,
@@ -81,8 +82,12 @@ fn main() {
         }
 
         let _ = SetProcessDpiAwarenessContext(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2);
-        let _ = CoInitializeEx(None, COINIT_APARTMENTTHREADED);
+        // OLE STA required for RegisterDragDrop / DoDragDrop on the main UI thread.
+        let _ = OleInitialize(None);
     }
+
+    // Safe to wipe ephemeral shelf-cache only AFTER single-instance mutex succeeds.
+    cynotch::shelf_dnd::wipe_shelf_cache();
 
     log_info!("============================================================");
     log_info!("  ⚡ CyNotch (General Mahamatra Dynamic Island for Windows)");
@@ -393,6 +398,7 @@ fn main() {
                         }
                     }
                     s.media = m;
+                    s.sync_capsule_state_transition();
                 } else if !s.media.is_idle() {
                     s.media = models::MediaTrack::idle();
                     s.lyrics.clear();
@@ -401,6 +407,7 @@ fn main() {
                     s.lyrics_offset = 0;
                     last_song_title.clear();
                     last_gsmtc_pos_ms = 0;
+                    s.sync_capsule_state_transition();
                     ui_changed = true;
                 }
 
@@ -515,6 +522,10 @@ fn main() {
 
     if !is_smoke {
         notifications::sync_windows_notification_sound_mute(false);
+    }
+    cynotch::shelf_dnd::wipe_shelf_cache();
+    unsafe {
+        OleUninitialize();
     }
 }
 

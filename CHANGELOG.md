@@ -1,5 +1,23 @@
 # Changelog
 
+## v0.3.1 (2026-11-22)
+### 1. Pure Stealth Idle (Glowing Purple Wolf Eyes) & Staged Choreography
+- Replaced static `"CyNotch"` idle branding text in Minimal mode with **2 Glowing Purple Wolf Eyes** (`draw_wolf_eyes` in `src/renderer/mascot.rs`) featuring subtle breathing luminescence, slow natural blinks, and `~650ms` predator squint + violet micro-reaction on clipboard/capture events (`Opsi A`).
+- Implemented **Koreografi Bertahap (Staged Choreography)** calibrated to **Claude Fast** timing (`420ms` `anim_capsule_t`, `220ms` `held_shrink_dims` / `capsule_shrink_delay_until`, `0.0..0.42` roll-down exit + `0.30..1.00` overlapped roll-in):
+  - **Music → Stealth Idle**: Song title rolls downward first, Wolf Eyes fade in cleanly, then the capsule gently shrinks (`2.75 / 2.85 Hz`, `zeta = 0.92`).
+  - **Song A → Song B**: Outgoing title rolls downward before incoming track rolls in from the top.
+- Refined Music capsule typography & layout (`src/renderer/mod.rs`, `src/painter_d2d.rs`): restored `1.05x` scale, widened `music_max_width` (`240px` / `290px` / `350px`), formatted as **`Judul Lagu`** (Bold, 100% white) **`- Nama Artis`** (Regular, 75% opacity), with pure Direct2D `OpacityMask` alpha fade-out (`push_fade_mask`) before the Music badge.
+
+### 2. Side Dock Orientation (`Left -90°` / `Right +90°`)
+- Rotated Stealth Wolf Eyes and Music capsule (`-90°` Left / `+90°` Right) with the Music badge pinned at the bottom (`badge_cy = h - badge_r - 5.5`), while keeping **Notifications, Expanded Panel, Volume, and Purge upright (`0°`)** for legibility (`src/renderer/vertical.rs`, `src/renderer/mod.rs`).
+
+### 3. Click-Through Default, Grip-Only Drag, Silent Shelf & Longer Hover Dwell
+- **True Click-Through Default (`src/window.rs`)**: Added `sync_click_through_ex_style` toggling `WS_EX_LAYERED | WS_EX_TRANSPARENT` + `SetWindowPos(..., SWP_FRAMECHANGED)` when collapsed and `Expand Click Only` (`click_to_open`) is OFF, so clicks pass straight through to browser tabs/apps behind the notch; `TIMER_POLL_ID` polls cursor position to trigger hover dwell, and external drag-in (`>= 14px` movement with `VK_LBUTTON` held near the pill) temporarily lifts click-through so OLE `IDropTarget` still accepts drops.
+- **Grip-Only Window Drag**: Removed collapsed `IdlePressOrDrag` and header-bar fallback dragging so notch position is draggable strictly via the 6-dot `Action::StartGripDrag` handle.
+- **No Hover Glow & Longer Hover Dwell (`src/models.rs`)**: Disabled `anim_edge_glow_t` during hover dwell (`0Hz` while pending) and increased `HoverDwellSpeed` presets to `Quick (300ms)`, `Normal (650ms)`, and `Slow (1000ms)` (`HOVER_DWELL_MS = 650`).
+- **Silent Shelf & Snipping Tool Capture**: Removed `"Parked on Shelf"` notification banners on OLE drop/clear (`src/window.rs`), and added `Win+Shift+S` Snipping Tool `CF_DIB` clipboard image capture to Shelf (`read_clipboard_dib_to_shelf` in `src/capture.rs`) with `is_screenshot_or_snip_toast` filtering.
+- **Verified**: `149/149` tests passing across 14 suites (`cargo test`) and release build deployed to `C:\Users\muhna\.local\bin\cynotch.exe`.
+
 ## v0.3.0 (2026-11-20)
 ### 1. GPU Direct2D + DirectWrite Renderer & 55.9% Binary Size Reduction
 - Migrated all notch and Preferences rendering (`src/renderer/*`, `src/settings_window.rs`, `src/icons.rs`, `src/window.rs`) from CPU `tiny-skia` + `fontdue` to **GPU-accelerated Direct2D (`ID2D1DeviceContext`) and DirectWrite (`DWriteTextCache`)** bound directly to the DirectComposition DXGI SwapChain (`src/composition.rs`, `src/painter_d2d.rs`, `src/font_d2d.rs`), cutting expanded frame render time from **8.51–10.96 ms (CPU)** down to **0.93 ms CPU record / 1.08 ms GPU flush (~10× faster)** and idle capsule renders down to **59 µs CPU / 123 µs GPU**.

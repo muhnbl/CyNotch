@@ -1,4 +1,5 @@
 use super::*;
+use crate::painter_d2d::{PathBuilder, lerp};
 use std::fmt::Write as _;
 
 impl Renderer {
@@ -96,8 +97,8 @@ impl Renderer {
             left_w - 32.0,
             7.5,
             ram_pct,
-            tok::cyno_deep(),
-            tok::cyno_violet_hi(),
+            tok::gold_deep(),
+            tok::gold_champagne(),
         );
 
         let purge_x = margin_x + 16.0;
@@ -142,17 +143,17 @@ impl Renderer {
             Some((right_w - 34.0, 22.0, 74.0, tok::cyan_hi())),
         );
         let net_card_ht = p.hot_t(right_x, card_y, right_w, top_h);
-        if net_card_ht > 0.02 {
-            p.rrect_bevel_stroke(
-                right_x,
-                card_y,
-                right_w,
-                top_h,
-                15.0,
-                1.0,
-                fade(tok::cyan_hi(), 0.38 * net_card_ht),
-                fade(tok::cyno_violet(), 0.14 * net_card_ht),
+        if net_card_ht > 0.02 && p.prepare_rrect_clip(right_x, card_y, right_w, top_h, 15.0) {
+            p.elliptical_glow(
+                right_x + right_w * 0.5,
+                card_y + top_h + 2.0,
+                right_w * 0.52,
+                top_h * 0.58,
+                rgba(253, 230, 138, (46.0 * net_card_ht) as u8),
+                BlendMode::Plus,
+                true,
             );
+            p.pop_clip();
         }
         icons::draw(
             p,
@@ -258,17 +259,17 @@ impl Renderer {
         // Bottom-Left: Media Overview
         p.elevated_card(right_x, bot_y, sub_w, bot_h, 15.0, None);
         let media_card_ht = p.hot_t(right_x, bot_y, sub_w - 42.0, bot_h);
-        if media_card_ht > 0.02 {
-            p.rrect_bevel_stroke(
-                right_x,
-                bot_y,
-                sub_w,
-                bot_h,
-                15.0,
-                1.0,
-                fade(tok::cyno_violet_hi(), 0.45 * media_card_ht),
-                fade(tok::cyno_violet(), 0.18 * media_card_ht),
+        if media_card_ht > 0.02 && p.prepare_rrect_clip(right_x, bot_y, sub_w, bot_h, 15.0) {
+            p.elliptical_glow(
+                right_x + sub_w * 0.5,
+                bot_y + bot_h + 2.0,
+                sub_w * 0.52,
+                bot_h * 0.58,
+                rgba(253, 230, 138, (46.0 * media_card_ht) as u8),
+                BlendMode::Plus,
+                true,
             );
+            p.pop_clip();
         }
         let media_header = if state.media.is_idle() {
             "No Active Media"
@@ -338,17 +339,17 @@ impl Renderer {
         let br_x = right_x + sub_w + 12.0;
         p.elevated_card(br_x, bot_y, sub_w, bot_h, 15.0, None);
         let tasks_card_ht = p.hot_t(br_x, bot_y, sub_w - 42.0, bot_h);
-        if tasks_card_ht > 0.02 {
-            p.rrect_bevel_stroke(
-                br_x,
-                bot_y,
-                sub_w,
-                bot_h,
-                15.0,
-                1.0,
-                fade(tok::cyno_mist(), 0.42 * tasks_card_ht),
-                fade(tok::cyno_orchid(), 0.16 * tasks_card_ht),
+        if tasks_card_ht > 0.02 && p.prepare_rrect_clip(br_x, bot_y, sub_w, bot_h, 15.0) {
+            p.elliptical_glow(
+                br_x + sub_w * 0.5,
+                bot_y + bot_h + 2.0,
+                sub_w * 0.52,
+                bot_h * 0.58,
+                rgba(253, 230, 138, (46.0 * tasks_card_ht) as u8),
+                BlendMode::Plus,
+                true,
             );
+            p.pop_clip();
         }
         let pending = state.tasks.iter().filter(|t| !t.completed).count();
         p.text(
@@ -453,23 +454,39 @@ impl Renderer {
         } else {
             "PAUSED"
         };
-        let badge_txt = p.ellipsize_cow(art_badge, 9.5, Weight::Bold, card_size - 28.0);
+        let is_live = state.media.is_playing;
+        let badge_txt = p.ellipsize_cow(art_badge, 9.5, Weight::Bold, card_size - 36.0);
+        let badge_w = card_size - 32.0;
+        let badge_x = card_x + 16.0;
+        let badge_y = card_y + 116.0;
         p.rrect(
-            card_x + 16.0,
-            card_y + 116.0,
-            card_size - 32.0,
+            badge_x,
+            badge_y,
+            badge_w,
             22.0,
             11.0,
-            rgba(10, 8, 22, 150),
+            rgba(10, 8, 22, 160),
         );
-        p.text_center(
-            &badge_txt,
-            card_x + card_size / 2.0,
-            card_y + 130.5,
-            9.5,
-            Weight::Bold,
-            tok::text1(),
-        );
+        if is_live {
+            p.circle(badge_x + 12.0, badge_y + 11.0, 2.5, tok::amber_glow());
+            p.text(
+                &badge_txt,
+                badge_x + 20.0,
+                badge_y + 14.5,
+                9.5,
+                Weight::Bold,
+                tok::text1(),
+            );
+        } else {
+            p.text_center(
+                &badge_txt,
+                card_x + card_size / 2.0,
+                badge_y + 14.5,
+                9.5,
+                Weight::Bold,
+                tok::text2(),
+            );
+        }
 
         let info_x = card_x + card_size + 14.0;
         let info_w = (w - 20.0) - info_x;
@@ -502,8 +519,8 @@ impl Renderer {
                 mini_w,
                 6.0,
                 played_pct,
-                tok::cyno_deep(),
-                tok::cyno_violet(),
+                tok::gold_deep(),
+                tok::gold_champagne(),
             );
             let mini_hot = p.hot(pad_x - 4.0, card_y + 115.0, mini_w + 8.0, 22.0);
             let thumb_x = (pad_x + mini_w * played_pct).clamp(pad_x + 4.0, pad_x + mini_w - 3.0);
@@ -513,12 +530,12 @@ impl Renderer {
                 thumb_x,
                 thumb_y,
                 if mini_hot { 11.0 } else { 8.5 },
-                rgba(233, 213, 255, if mini_hot { 130 } else { 85 }),
+                rgba(200, 155, 60, if mini_hot { 125 } else { 80 }),
                 BlendMode::Plus,
                 false,
             );
             p.circle(thumb_x, thumb_y, thumb_r, rgba(255, 255, 255, 250));
-            p.circle(thumb_x, thumb_y, thumb_r * 0.44, tok::cyno_deep());
+            p.circle(thumb_x, thumb_y, thumb_r * 0.44, tok::amber_glow());
             p.hit(
                 pad_x,
                 card_y + 115.0,
@@ -575,8 +592,8 @@ impl Renderer {
             inner_w,
             6.5,
             played_pct,
-            tok::cyno_deep(),
-            tok::cyno_violet(),
+            tok::gold_deep(),
+            tok::gold_champagne(),
         );
         let scrub_hot = p.hot(pad_x - 4.0, prog_y - 6.0, inner_w + 8.0, 19.0);
         let thumb_x = (pad_x + inner_w * played_pct).clamp(pad_x + 5.0, pad_x + inner_w - 3.0);
@@ -586,12 +603,12 @@ impl Renderer {
             thumb_x,
             thumb_y,
             if scrub_hot { 12.0 } else { 9.0 },
-            rgba(233, 213, 255, if scrub_hot { 135 } else { 90 }),
+            rgba(200, 155, 60, if scrub_hot { 130 } else { 85 }),
             BlendMode::Plus,
             false,
         );
         p.circle(thumb_x, thumb_y, thumb_r, rgba(255, 255, 255, 252));
-        p.circle(thumb_x, thumb_y, thumb_r * 0.44, tok::cyno_deep());
+        p.circle(thumb_x, thumb_y, thumb_r * 0.44, tok::amber_glow());
         p.hit(
             pad_x,
             prog_y - 6.0,
@@ -1321,8 +1338,8 @@ impl Renderer {
             slider_w,
             slider_h,
             pct_clamped,
-            tok::cyno_deep(),
-            tok::cyno_violet(),
+            tok::gold_deep(),
+            tok::gold_champagne(),
         );
 
         let thumb_x = (slider_x + slider_w * pct_clamped)
@@ -1333,9 +1350,9 @@ impl Renderer {
             thumb_y,
             14.0,
             if is_muted {
-                rgba(239, 68, 68, 80)
+                rgba(220, 38, 38, 95)
             } else {
-                rgba(255, 255, 255, 110)
+                rgba(200, 155, 60, 90)
             },
             BlendMode::Plus,
             false,
@@ -1350,7 +1367,7 @@ impl Renderer {
                 rgba(255, 255, 255, 255)
             },
         );
-        p.circle(thumb_x, thumb_y, 4.0, tok::cyno_deep());
+        p.circle(thumb_x, thumb_y, 4.0, tok::amber_glow());
 
         p.hit(
             slider_x,
@@ -1491,8 +1508,8 @@ impl Renderer {
             col_w - 28.0,
             6.0,
             ram_pct,
-            tok::cyno_deep(),
-            tok::cyno_violet_hi(),
+            tok::gold_deep(),
+            tok::gold_champagne(),
         );
 
         let pools_str = format!(
@@ -1937,8 +1954,8 @@ impl Renderer {
             col_w - 32.0,
             6.5,
             share,
-            tok::cyno_deep(),
-            tok::cyno_orchid(),
+            tok::gold_deep(),
+            tok::gold_champagne(),
         );
 
         // Card 3: 7-day average
@@ -2223,21 +2240,134 @@ impl Renderer {
     }
 
     // ─────────────────────────────────────────────────────────────────────────────
-    // 7. SHELF (Persistent Clipboard History + Drag-and-Drop File Shelf)
+    // 7. SHELF (Ephemeral Drag-and-Drop + Raycast Tactile Mass Absorption & Refraction)
     // ─────────────────────────────────────────────────────────────────────────────
+    pub(super) fn draw_shelf_liquid_fx(
+        p: &mut PainterD2D,
+        state: &AppState,
+        card_x: f32,
+        card_y: f32,
+        card_w: f32,
+        card_h: f32,
+        radius: f32,
+    ) {
+        let now = std::time::Instant::now();
+        let hover_t = state.shelf_fx.drag_hover_t;
+        let plop_t = if state.are_animations_active() {
+            state
+                .shelf_fx
+                .plop_started_at
+                .map(|s| now.saturating_duration_since(s).as_secs_f32())
+                .filter(|&t| t < crate::models::LIQUID_PLOP_DURATION_SECS)
+        } else {
+            None
+        };
+        if hover_t <= 0.005 && plop_t.is_none() {
+            return;
+        }
+
+        let clipped = p.prepare_rrect_mask(card_x, card_y, card_w, card_h, radius);
+
+        // 1. Drag-over subtle cursor radial lens (MOTION_SYSTEM.md §2.2: rgba(216,180,254,0.14))
+        if hover_t > 0.005 {
+            let cx = state
+                .shelf_fx
+                .drag_cursor_smooth
+                .0
+                .clamp(card_x + 16.0, card_x + card_w - 16.0);
+            let cy = state
+                .shelf_fx
+                .drag_cursor_smooth
+                .1
+                .clamp(card_y + 16.0, card_y + card_h - 16.0);
+            p.radial_glow(
+                cx,
+                cy,
+                84.0,
+                fade(rgba(216, 180, 254, 36), hover_t),
+                BlendMode::Plus,
+                false,
+            );
+            if hover_t > 0.25 {
+                let badge_w = 112.0;
+                let badge_h = 22.0;
+                let bx = card_x + (card_w - badge_w) * 0.5;
+                let by = card_y + card_h - badge_h - 10.0;
+                p.button_pill_variant(
+                    bx,
+                    by,
+                    badge_w,
+                    badge_h,
+                    11.0,
+                    hover_t * 0.4,
+                    ButtonVariant::PrimaryOutline,
+                );
+                icons::draw(
+                    p,
+                    Icon::Droplet,
+                    bx + 10.0,
+                    by + 5.0,
+                    11.5,
+                    fade(tok::amber_glow(), hover_t),
+                );
+                p.text(
+                    "Drop to Shelf",
+                    bx + 26.0,
+                    by + 14.5,
+                    10.0,
+                    Weight::Semibold,
+                    fade(tok::text1(), hover_t),
+                );
+            }
+        }
+
+        // 2. Raycast Tactile drop impact: single crisp 380ms glass refraction hairline ring
+        //    (r: 6px -> 84px, ease-out cubic, alpha -> 0; zero sparks, zero arcs, zero particles)
+        if let Some(t) = plop_t {
+            let ox = state
+                .shelf_fx
+                .plop_origin
+                .0
+                .clamp(card_x + 20.0, card_x + card_w - 20.0);
+            let oy = state
+                .shelf_fx
+                .plop_origin
+                .1
+                .clamp(card_y + 20.0, card_y + card_h - 20.0);
+            let u = (t / crate::models::LIQUID_PLOP_DURATION_SECS).clamp(0.0, 1.0);
+            let ease = crate::models::ease_out_cubic(u);
+            let radius_px = 6.0 + ease * 78.0;
+            let alpha = (1.0 - u).powf(1.6);
+            let stroke_w = (1.25 - u * 0.65).max(0.55);
+            if alpha > 0.01 {
+                p.circle_stroke(
+                    ox,
+                    oy,
+                    radius_px,
+                    stroke_w,
+                    fade(rgba(233, 213, 255, 165), alpha),
+                );
+            }
+        }
+
+        if clipped {
+            p.pop_clip();
+        }
+    }
+
     pub(super) fn draw_shelf_view(p: &mut PainterD2D, state: &AppState, w: f32, card_y: f32) {
+        let now = std::time::Instant::now();
+        let absorb_y = if state.are_animations_active() {
+            state.shelf_fx.card_absorb_offset(now)
+        } else {
+            0.0
+        };
+        let card_y = card_y + absorb_y;
         let margin_x = 20.0;
         let card_w = w - (margin_x * 2.0);
         let card_h = 154.0;
 
-        p.elevated_card(
-            margin_x,
-            card_y,
-            card_w,
-            card_h,
-            16.0,
-            Some((card_w - 40.0, 20.0, 84.0, tok::cyno_orchid())),
-        );
+        p.elevated_card(margin_x, card_y, card_w, card_h, 22.0, None);
 
         icons::draw(
             p,
@@ -2248,7 +2378,7 @@ impl Renderer {
             tok::cyno_violet_hi(),
         );
         p.text(
-            "Clipboard & File Shelf",
+            "Temporary Shelf",
             margin_x + 44.0,
             card_y + 27.5,
             13.5,
@@ -2259,33 +2389,59 @@ impl Renderer {
         let total = state.shelf_items.len();
         let start_idx = state.shelf_scroll.min(total.saturating_sub(3));
 
-        let clr_w = 64.0;
+        let clr_w = 50.0;
         let clr_h = 24.0;
-        let clr_x = margin_x + card_w - clr_w - 16.0;
+        let clr_x = margin_x + card_w - clr_w - 14.0;
         let clr_y = card_y + 15.0;
         let clr_ht = p.hot_t(clr_x, clr_y, clr_w, clr_h);
-        p.tactile_surface_pill_t(clr_x, clr_y, clr_w, clr_h, 7.5, clr_ht, None);
+        p.button_pill_variant(clr_x, clr_y, clr_w, clr_h, 12.0, clr_ht, ButtonVariant::TextOnly);
         p.text_center(
             "Clear",
             clr_x + clr_w / 2.0,
-            clr_y + 16.0 - 0.55 * clr_ht,
-            10.0,
+            clr_y + 15.5,
+            10.5,
             Weight::Semibold,
-            lerp_color(tok::text_soft(), tok::text1(), clr_ht),
+            lerp_color(tok::text2(), tok::text1(), clr_ht),
         );
         p.hit(clr_x, clr_y, clr_w, clr_h, Action::ClearShelf);
 
+        let mut right_bound = clr_x;
+        if state.has_active_shelf_undo() {
+            let undo_w = 52.0;
+            let undo_x = clr_x - undo_w - 6.0;
+            let undo_ht = p.hot_t(undo_x, clr_y, undo_w, clr_h);
+            p.button_pill_variant(
+                undo_x,
+                clr_y,
+                undo_w,
+                clr_h,
+                12.0,
+                undo_ht,
+                ButtonVariant::PrimaryOutline,
+            );
+            p.text_center(
+                "Undo",
+                undo_x + undo_w / 2.0,
+                clr_y + 15.5,
+                10.0,
+                Weight::Semibold,
+                lerp_color(tok::amber_glow(), tok::text1(), undo_ht),
+            );
+            p.hit(undo_x, clr_y, undo_w, clr_h, Action::UndoShelfRemove);
+            right_bound = undo_x;
+        }
+
         let sub = if total > 3 {
             format!(
-                "Drop files or Ctrl+C • {}-{} of {}",
+                "Drag out to move • {}-{} of {}",
                 start_idx + 1,
                 (start_idx + 3).min(total),
                 total
             )
         } else {
-            "Drop files or Ctrl+C • Click to copy/open".to_string()
+            "Drop anything or Ctrl+C • Drag out or click".to_string()
         };
-        let sub_max_w = (clr_x - (margin_x + 44.0) - 10.0).max(60.0);
+        let sub_max_w = (right_bound - (margin_x + 44.0) - 10.0).max(60.0);
         let sub_ell = p.ellipsize_cow(&sub, 10.0, Weight::Regular, sub_max_w);
         p.text(
             &sub_ell,
@@ -2298,7 +2454,7 @@ impl Renderer {
 
         if state.shelf_items.is_empty() {
             p.text_center(
-                "Shelf empty • Drop files onto notch or press Ctrl+C anywhere",
+                "Shelf empty • Drop files, images, text or press Ctrl+C",
                 margin_x + card_w / 2.0,
                 card_y + 98.0,
                 11.5,
@@ -2306,87 +2462,356 @@ impl Renderer {
                 tok::text2(),
             );
         } else {
-            for (slot, (real_idx, item)) in state
+            let prev_alpha = p.global_alpha;
+            let visible: Vec<&crate::models::ShelfItem> = state
                 .shelf_items
                 .iter()
-                .enumerate()
                 .skip(start_idx)
                 .take(3)
-                .enumerate()
-            {
-                let item_y = card_y + 56.0 + (slot as f32 * 30.0);
-                let item_h = 26.0;
-                let item_x = margin_x + 16.0;
-                let del_w = 26.0;
-                let row_w = card_w - 32.0 - del_w - 8.0;
-                let row_ht = p.hot_t(item_x, item_y, row_w, item_h);
+                .collect();
+            let inner_x = margin_x + 14.0;
+            let inner_w = card_w - 28.0;
+            let gap = 10.0;
+            let grid_y = card_y + 52.0;
+            let tile_h = 88.0;
 
-                p.tactile_surface_pill_t(item_x, item_y, row_w, item_h, 7.5, row_ht, None);
-                let dy = -0.55 * row_ht;
-                if row_ht > 0.02 {
-                    p.rrect(
-                        item_x,
-                        item_y + dy,
-                        row_w,
-                        item_h,
-                        7.5,
-                        fade(tok::cyno_violet(), 0.25 * row_ht),
-                    );
+            let widths: Vec<f32> = match visible.len() {
+                1 => {
+                    let w0 = if visible[0].is_image() {
+                        (inner_w * 0.62).round()
+                    } else {
+                        (inner_w * 0.56).round()
+                    };
+                    vec![w0]
                 }
+                2 => {
+                    if visible[0].is_image() && !visible[1].is_image() {
+                        let w0 = ((inner_w - gap) * 0.58).round();
+                        vec![w0, inner_w - gap - w0]
+                    } else {
+                        let w0 = (inner_w - gap) * 0.5;
+                        vec![w0, w0]
+                    }
+                }
+                _ => {
+                    if visible[0].is_image() {
+                        let w0 = ((inner_w - gap * 2.0) * 0.42).round();
+                        let rem = (inner_w - gap * 2.0 - w0) * 0.5;
+                        vec![w0, rem, rem]
+                    } else {
+                        let w0 = (inner_w - gap * 2.0) / 3.0;
+                        vec![w0, w0, w0]
+                    }
+                }
+            };
 
-                let (ic, ic_col) = match item.kind {
-                    ShelfKind::File => (Icon::File, tok::cyno_mist()),
-                    ShelfKind::Text => (Icon::Clipboard, tok::cyno_violet_hi()),
+            let mut cur_x = inner_x;
+            for (slot, item) in visible.into_iter().enumerate() {
+                let (entry_y, entry_a) = if state.are_animations_active() {
+                    (
+                        state.shelf_fx.buoyancy_offset(item.id, now),
+                        state.shelf_fx.row_entry_alpha(item.id, now),
+                    )
+                } else {
+                    (0.0, 1.0)
                 };
-                icons::draw(p, ic, item_x + 10.0, item_y + 6.5 + dy, 13.0, ic_col);
-
-                let clip_snippet = p.ellipsize_cow(&item.label, 11.0, Weight::Regular, row_w - 44.0);
-                p.text(
-                    &clip_snippet,
-                    item_x + 30.0,
-                    item_y + 17.0 + dy,
-                    11.0,
-                    Weight::Regular,
-                    tok::text1(),
+                p.global_alpha = prev_alpha * entry_a;
+                let tw = widths.get(slot).copied().unwrap_or(160.0);
+                let is_hero = slot == 0 && item.is_image();
+                Self::draw_shelf_bento_tile(
+                    p,
+                    item,
+                    cur_x,
+                    grid_y + entry_y,
+                    tw,
+                    tile_h,
+                    is_hero,
                 );
-                p.hit(
-                    item_x,
-                    item_y,
-                    row_w,
-                    item_h,
-                    Action::ActivateShelfItem(real_idx),
-                );
+                cur_x += tw + gap;
+            }
+            p.global_alpha = prev_alpha;
+        }
 
-                let del_x = item_x + row_w + 8.0;
-                let del_ht = p.hot_t(del_x, item_y, del_w, item_h);
-                p.tactile_surface_pill_t(del_x, item_y, del_w, item_h, 7.5, del_ht, None);
-                if del_ht > 0.02 {
-                    p.rrect(
-                        del_x,
-                        item_y - 0.55 * del_ht,
-                        del_w,
-                        item_h,
-                        7.5,
-                        fade(rgba(220, 38, 38, 195), del_ht),
+        Self::draw_shelf_liquid_fx(p, state, margin_x, card_y, card_w, card_h, 22.0);
+    }
+
+    /// Renders an individual Bento Shelf Tile (Hero Image Tile with real decoded WIC/SVG thumbnail,
+    /// Multi-line Text Snippet Tile with `...`, Domain/Path URL Tile, or Extension File Tile).
+    pub(super) fn draw_shelf_bento_tile(
+        p: &mut PainterD2D,
+        item: &crate::models::ShelfItem,
+        tx: f32,
+        ty: f32,
+        tw: f32,
+        th: f32,
+        is_hero: bool,
+    ) {
+        let del_w = 22.0;
+        let del_h = 22.0;
+        let act_w = (tw - del_w - 4.0).max(24.0);
+        let tile_ht = p.hot_t(tx, ty, act_w, th);
+        let dy = -1.2 * tile_ht;
+        let r = 13.0;
+
+        p.button_pill_variant(
+            tx,
+            ty + dy,
+            tw,
+            th,
+            r,
+            tile_ht,
+            ButtonVariant::PrimaryOutline,
+        );
+
+        let badge = item.badge_label();
+
+        if item.is_image() {
+            // 1. Live Image Thumbnail (WIC / SVG) or Procedural Vector Preview Backdrop
+            let pad = 2.0;
+            let ix = tx + pad;
+            let iy = ty + pad + dy;
+            let iw = (tw - pad * 2.0).max(8.0);
+            let ih = (th - pad * 2.0).max(8.0);
+            let ir = (r - 1.5).max(6.0);
+
+            let drew_real = p.draw_shelf_thumbnail(&item.payload, ix, iy, iw, ih, ir);
+            if !drew_real && p.prepare_rrect_clip(ix, iy, iw, ih, ir) {
+                // Fallback procedural glass artwork preview when path is synthetic/in-memory
+                p.rrect_vertical_gradient(
+                    ix,
+                    iy,
+                    iw,
+                    ih,
+                    ir,
+                    rgba(58, 32, 112, 165),
+                    rgba(22, 14, 48, 210),
+                );
+                p.radial_glow(
+                    ix + iw * 0.72,
+                    iy + ih * 0.32,
+                    iw.min(ih) * 0.45,
+                    fade(tok::gold_champagne(), 0.42),
+                    BlendMode::Plus,
+                    true,
+                );
+                p.circle(
+                    ix + iw * 0.74,
+                    iy + ih * 0.30,
+                    if is_hero { 9.0 } else { 6.5 },
+                    fade(tok::gold_champagne(), 0.85),
+                );
+                // Vector mountain silhouette
+                let mut m1 = PathBuilder::new();
+                m1.move_to(ix, iy + ih);
+                m1.line_to(ix + iw * 0.36, iy + ih * 0.44);
+                m1.line_to(ix + iw * 0.68, iy + ih * 0.76);
+                m1.line_to(ix + iw * 0.84, iy + ih * 0.54);
+                m1.line_to(ix + iw, iy + ih * 0.72);
+                m1.line_to(ix + iw, iy + ih);
+                m1.close();
+                if let Some(path) = m1.finish() {
+                    p.fill_path(&path, rgba(139, 92, 246, 95));
+                }
+                p.pop_clip();
+            }
+
+            // Bottom dark glass scrim for caption + format pill badge legibility
+            if p.prepare_rrect_clip(ix, iy, iw, ih, ir) {
+                let scrim_h = if is_hero { 30.0 } else { 26.0 };
+                let scrim_y = iy + ih - scrim_h;
+                p.rrect_vertical_gradient(
+                    ix,
+                    scrim_y,
+                    iw,
+                    scrim_h,
+                    0.0,
+                    rgba(10, 8, 22, 20),
+                    rgba(10, 8, 22, 218),
+                );
+                p.pop_clip();
+            }
+
+            // Format Badge Pill (PNG / JPG / SVG) in Brushed Metallic Gold
+            let bw = (p.measure(&badge, 8.2, Weight::Bold) + 12.0).clamp(28.0, 44.0);
+            let bx = tx + 8.0;
+            let by = ty + th - 22.0 + dy;
+            p.rrect(bx, by, bw, 15.0, 5.0, rgba(20, 14, 38, 210));
+            p.rrect_stroke(bx, by, bw, 15.0, 5.0, 0.8, fade(tok::gold_champagne(), 0.75));
+            p.text_center(
+                &badge,
+                bx + bw * 0.5,
+                by + 10.6,
+                8.0,
+                Weight::Bold,
+                tok::gold_champagne(),
+            );
+
+            // Filename caption with `...` truncation
+            let cap_x = bx + bw + 6.0;
+            let cap_max_w = (tw - (cap_x - tx) - 8.0).max(28.0);
+            let short_lbl = p.ellipsize_cow(&item.label, 9.6, Weight::Semibold, cap_max_w);
+            p.text_shadow(
+                &short_lbl,
+                cap_x,
+                by + 11.2,
+                9.6,
+                Weight::Semibold,
+                tok::text1(),
+            );
+        } else {
+            // Top micro-header: Icon + Format Badge Pill
+            let (ic, ic_col, badge_col) = match item.kind {
+                ShelfKind::Text => (Icon::Clipboard, tok::cyno_violet_hi(), tok::text2()),
+                ShelfKind::Url => (Icon::AppBrowser, tok::amber_glow(), tok::gold_champagne()),
+                ShelfKind::File | ShelfKind::Image => (Icon::File, tok::cyno_mist(), tok::cyno_violet_hi()),
+            };
+            icons::draw(p, ic, tx + 10.0, ty + 9.0 + dy, 12.0, ic_col);
+
+            let bw = (p.measure(&badge, 8.0, Weight::Bold) + 10.0).clamp(28.0, 46.0);
+            let bx = tx + 26.0;
+            let by = ty + 7.5 + dy;
+            p.rrect(bx, by, bw, 14.5, 4.5, rgba(255, 255, 255, 14));
+            p.text_center(&badge, bx + bw * 0.5, by + 10.2, 7.8, Weight::Bold, badge_col);
+
+            let content_x = tx + 10.0;
+            let content_w = (tw - 20.0).max(32.0);
+
+            match item.kind {
+                ShelfKind::Text => {
+                    // Multi-line text snippet preview with "..." truncation
+                    let clean: String = item
+                        .payload
+                        .split_whitespace()
+                        .collect::<Vec<_>>()
+                        .join(" ");
+                    let src_txt = if clean.is_empty() {
+                        item.label.trim()
+                    } else {
+                        clean.as_str()
+                    };
+                    let max_lines = if th >= 82.0 { 3 } else { 2 };
+                    let font_sz = 9.6;
+                    let line_step = 13.0;
+                    let raw_lines = p.wrap_lines(src_txt, font_sz, Weight::Regular, content_w);
+                    let start_y = ty + 36.5 + dy;
+
+                    for i in 0..raw_lines.len().min(max_lines) {
+                        let is_last = i + 1 == max_lines && raw_lines.len() > max_lines;
+                        let line_str = if is_last {
+                            let with_dots = format!("{}...", raw_lines[i].trim_end_matches('.'));
+                            p.ellipsize_cow(&with_dots, font_sz, Weight::Regular, content_w)
+                                .into_owned()
+                        } else if p.measure(&raw_lines[i], font_sz, Weight::Regular) > content_w {
+                            p.ellipsize_cow(&raw_lines[i], font_sz, Weight::Regular, content_w)
+                                .into_owned()
+                        } else {
+                            raw_lines[i].clone()
+                        };
+                        p.text(
+                            &line_str,
+                            content_x,
+                            start_y + (i as f32) * line_step,
+                            font_sz,
+                            if i == 0 { Weight::Semibold } else { Weight::Regular },
+                            if i == 0 { tok::text1() } else { tok::text2() },
+                        );
+                    }
+                }
+                ShelfKind::Url => {
+                    let (host, path_part) = item.url_host_and_path();
+                    let host_ell = p.ellipsize_cow(&host, 10.4, Weight::Bold, content_w);
+                    p.text(
+                        &host_ell,
+                        content_x,
+                        ty + 39.0 + dy,
+                        10.4,
+                        Weight::Bold,
+                        tok::text1(),
+                    );
+                    let path_ell = p.ellipsize_cow(&path_part, 9.2, Weight::Regular, content_w);
+                    p.text(
+                        &path_ell,
+                        content_x,
+                        ty + 54.0 + dy,
+                        9.2,
+                        Weight::Regular,
+                        tok::text2(),
                     );
                 }
-                icons::draw(
-                    p,
-                    Icon::Close,
-                    del_x + 7.0,
-                    item_y + 7.0 - 0.55 * del_ht,
-                    12.0,
-                    lerp_color(tok::text2(), tok::text1(), del_ht),
-                );
-                p.hit(
-                    del_x,
-                    item_y,
-                    del_w,
-                    item_h,
-                    Action::DeleteShelfItem(real_idx),
-                );
+                ShelfKind::File | ShelfKind::Image => {
+                    let max_lines = if th >= 82.0 { 2 } else { 1 };
+                    let raw_lines = p.wrap_lines(&item.label, 10.0, Weight::Semibold, content_w);
+                    let start_y = ty + 40.0 + dy;
+                    for i in 0..raw_lines.len().min(max_lines) {
+                        let is_last = i + 1 == max_lines && raw_lines.len() > max_lines;
+                        let line_str = if is_last {
+                            let with_dots = format!("{}...", raw_lines[i]);
+                            p.ellipsize_cow(&with_dots, 10.0, Weight::Semibold, content_w)
+                                .into_owned()
+                        } else {
+                            p.ellipsize_cow(&raw_lines[i], 10.0, Weight::Semibold, content_w)
+                                .into_owned()
+                        };
+                        p.text(
+                            &line_str,
+                            content_x,
+                            start_y + (i as f32) * 13.5,
+                            10.0,
+                            Weight::Semibold,
+                            tok::text1(),
+                        );
+                    }
+                }
             }
         }
+
+        // Non-overlapping hitboxes: Activate on tile body, Delete on top-right `×` pill
+        p.hit(
+            tx,
+            ty,
+            act_w,
+            th,
+            Action::ActivateShelfItem(item.id),
+        );
+
+        let del_x = tx + tw - del_w - 3.0;
+        let del_y = ty + 3.0;
+        let del_ht = p.hot_t(del_x, del_y, del_w, del_h);
+        if item.is_image() {
+            p.rrect(
+                del_x,
+                del_y + dy,
+                del_w,
+                del_h,
+                11.0,
+                rgba(12, 10, 26, lerp(145.0, 215.0, del_ht) as u8),
+            );
+        } else {
+            p.button_pill_variant(
+                del_x,
+                del_y + dy,
+                del_w,
+                del_h,
+                11.0,
+                del_ht,
+                ButtonVariant::TextOnly,
+            );
+        }
+        icons::draw(
+            p,
+            Icon::Close,
+            del_x + 6.0,
+            del_y + 6.0 + dy,
+            10.0,
+            lerp_color(tok::text2(), tok::text1(), del_ht),
+        );
+        p.hit(
+            del_x,
+            del_y,
+            del_w + 3.0,
+            del_h + 4.0,
+            Action::DeleteShelfItem(item.id),
+        );
     }
 
     // ─────────────────────────────────────────────────────────────────────────────
@@ -2544,7 +2969,11 @@ impl Renderer {
                 card_y + 82.0,
                 10.5,
                 Weight::Regular,
-                tok::cyno_violet_hi(),
+                if state.capture.clipboard_ok {
+                    tok::status_correct()
+                } else {
+                    tok::amber_light()
+                },
             );
         } else {
             p.text(

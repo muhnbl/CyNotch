@@ -1,6 +1,6 @@
 [package]
 name = "cynotch"
-version = "0.3.0"
+version = "0.3.1"
 edition = "2024"
 
 [profile.release]
@@ -21,6 +21,11 @@ windows = { version = "0.58", features = [
     "Win32_UI_Input_KeyboardAndMouse",
     "Win32_UI_HiDpi",
     "Win32_UI_Shell",
+    "Win32_UI_Shell_Common",
+    "Win32_System_Ole",
+    "Win32_System_DataExchange",
+    "Win32_System_Memory",
+    "Win32_System_SystemServices",
     "Win32_Graphics_Gdi",
     "Win32_Graphics_Dwm",
     "Win32_System_LibraryLoader",
@@ -48,6 +53,11 @@ windows = { version = "0.58", features = [
     "UI_Composition_Desktop",
     "Win32_System_WinRT",
     "Win32_System_WinRT_Composition",
+    "Win32_System_WinRT_Graphics_Direct2D",
+    "Graphics",
+    "Graphics_Effects",
+    "Graphics_DirectX",
+    "implement",
     "Win32_Graphics_Direct3D",
     "Win32_Graphics_Direct3D11",
     "Win32_Graphics_Dxgi",

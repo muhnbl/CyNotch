@@ -2,14 +2,16 @@ use crate::localtime::{format_capture_stamp, local_now};
 use std::ffi::c_void;
 use std::path::PathBuf;
 use std::sync::Mutex;
-use windows::Win32::Foundation::{GENERIC_WRITE, HWND, RECT};
+use windows::Win32::Foundation::{GENERIC_READ, GENERIC_WRITE, HWND, RECT};
 use windows::Win32::Graphics::Gdi::{
     BI_RGB, BITMAPINFO, BITMAPINFOHEADER, BitBlt, CreateCompatibleBitmap, CreateCompatibleDC,
     DIB_RGB_COLORS, DeleteDC, DeleteObject, GetDC, GetDIBits, ReleaseDC, SRCCOPY, SelectObject,
 };
 use windows::Win32::Graphics::Imaging::{
     CLSID_WICImagingFactory, GUID_ContainerFormatPng, GUID_WICPixelFormat32bppBGRA,
-    IWICImagingFactory, WICBitmapEncoderNoCache,
+    GUID_WICPixelFormat32bppPBGRA, IWICBitmapSource, IWICImagingFactory,
+    WICBitmapDitherTypeNone, WICBitmapEncoderNoCache, WICBitmapInterpolationModeFant,
+    WICBitmapPaletteTypeCustom, WICDecodeMetadataCacheOnDemand,
 };
 use windows::Win32::System::Com::{
     CLSCTX_INPROC_SERVER, COINIT_APARTMENTTHREADED, CoCreateInstance, CoInitializeEx,
@@ -294,6 +296,211 @@ pub fn save_bgra_png_alpha(path: &std::path::Path, w: u32, h: u32, bgra: &[u8]) 
     }
 }
 
+/// Parses `#RRGGBB` or `#RGB` hex color occurrences from SVG source so `.svg` shelf tiles
+/// render an instant, color-accurate vector preview thumbnail.
+fn extract_svg_hex_colors(svg: &str) -> Vec<[u8; 3]> {
+    let mut out = Vec::new();
+    let bytes = svg.as_bytes();
+    let mut i = 0;
+    while i < bytes.len() {
+        if bytes[i] == b'#' {
+            let rem = &bytes[i + 1..];
+            let hex_len = rem.iter().take(6).take_while(|b| b.is_ascii_hexdigit()).count();
+            if hex_len == 6 {
+                if let (Ok(r), Ok(g), Ok(b)) = (
+                    u8::from_str_radix(std::str::from_utf8(&rem[0..2]).unwrap_or("0"), 16),
+                    u8::from_str_radix(std::str::from_utf8(&rem[2..4]).unwrap_or("0"), 16),
+                    u8::from_str_radix(std::str::from_utf8(&rem[4..6]).unwrap_or("0"), 16),
+                ) {
+                    let rgb = [r, g, b];
+                    if !out.contains(&rgb) {
+                        out.push(rgb);
+                        if out.len() >= 4 {
+                            break;
+                        }
+                    }
+                }
+                i += 7;
+                continue;
+            } else if hex_len >= 3 {
+                if let (Ok(r), Ok(g), Ok(b)) = (
+                    u8::from_str_radix(std::str::from_utf8(&rem[0..1]).unwrap_or("0"), 16),
+                    u8::from_str_radix(std::str::from_utf8(&rem[1..2]).unwrap_or("0"), 16),
+                    u8::from_str_radix(std::str::from_utf8(&rem[2..3]).unwrap_or("0"), 16),
+                ) {
+                    let rgb = [r * 17, g * 17, b * 17];
+                    if !out.contains(&rgb) {
+                        out.push(rgb);
+                        if out.len() >= 4 {
+                            break;
+                        }
+                    }
+                }
+                i += 4;
+                continue;
+            }
+        }
+        i += 1;
+    }
+    out
+}
+
+fn render_svg_thumbnail_pbgra(path: &std::path::Path, max_dim: u32) -> Option<(u32, u32, Vec<u8>)> {
+    let content = std::fs::read_to_string(path).ok()?;
+    if !content.contains("<svg") && !content.contains("<SVG") {
+        return None;
+    }
+    let colors = extract_svg_hex_colors(&content);
+    let c0 = colors.first().copied().unwrap_or([124, 58, 237]);
+    let c1 = colors.get(1).copied().unwrap_or([248, 182, 16]);
+    let c2 = colors.get(2).copied().unwrap_or([233, 218, 255]);
+
+    let w = max_dim.clamp(64, 260);
+    let h = ((w as f32 * 0.65).round() as u32).max(48);
+    let mut buf = vec![0u8; (w * h * 4) as usize];
+    let wf = w as f32;
+    let hf = h as f32;
+
+    for y in 0..h {
+        let vf = y as f32 / hf;
+        for x in 0..w {
+            let uf = x as f32 / wf;
+            // Subtle dark obsidian vector artboard with soft radial glow from SVG palette
+            let dx1 = uf - 0.34;
+            let dy1 = vf - 0.46;
+            let d1 = (dx1 * dx1 + dy1 * dy1).sqrt();
+            let g1 = (1.0 - d1 * 2.1).clamp(0.0, 1.0);
+
+            let dx2 = uf - 0.68;
+            let dy2 = vf - 0.54;
+            let d2 = (dx2 * dx2 + dy2 * dy2).sqrt();
+            let g2 = (1.0 - d2 * 2.4).clamp(0.0, 1.0);
+
+            // Vector bezier wave ribbon across center
+            let wave_y = 0.50 + 0.14 * (uf * 5.2).sin();
+            let dist_wave = (vf - wave_y).abs();
+            let ribbon = (1.0 - (dist_wave / 0.045)).clamp(0.0, 1.0);
+
+            // Artboard grid dots every 16px
+            let grid = if (x % 16 == 0) && (y % 16 == 0) { 0.14 } else { 0.0 };
+
+            let r = (20.0
+                + c0[0] as f32 * g1 * 0.62
+                + c1[0] as f32 * g2 * 0.52
+                + c2[0] as f32 * ribbon * 0.75
+                + 255.0 * grid)
+                .clamp(0.0, 255.0) as u8;
+            let g = (16.0
+                + c0[1] as f32 * g1 * 0.62
+                + c1[1] as f32 * g2 * 0.52
+                + c2[1] as f32 * ribbon * 0.75
+                + 255.0 * grid)
+                .clamp(0.0, 255.0) as u8;
+            let b = (36.0
+                + c0[2] as f32 * g1 * 0.62
+                + c1[2] as f32 * g2 * 0.52
+                + c2[2] as f32 * ribbon * 0.75
+                + 255.0 * grid)
+                .clamp(0.0, 255.0) as u8;
+
+            let idx = ((y * w + x) * 4) as usize;
+            buf[idx] = b;
+            buf[idx + 1] = g;
+            buf[idx + 2] = r;
+            buf[idx + 3] = 255;
+        }
+    }
+    Some((w, h, buf))
+}
+
+/// Decodes any local image file (`png`, `jpg`, `jpeg`, `webp`, `bmp`, `gif`, `ico`, `tif`, `tiff`, `svg`)
+/// into a downscaled premultiplied 32-bit `PBGRA` thumbnail buffer (`(width, height, bytes)`).
+pub fn load_image_thumbnail_pbgra(raw_path: &str, max_dim: u32) -> Option<(u32, u32, Vec<u8>)> {
+    let trimmed = raw_path.trim();
+    if trimmed.is_empty() {
+        return None;
+    }
+    let path = std::path::Path::new(trimmed);
+    if !path.is_file() {
+        return None;
+    }
+    if path
+        .extension()
+        .and_then(|e| e.to_str())
+        .is_some_and(|e| e.eq_ignore_ascii_case("svg"))
+    {
+        return render_svg_thumbnail_pbgra(path, max_dim);
+    }
+
+    unsafe {
+        let _ = CoInitializeEx(None, COINIT_APARTMENTTHREADED);
+        let factory: IWICImagingFactory =
+            CoCreateInstance(&CLSID_WICImagingFactory, None, CLSCTX_INPROC_SERVER).ok()?;
+        let stream = factory.CreateStream().ok()?;
+        let wide_path = HSTRING::from(path.as_os_str());
+        stream
+            .InitializeFromFilename(&wide_path, GENERIC_READ.0)
+            .ok()?;
+        let decoder = factory
+            .CreateDecoderFromStream(
+                &stream,
+                std::ptr::null::<GUID>(),
+                WICDecodeMetadataCacheOnDemand,
+            )
+            .ok()?;
+        let frame = decoder.GetFrame(0).ok()?;
+        let mut src_w = 0u32;
+        let mut src_h = 0u32;
+        frame.GetSize(&mut src_w, &mut src_h).ok()?;
+        if src_w == 0 || src_h == 0 {
+            return None;
+        }
+
+        let cap = max_dim.clamp(32, 512);
+        let (dst_w, dst_h) = if src_w <= cap && src_h <= cap {
+            (src_w, src_h)
+        } else if src_w >= src_h {
+            let dw = cap;
+            let dh = ((src_h as u64 * cap as u64) / (src_w as u64)).max(1) as u32;
+            (dw, dh)
+        } else {
+            let dh = cap;
+            let dw = ((src_w as u64 * cap as u64) / (src_h as u64)).max(1) as u32;
+            (dw, dh)
+        };
+
+        let converter = factory.CreateFormatConverter().ok()?;
+        converter
+            .Initialize(
+                &frame,
+                &GUID_WICPixelFormat32bppPBGRA,
+                WICBitmapDitherTypeNone,
+                None,
+                0.0,
+                WICBitmapPaletteTypeCustom,
+            )
+            .ok()?;
+
+        let source: IWICBitmapSource = if dst_w != src_w || dst_h != src_h {
+            let scaler = factory.CreateBitmapScaler().ok()?;
+            scaler
+                .Initialize(&converter, dst_w, dst_h, WICBitmapInterpolationModeFant)
+                .ok()?;
+            scaler.into()
+        } else {
+            converter.into()
+        };
+
+        let stride = dst_w.checked_mul(4)?;
+        let buf_len = (stride as usize).checked_mul(dst_h as usize)?;
+        let mut pbgra = vec![0u8; buf_len];
+        source
+            .CopyPixels(std::ptr::null(), stride, &mut pbgra)
+            .ok()?;
+        Some((dst_w, dst_h, pbgra))
+    }
+}
+
 pub fn save_frame(frame: GrabbedFrame, copy_to_clipboard: bool) -> Option<CaptureResult> {
     let w = frame.w;
     let h = frame.h;
@@ -493,6 +700,109 @@ pub fn read_clipboard_text(owner: HWND) -> Option<String> {
             }
         }
         None
+    }
+}
+
+/// Returns true if the Windows clipboard currently holds a bitmap/screenshot (`CF_DIB` or `CF_BITMAP`).
+pub fn has_clipboard_image() -> bool {
+    const CF_BITMAP_FMT: u32 = 2;
+    const CF_DIB_FMT: u32 = 8;
+    unsafe {
+        IsClipboardFormatAvailable(CF_DIB_FMT) != 0
+            || IsClipboardFormatAvailable(CF_BITMAP_FMT) != 0
+    }
+}
+
+/// Reads a copied image or Snipping Tool screenshot (`CF_DIB`) from the Windows clipboard,
+/// saves it as a cached PNG under `%LOCALAPPDATA%\CyNotch\shelf-cache\`, and returns `(filename, full_path)`.
+pub fn read_clipboard_dib_to_shelf(owner: HWND) -> Option<(String, String)> {
+    let _clip_guard = CLIPBOARD_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    unsafe {
+        if IsClipboardFormatAvailable(CF_DIB) == 0 {
+            return None;
+        }
+        let mut extracted: Option<(u32, u32, Vec<u8>)> = None;
+        for attempt in 0..3 {
+            if OpenClipboard(owner) != 0 {
+                let h_data = GetClipboardData(CF_DIB);
+                if !h_data.is_null() {
+                    let byte_size = GlobalSize(h_data);
+                    let hdr_min = std::mem::size_of::<BITMAPINFOHEADER>();
+                    if byte_size > hdr_min && byte_size <= 64 * 1024 * 1024 {
+                        let ptr = GlobalLock(h_data) as *const u8;
+                        if !ptr.is_null() {
+                            let hdr = std::ptr::read_unaligned(ptr as *const BITMAPINFOHEADER);
+                            let w = hdr.biWidth;
+                            let h_abs = hdr.biHeight.unsigned_abs() as i32;
+                            let bottom_up = hdr.biHeight > 0;
+                            let bpp = hdr.biBitCount;
+                            // BI_RGB = 0, BI_BITFIELDS = 3
+                            if (1..=8192).contains(&w)
+                                && (1..=8192).contains(&h_abs)
+                                && (bpp == 32 || bpp == 24)
+                                && (hdr.biCompression == 0 || hdr.biCompression == 3)
+                            {
+                                let extra_masks = if hdr.biCompression == 3 && hdr.biSize == 40 {
+                                    12usize
+                                } else {
+                                    0usize
+                                };
+                                let pixel_offset = (hdr.biSize as usize).saturating_add(extra_masks);
+                                let src_stride = (((w as usize) * (bpp as usize) + 31) / 32) * 4;
+                                let needed = pixel_offset
+                                    .saturating_add(src_stride.saturating_mul(h_abs as usize));
+                                if needed <= byte_size {
+                                    let src_pixels =
+                                        std::slice::from_raw_parts(ptr.add(pixel_offset), byte_size - pixel_offset);
+                                    let dst_stride = (w as usize) * 4;
+                                    let mut bgra = vec![0u8; dst_stride * (h_abs as usize)];
+                                    for row in 0..(h_abs as usize) {
+                                        let src_row = if bottom_up {
+                                            (h_abs as usize - 1 - row) * src_stride
+                                        } else {
+                                            row * src_stride
+                                        };
+                                        let dst_row = row * dst_stride;
+                                        if bpp == 32 {
+                                            bgra[dst_row..dst_row + dst_stride].copy_from_slice(
+                                                &src_pixels[src_row..src_row + dst_stride],
+                                            );
+                                        } else {
+                                            for col in 0..(w as usize) {
+                                                let s = src_row + col * 3;
+                                                let d = dst_row + col * 4;
+                                                bgra[d] = src_pixels[s];
+                                                bgra[d + 1] = src_pixels[s + 1];
+                                                bgra[d + 2] = src_pixels[s + 2];
+                                                bgra[d + 3] = 255;
+                                            }
+                                        }
+                                    }
+                                    extracted = Some((w as u32, h_abs as u32, bgra));
+                                }
+                            }
+                            let _ = GlobalUnlock(h_data);
+                        }
+                    }
+                }
+                let _ = CloseClipboard();
+                break;
+            }
+            if attempt < 2 {
+                std::thread::sleep(std::time::Duration::from_millis(5));
+            }
+        }
+        let (w, h, bgra) = extracted?;
+        let dir = crate::models::appdata_dir().join("shelf-cache");
+        let _ = std::fs::create_dir_all(&dir);
+        let stamp = format_capture_stamp(local_now());
+        let filename = format!("snip_{}.png", stamp);
+        let full_path = dir.join(&filename);
+        if save_bgra_png(&full_path, w, h, &bgra) {
+            Some((filename, full_path.to_string_lossy().into_owned()))
+        } else {
+            None
+        }
     }
 }
 

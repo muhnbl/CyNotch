@@ -4,22 +4,22 @@
 
 ---
 
-## 🌟 Highlights in v0.3.0
+## 🌟 Highlights in v0.3.1
 
-1. **⚡ Hardware GPU Direct2D + DirectWrite Engine (`1.66 MB` Binary)**
-   - Complete migration from CPU `tiny-skia`/`fontdue` to hardware **Direct2D (`ID2D1DeviceContext`) + DirectWrite (`DWriteTextCache`)** bound directly to the DirectComposition DXGI SwapChain.
-   - **~10× faster expanded rendering:** Expanded frame time dropped from `8.51–10.96 ms` (CPU software rasterization in v0.2.4.1) to **`0.93 ms` CPU record / `1.08 ms` GPU flush** (`59 µs` CPU / `123 µs` GPU for idle capsule).
-   - **57.9% smaller binary:** Replaced `tiny-skia`, `fontdue`, `ureq`, and `chrono` with native Win32 APIs (`WinHTTP`, `WIC`, `GetLocalTime`), shrinking `cynotch.exe` from `3.95 MB` (v0.2.4.1) to **`1.66 MB` (`1,662,976` bytes)**.
-2. **🌌 Physical Screen-Edge Portal Glow & Framer-Motion Springs**
-   - Borderless multi-layer radial violet portal aura hugging the physical monitor bezel (`Top`, `Left`, `Right`) with 5th-order smootherstep opening and a ~1.2s atmospheric dissipation fade-out.
-   - Configurable **Hover Delay** (`Quick 120ms`, `Normal 240ms`, `Slow 450ms`) and spring choreography automatically gated by Windows *Animation Effects* (`SPI_GETCLIENTAREAANIMATION`).
-3. **🔔 Windows Notifications Bridge & Burst-Deduplicated Snapchat Chime**
-   - Streams live Windows Action Center toasts (Discord, WhatsApp, Browser) into the notch with Unicode bidi isolate filtering (eliminating `[FSI]` / `[PDI]` glyph boxes) and full color emoji support.
-   - Gentle **fixed 25% Snapchat Pop chime** that plays once per notification burst and automatically mutes/restores native Windows toast sounds to prevent double-beeping.
-4. **🎚️ Live Frosted Glass Sliders & 1:1 Sub-Pixel Scrubbers**
-   - Continuous drag sliders for **Glass Opacity** (`Airy`..`Solid`) and **Blur Intensity** (`Soft`..`Ultra`) plus 1:1 sub-pixel Music seek & Volume Master scrubbers.
-5. **🧹 Built-in 8-Area Memory Reduct Engine**
-   - Trims Working Sets (`K32EmptyWorkingSet`), System Working Set, Standby List, Modified Page List, and optional kernel caches on demand (`Ctrl+Shift+M`), by RAM threshold (`60%`–`90%`), or on a schedule (`5m`–`90m`).
+1. **🐺 Pure Stealth Idle (Glowing Wolf Eyes) & Staged Choreography**
+   - Replaced static idle text with **2 Glowing Purple Wolf Eyes** featuring subtle breathing luminescence, natural blinks, and a `~650ms` predator squint on clipboard/capture events.
+   - Added **Staged Choreography** (`420ms` roll-down exit + overlapped roll-in + `220ms` shrink delay) for Music → Idle and Song A → Song B transitions.
+2. **🪟 Obsidian Liquid Glass & Optical Luminosity Clamp**
+   - Fixed `24px` WinRT `GaussianBlurEffect` chained with **Optical Luminosity Clamp** (`src/dcomp_blur.rs`) so `#FFFFFF` light-theme documents maintain `~10.8:1` AAA contrast with `0%` CPU screen-capture.
+   - Borderless (`0px` stroke) elevated cards, bottom-to-top faded rims on interactive controls, and clean solid Obsidian fallback when Windows Transparency Effects are off.
+3. **🔔 Dynamic Island Notifications, Auto-Stash & 30Hz Countdown**
+   - Opening the notch while a notification is active **auto-stashes** it into the Bell icon (`#FBBF24` pip) with zero workspace overlap; the `×` countdown ring ticks autonomously at `30 Hz`.
+4. **📎 Native OLE Drag-and-Drop Shelf & Snipping Tool Capture**
+   - Ephemeral **Quick Shelf** (`IDropTarget` / `IDropSource`) supporting files, PNG/DIB images, URLs, and text with `8s` Undo, `Win+Shift+S` `CF_DIB` clipboard capture, and Raycast Mass Absorption + procedural water-plop feedback.
+5. **🖱️ True Click-Through Default, Grip-Only Drag & Side Dock (`-90° / +90°`)**
+   - Collapsed notch uses `WS_EX_TRANSPARENT` so clicks pass through to apps behind it; dragging is scoped to the 6-dot grip handle, with `300ms / 650ms / 1000ms` Hover Dwell presets and rotated Side Dock stealth/music capsules.
+6. **⚡ Hardware GPU Direct2D + DirectWrite Engine & 8-Area Memory Reduct**
+   - Built on `ID2D1DeviceContext` + DirectWrite + DirectComposition (`~0.93 ms` CPU / `1.08 ms` GPU expanded frame, `0 Hz` idle), plus an 8-area Memory Reduct engine (`Ctrl+Shift+M`).
 
 ---
 
@@ -43,7 +43,7 @@
 
 Pre-built Windows x64 binaries are available on the [**Releases**](https://github.com/muhnbl/CyNotch/releases) page:
 
-1. Download either `CyNotch-v0.3.0-portable.exe` (standalone `1.66 MB` executable) or `CyNotch-v0.3.0-portable-win64.zip` (includes helper scripts).
+1. Download either `CyNotch-v0.3.1-portable.exe` (standalone portable executable) or `CyNotch-v0.3.1-portable-win64.zip` (includes helper scripts).
 2. Extract (if using `.zip`) and run `cynotch.exe` (or `Start-CyNotch.bat`).
 3. *(Optional)* Toggle **Launch on Startup** directly in CyNotch Preferences, or run `Enable-AutoStart.ps1` / `Disable-AutoStart.ps1`.
 
