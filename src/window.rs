@@ -2769,10 +2769,8 @@ unsafe fn wnd_proc_inner(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPARAM) -
                                 AppState::VERT_MUSIC_SCRUBBER_W,
                             )
                         } else if state.show_lyrics {
-                            (
-                                AppState::MUSIC_SCRUBBER_X,
-                                AppState::MUSIC_SCRUBBER_W - 138.0,
-                            )
+                            let cx = state.expanded_width() * 0.5;
+                            (cx - (340.0 + 18.0 + 104.0) * 0.5, 340.0)
                         } else {
                             (AppState::MUSIC_SCRUBBER_X, AppState::MUSIC_SCRUBBER_W)
                         };
@@ -3389,10 +3387,8 @@ unsafe fn wnd_proc_inner(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPARAM) -
                                         AppState::VERT_MUSIC_SCRUBBER_W,
                                     )
                                 } else if state.show_lyrics {
-                                    (
-                                        AppState::MUSIC_SCRUBBER_X,
-                                        AppState::MUSIC_SCRUBBER_W - 138.0,
-                                    )
+                                    let cx = state.expanded_width() * 0.5;
+                                    (cx - (340.0 + 18.0 + 104.0) * 0.5, 340.0)
                                 } else {
                                     (AppState::MUSIC_SCRUBBER_X, AppState::MUSIC_SCRUBBER_W)
                                 };
