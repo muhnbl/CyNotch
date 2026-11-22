@@ -351,9 +351,18 @@ fn main() {
                         if m.position_ms == last_gsmtc_pos_ms {
                             m.position_ms = s.media.position_ms;
                         } else {
-                            last_gsmtc_pos_ms = m.position_ms;
-                            if s.is_hovered && s.mode == NotchMode::Music {
-                                ui_changed = true;
+                            // Prevent SMTC LastUpdatedTime clock skew from jumping the progress bar backward while playing.
+                            if s.media.is_playing
+                                && m.is_playing
+                                && m.position_ms < s.media.position_ms
+                                && s.media.position_ms - m.position_ms < 2500
+                            {
+                                m.position_ms = s.media.position_ms;
+                            } else {
+                                last_gsmtc_pos_ms = m.position_ms;
+                                if s.is_hovered && s.mode == NotchMode::Music {
+                                    ui_changed = true;
+                                }
                             }
                         }
                     }

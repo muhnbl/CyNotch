@@ -4044,21 +4044,41 @@ unsafe fn redraw_window(hwnd: HWND) {
     let blur_spec = if state_snapshot.is_frosted_active() && backdrop::blur_available() {
         let (ox, oy) = Renderer::compute_origin(&state_snapshot, canvas_w as f32, canvas_h as f32);
         backdrop::set_blur_px(crate::dcomp_blur::CALIBRATED_BLUR_PX);
-        let blur_h = if state_snapshot.is_hovered
+        let is_music_split = state_snapshot.is_hovered
             && state_snapshot.mode == NotchMode::Music
             && !state_snapshot.show_notif_history
-        {
-            (176.0 * state_snapshot.expanded_scale()).min(state_snapshot.current_height.max(1.0))
+            && state_snapshot.current_height >= 190.0;
+        let (box1_h, extra_boxes) = if is_music_split {
+            let s = state_snapshot.expanded_scale();
+            let cw_f = state_snapshot.current_width.max(1.0);
+            let ch_f = state_snapshot.current_height.max(1.0);
+            let b1h = (136.0 * s).min(ch_f);
+            let btn_w = 54.0 * s;
+            let btn_h = 38.0 * s;
+            let btn_gap = 10.0 * s;
+            let btn_y = 196.0 * s;
+            let start_x = cw_f * 0.5 - (btn_w * 3.0 + btn_gap * 2.0) * 0.5;
+            (
+                Some(b1h),
+                Some([
+                    (0.0, 148.0 * s, cw_f, 42.0 * s, 16.0 * s),
+                    (start_x, btn_y, btn_w, btn_h, 13.0 * s),
+                    (start_x + btn_w + btn_gap, btn_y, btn_w, btn_h, 13.0 * s),
+                    (start_x + (btn_w + btn_gap) * 2.0, btn_y, btn_w, btn_h, 13.0 * s),
+                ]),
+            )
         } else {
-            state_snapshot.current_height.max(1.0)
+            (None, None)
         };
         Some(BlurSpec {
             x: ox,
             y: oy,
             w: state_snapshot.current_width.max(1.0),
-            h: blur_h,
+            h: state_snapshot.current_height.max(1.0),
             radii: state_snapshot.corner_radii(),
             blur_px: crate::dcomp_blur::CALIBRATED_BLUR_PX,
+            box1_h,
+            extra_boxes,
         })
     } else {
         None

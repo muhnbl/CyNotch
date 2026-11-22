@@ -324,16 +324,16 @@ impl Renderer {
     pub(super) fn draw_music_view(p: &mut PainterD2D, state: &AppState, w: f32, card_y: f32) {
         let cx = w * 0.5;
 
-        // 1. BOX 1 (Top Notch Box y=0..176): Centered Large Lyrics + Full-Width Progress Bar
-        let ctx_y = card_y;
-        let ctx_h = 80.0;
+        // 1. BOX 1 (Top Notch Box y=0..136): Centered Large Lyrics + Full-Width Progress Bar
+        let ctx_y = card_y - 4.0; // y = 56.0 (right below header dock)
+        let ctx_h = 56.0;
         let center_y = ctx_y + ctx_h * 0.5;
         if state.lyrics.is_empty() {
             p.text_center(
                 "No synced lyrics found for this track yet.",
                 cx,
                 center_y + 4.0,
-                12.5,
+                12.0,
                 Weight::Regular,
                 tok::text2(),
             );
@@ -345,44 +345,44 @@ impl Renderer {
 
             let (act_lines, fit_act_sz) = p.wrap_lines_fit(
                 &state.lyrics[center_idx].text,
-                18.0,
-                12.5,
+                17.0,
+                12.0,
                 Weight::Bold,
                 w - 72.0,
                 2,
             );
             let line_cnt = act_lines.len().max(1);
-            let line_step = fit_act_sz * 1.15;
+            let line_step = fit_act_sz * 1.12;
             let text_block_h = (line_cnt as f32 - 1.0) * line_step;
 
             p.radial_glow(
                 cx,
                 center_y,
-                (ctx_h * 0.55).max(24.0),
+                (ctx_h * 0.55).max(20.0),
                 rgba(139, 92, 246, 26),
                 BlendMode::SourceOver,
                 true,
             );
 
             let active_top = center_y - text_block_h * 0.5 - fit_act_sz * 0.45;
-            let active_bot = center_y + text_block_h * 0.5 + fit_act_sz * 0.55;
+            let active_bot = center_y + text_block_h * 0.5 + fit_act_sz * 0.52;
 
             if center_idx > 0 && line_cnt == 1 {
                 let prev_ell = p.ellipsize_cow(
                     &state.lyrics[center_idx - 1].text,
-                    11.5,
+                    10.8,
                     Weight::Regular,
                     w - 80.0,
                 );
                 p.text_center(
                     &prev_ell,
                     cx,
-                    (active_top - 6.0).max(ctx_y + 12.0),
-                    11.5,
+                    (active_top - 4.0).max(ctx_y + 10.0),
+                    10.8,
                     Weight::Regular,
                     dimmed,
                 );
-                p.hit(24.0, ctx_y, w - 48.0, 22.0, Action::ScrollLyrics(-1));
+                p.hit(24.0, ctx_y, w - 48.0, 18.0, Action::ScrollLyrics(-1));
             }
 
             let first_base = center_y - text_block_h * 0.5 + fit_act_sz * 0.34;
@@ -400,15 +400,15 @@ impl Renderer {
             if center_idx + 1 < state.lyrics.len() {
                 let next_ell = p.ellipsize_cow(
                     &state.lyrics[center_idx + 1].text,
-                    11.5,
+                    10.8,
                     Weight::Regular,
                     w - 80.0,
                 );
                 p.text_center(
                     &next_ell,
                     cx,
-                    (active_bot + 13.0).min(ctx_y + ctx_h - 4.0),
-                    11.5,
+                    (active_bot + 10.0).min(ctx_y + ctx_h - 2.0),
+                    10.8,
                     Weight::Regular,
                     dimmed,
                 );
@@ -416,13 +416,13 @@ impl Renderer {
                     24.0,
                     active_bot,
                     w - 48.0,
-                    (ctx_y + ctx_h - active_bot).max(18.0),
+                    (ctx_y + ctx_h - active_bot).max(16.0),
                     Action::ScrollLyrics(1),
                 );
             }
         }
 
-        // Full-Width Progress / Seek Bar at bottom of Box 1
+        // Full-Width Progress / Seek Bar at bottom of Box 1 (y=120)
         let played_pct = if state.media.duration_ms > 0 {
             (state.media.position_ms as f32 / state.media.duration_ms as f32).clamp(0.0, 1.0)
         } else {
@@ -430,56 +430,55 @@ impl Renderer {
         };
         let scrub_x = 32.0;
         let scrub_w = (w - 64.0).max(80.0);
-        let scrub_y = 152.0;
+        let scrub_y = 120.0;
         p.glowing_striped_bar(
             scrub_x,
             scrub_y,
             scrub_w,
-            6.0,
+            5.5,
             played_pct,
             tok::gold_deep(),
             tok::gold_champagne(),
         );
-        let mini_hot = p.hot(scrub_x - 4.0, scrub_y - 8.0, scrub_w + 8.0, 22.0);
+        let mini_hot = p.hot(scrub_x - 4.0, scrub_y - 7.0, scrub_w + 8.0, 20.0);
         let thumb_x = (scrub_x + scrub_w * played_pct).clamp(scrub_x + 4.0, scrub_x + scrub_w - 3.0);
-        let thumb_y = scrub_y + 3.0;
-        let thumb_r = if mini_hot { 5.8 } else { 4.6 };
+        let thumb_y = scrub_y + 2.75;
+        let thumb_r = if mini_hot { 5.5 } else { 4.4 };
         p.radial_glow(
             thumb_x,
             thumb_y,
-            if mini_hot { 11.0 } else { 8.5 },
+            if mini_hot { 10.0 } else { 8.0 },
             rgba(200, 155, 60, if mini_hot { 125 } else { 80 }),
             BlendMode::Plus,
             false,
         );
         p.circle(thumb_x, thumb_y, thumb_r, rgba(255, 255, 255, 250));
         p.circle(thumb_x, thumb_y, thumb_r * 0.44, tok::amber_glow());
-        p.hit(scrub_x, scrub_y - 8.0, scrub_w, 22.0, Action::SeekMusic(played_pct));
+        p.hit(scrub_x, scrub_y - 7.0, scrub_w, 20.0, Action::SeekMusic(played_pct));
 
-        // 2. BOX 2 (Floating Track Info Card y=200..262, 24px transparent gap below Box 1)
-        let box2_y = 200.0;
-        let box2_h = 62.0;
+        // 2. BOX 2 (Floating Obsidian Glass Track Info y=148..190, 12px transparent gap below Box 1)
+        let box2_y = 148.0;
+        let box2_h = 42.0;
         let (card_top, card_bot) = if p.frosted {
             (tok::obsidian_shell_frosted(), tok::obsidian_deep_frosted())
         } else {
             (tok::obsidian_shell(), tok::obsidian_deep())
         };
-        p.rrect_drop_shadow(0.0, box2_y, w, box2_h, 18.0, 2.0, 14.0, 95);
         p.rrect_corners4_vertical_gradient(
             0.0,
             box2_y,
             w,
             box2_h,
-            (18.0, 18.0, 18.0, 18.0),
+            (16.0, 16.0, 16.0, 16.0),
             card_top,
             card_bot,
         );
-        if p.prepare_rrect_clip(0.0, box2_y, w, box2_h, 18.0) {
+        if p.prepare_rrect_clip(0.0, box2_y, w, box2_h, 16.0) {
             p.elliptical_glow(
                 w * 0.5,
-                box2_y + box2_h + 4.0,
+                box2_y + box2_h + 3.0,
                 w * 0.5,
-                26.0,
+                20.0,
                 rgba(124, 58, 237, if p.frosted { 30 } else { 48 }),
                 BlendMode::Plus,
                 true,
@@ -487,21 +486,21 @@ impl Renderer {
             p.pop_clip();
         }
 
-        let art_x = 12.0;
-        let art_y = box2_y + 8.0;
-        let art_sz = 46.0;
+        let art_x = 10.0;
+        let art_y = box2_y + 6.0;
+        let art_sz = 30.0;
         p.rrect_vertical_gradient(
             art_x,
             art_y,
             art_sz,
             art_sz,
-            12.0,
-            rgba(88, 48, 168, 155),
-            rgba(34, 22, 68, 180),
+            9.0,
+            rgba(88, 48, 168, 130),
+            rgba(34, 22, 68, 155),
         );
-        icons::draw(p, Icon::Music, art_x + 13.0, art_y + 13.0, 20.0, tok::text1());
+        icons::draw(p, Icon::Music, art_x + 7.5, art_y + 7.5, 15.0, tok::text1());
         if state.media.is_playing {
-            p.circle(art_x + art_sz - 6.0, art_y + 6.0, 3.0, tok::amber_glow());
+            p.circle(art_x + art_sz - 4.0, art_y + 4.0, 2.4, tok::amber_glow());
         }
 
         let pos_s = state.media.position_ms / 1000;
@@ -518,30 +517,30 @@ impl Renderer {
         );
         p.text_right(
             &time_str,
-            w - 16.0,
-            box2_y + 34.0,
-            10.2,
+            w - 14.0,
+            box2_y + 24.5,
+            10.0,
             Weight::Semibold,
             tok::text3(),
         );
 
-        let text_x = art_x + art_sz + 14.0;
-        let text_max_w = (w - text_x - 108.0).max(80.0);
-        let title_ell = p.ellipsize_cow(&state.media.title, 13.5, Weight::Bold, text_max_w);
-        p.text(&title_ell, text_x, box2_y + 27.0, 13.5, Weight::Bold, tok::text1());
+        let text_x = art_x + art_sz + 10.0;
+        let text_max_w = (w - text_x - 98.0).max(80.0);
+        let title_ell = p.ellipsize_cow(&state.media.title, 12.2, Weight::Bold, text_max_w);
+        p.text(&title_ell, text_x, box2_y + 18.5, 12.2, Weight::Bold, tok::text1());
         let artist_str = if state.media.artist.is_empty() {
             "Unknown Artist"
         } else {
             state.media.artist.as_str()
         };
-        let artist_ell = p.ellipsize_cow(artist_str, 11.2, Weight::Regular, text_max_w);
-        p.text(&artist_ell, text_x, box2_y + 45.0, 11.2, Weight::Regular, tok::text2());
+        let artist_ell = p.ellipsize_cow(artist_str, 10.2, Weight::Regular, text_max_w);
+        p.text(&artist_ell, text_x, box2_y + 32.5, 10.2, Weight::Regular, tok::text2());
 
-        // 3. BOX 3 (3 Separated Floating Media Player Buttons y=272..318, same family as Box 2)
-        let btn_y = 272.0;
-        let btn_w = 58.0;
-        let btn_h = 46.0;
-        let btn_gap = 12.0;
+        // 3. BOX 3 (3 Separated Floating Obsidian Glass Buttons y=196..234, same family as Box 2)
+        let btn_y = 196.0;
+        let btn_w = 54.0;
+        let btn_h = 38.0;
+        let btn_gap = 10.0;
         let start_x = cx - (btn_w * 3.0 + btn_gap * 2.0) * 0.5;
 
         let btns = [
@@ -556,46 +555,34 @@ impl Renderer {
         ];
         for (bx, ic, act, is_primary) in btns {
             let ht = p.hot_t(bx, btn_y, btn_w, btn_h);
-            p.rrect_drop_shadow(bx, btn_y, btn_w, btn_h, 14.0, 2.0, 12.0, 90);
-            if is_primary {
-                p.rrect_corners4_vertical_gradient(
-                    bx,
-                    btn_y,
-                    btn_w,
-                    btn_h,
-                    (14.0, 14.0, 14.0, 14.0),
-                    rgba(124, 58, 237, (145.0 + 45.0 * ht) as u8),
-                    rgba(76, 29, 149, (165.0 + 40.0 * ht) as u8),
-                );
-            } else {
-                p.rrect_corners4_vertical_gradient(
-                    bx,
-                    btn_y,
-                    btn_w,
-                    btn_h,
-                    (14.0, 14.0, 14.0, 14.0),
-                    card_top,
-                    card_bot,
-                );
-                if ht > 0.02 && p.prepare_rrect_clip(bx, btn_y, btn_w, btn_h, 14.0) {
-                    p.elliptical_glow(
-                        bx + btn_w * 0.5,
-                        btn_y + btn_h + 2.0,
-                        btn_w * 0.65,
-                        btn_h * 0.55,
-                        rgba(253, 230, 138, (46.0 * ht) as u8),
-                        BlendMode::Plus,
-                        true,
-                    );
-                    p.pop_clip();
-                }
-            }
+            p.rrect_corners4_vertical_gradient(
+                bx,
+                btn_y,
+                btn_w,
+                btn_h,
+                (13.0, 13.0, 13.0, 13.0),
+                card_top,
+                card_bot,
+            );
+            p.button_pill_variant(
+                bx,
+                btn_y,
+                btn_w,
+                btn_h,
+                13.0,
+                ht,
+                if is_primary {
+                    ButtonVariant::PrimaryFill
+                } else {
+                    ButtonVariant::PrimaryOutline
+                },
+            );
             icons::draw(
                 p,
                 ic,
-                bx + (btn_w - 18.0) * 0.5,
-                btn_y + (btn_h - 18.0) * 0.5 - 0.5 * ht,
-                18.0,
+                bx + (btn_w - 16.0) * 0.5,
+                btn_y + (btn_h - 16.0) * 0.5 - 0.5 * ht,
+                16.0,
                 tok::text1(),
             );
             p.hit(bx, btn_y, btn_w, btn_h, act);

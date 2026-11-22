@@ -1658,11 +1658,7 @@ impl AppState {
     }
 
     pub fn base_expanded_height(&self) -> f32 {
-        if self.mode == NotchMode::Music {
-            322.0
-        } else {
-            Self::EXPANDED_HEIGHT
-        }
+        Self::EXPANDED_HEIGHT
     }
 
     pub fn expanded_scale(&self) -> f32 {

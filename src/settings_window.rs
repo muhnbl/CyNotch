@@ -388,6 +388,8 @@ unsafe fn redraw_settings_with_cache(hwnd: HWND, _allow_pane_cache: bool) {
             h: int_h as f32,
             radii: (r, r, r, r),
             blur_px: CALIBRATED_BLUR_PX,
+            box1_h: None,
+            extra_boxes: None,
         })
     } else {
         None

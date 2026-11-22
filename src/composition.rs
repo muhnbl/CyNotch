@@ -506,7 +506,10 @@ impl DCompHost {
             }
         }
 
-        if prev.is_none_or(|p| (p.w, p.h, p.radii) != (s.w, s.h, s.radii)) {
+        if prev.is_none_or(|p| {
+            (p.w, p.h, p.radii, p.box1_h, p.extra_boxes)
+                != (s.w, s.h, s.radii, s.box1_h, s.extra_boxes)
+        }) {
             let mw = w.ceil().max(1.0) as u32;
             let mh = h.ceil().max(1.0) as u32;
             let ok = unsafe {
@@ -541,7 +544,8 @@ impl DCompHost {
                     };
                     let mask_bmp: ID2D1Bitmap1 =
                         self.d2d_context.CreateBitmapFromDxgiSurface(&surface, Some(&props))?;
-                    let path = build_d2d_rounded_path(&self.d2d_factory, 0.0, 0.0, w, h, s.radii)?;
+                    let primary_h = s.box1_h.unwrap_or(h).clamp(1.0, h);
+                    let path = build_d2d_rounded_path(&self.d2d_factory, 0.0, 0.0, w, primary_h, s.radii)?;
                     let white = D2D1_COLOR_F {
                         r: 1.0,
                         g: 1.0,
@@ -561,6 +565,21 @@ impl DCompHost {
                         a: 0.0,
                     }));
                     self.d2d_context.FillGeometry(&path, &white_brush, None);
+                    if let Some(extras) = s.extra_boxes {
+                        for (bx, by, bw, bh, br) in extras {
+                            if bw > 0.5 && bh > 0.5 {
+                                let ep = build_d2d_rounded_path(
+                                    &self.d2d_factory,
+                                    bx,
+                                    by,
+                                    bw,
+                                    bh,
+                                    (br, br, br, br),
+                                )?;
+                                self.d2d_context.FillGeometry(&ep, &white_brush, None);
+                            }
+                        }
+                    }
                     let end_res = self.d2d_context.EndDraw(None, None);
                     if let Some(t) = self.d2d_target.as_ref() {
                         self.d2d_context.SetTarget(t);

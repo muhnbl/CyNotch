@@ -329,6 +329,8 @@ fn runtime_single_hwnd_blur_lifecycle_settings_and_fallback() {
                     h,
                     radii: (18.0, 18.0, 22.0, 22.0),
                     blur_px: 40,
+                    box1_h: None,
+                    extra_boxes: None,
                 }));
                 assert!(
                     ok,

@@ -36,6 +36,10 @@ pub struct BlurSpec {
     pub radii: (f32, f32, f32, f32),
     /// User slider value in `4..=40`.
     pub blur_px: u32,
+    /// Optional clamped height for Box 1 when separated floating boxes are rendered below.
+    pub box1_h: Option<f32>,
+    /// Optional separated floating boxes `(x, y, w, h, radius)` rendered into the same blur mask.
+    pub extra_boxes: Option<[(f32, f32, f32, f32, f32); 4]>,
 }
 
 /// Fixed calibrated blur radius for v0.3.1 Obsidian Liquid Glass (15px airy liquid refraction).
