@@ -170,7 +170,7 @@ fn bh02_cross_factory_device_lost_recovery_renders_without_wrong_factory_error()
         true,
     );
 
-    let mut ren = Renderer::new(560, 320);
+    let mut ren = Renderer::new(560, 320).unwrap();
 
     // Generation 1: Render on Factory #1 (draws mascot, icons, stroke_path, notification banner)
     {

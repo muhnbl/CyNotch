@@ -78,9 +78,9 @@ fn url_detection_and_liquid_plop_physics() {
     state.shelf_fx.trigger_plop(120.0, 64.0, id);
     let now = Instant::now();
     assert!(state.shelf_fx.is_active(now));
-    // At t≈0, buoyancy_offset should be positive (~6px downward sink)
+    // At t≈0, buoyancy_offset should be positive (~12px Blur-Fade Rise)
     let bob = state.shelf_fx.buoyancy_offset(id, now);
-    assert!(bob > 4.0 && bob <= 6.5, "unexpected initial buoyancy: {bob}");
+    assert!(bob > 10.0 && bob <= 12.5, "unexpected initial buoyancy: {bob}");
 
     // With animations disabled, step snaps FX off cleanly
     state.shelf_fx.step(0.016, false, now);
@@ -149,18 +149,18 @@ fn clipboard_and_screenshot_trigger_skenario2_lingering_peak_fast_snap_pulse_wit
         );
         let t0 = state.shelf_fx.clipboard_pulse_at.expect("pulse started");
 
-        // Skenario 2: Immediate ignition + Slow Lingering Peak (0..320ms > 0.85), then Fast Snap-Off (600ms < 0.22)
+        // Skenario 2 (Fluid Luxury 0.90s): Immediate ignition + Slow Lingering Peak (0..380ms > 0.90), then Snap-Off tail (840ms < 0.22)
         let (i_start, _) = state
             .shelf_fx
             .clipboard_pulse_curves(t0 + std::time::Duration::from_millis(20))
             .unwrap();
         let (i_linger, _) = state
             .shelf_fx
-            .clipboard_pulse_curves(t0 + std::time::Duration::from_millis(260))
+            .clipboard_pulse_curves(t0 + std::time::Duration::from_millis(320))
             .unwrap();
         let (i_tail, _) = state
             .shelf_fx
-            .clipboard_pulse_curves(t0 + std::time::Duration::from_millis(600))
+            .clipboard_pulse_curves(t0 + std::time::Duration::from_millis(840))
             .unwrap();
         assert!(i_start > 0.99, "expected immediate ignition, got {i_start}");
         assert!(i_linger > 0.90, "expected slow lingering peak, got {i_linger}");

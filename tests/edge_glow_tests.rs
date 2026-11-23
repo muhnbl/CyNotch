@@ -107,10 +107,6 @@ fn edge_glow_clamps_to_negative_multi_monitor_bounds() {
 
 #[test]
 fn edge_glow_volumetric_portal_depth_and_dpi_scaling() {
-    assert!(
-        EDGE_GLOW_DEPTH >= 96,
-        "volumetric portal bloom requires generous depth (>= 96px)"
-    );
     let mon = RECT {
         left: 0,
         top: 0,

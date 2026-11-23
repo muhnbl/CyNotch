@@ -5,12 +5,12 @@ mod views;
 use crate::font_d2d::{DWriteTextCache, Weight};
 use crate::icons::{self, Icon};
 use crate::models::{
-    Action, AppState, IdleMetric, LyricSize, LyricStyle, MascotMood, NotchMode, NotchPlacement,
+    Action, AppState, IdleMetric, MascotMood, NotchMode, NotchPlacement,
     NotificationKind, ShelfKind, ToggleId, TypeScale,
 };
 use crate::painter_d2d::Hit;
 use crate::painter_d2d::{BlendMode, ButtonVariant, Color, D2DResourceCache, PainterD2D, StackStr, fade, lerp_color, rgba, tok};
-use crate::telemetry::{format_speed_long, format_speed_short};
+use crate::telemetry::format_speed_short;
 use crate::localtime::{format_hhmm, local_now};
 use std::borrow::Cow;
 use std::fmt::Write as _;
@@ -21,21 +21,27 @@ pub struct Renderer {
     pub fonts: DWriteTextCache,
     pub d2d_cache: Option<D2DResourceCache>,
     pub hits: Vec<Hit>,
+    expand_cache_bmp: Option<windows::Win32::Graphics::Direct2D::ID2D1Bitmap1>,
+    expand_cache_size: (u32, u32),
+    expand_cache_key: Option<(NotchMode, bool, u32, u32, bool, TypeScale)>,
 }
 
 impl Renderer {
-    pub fn new(width: u32, height: u32) -> Self {
+    pub fn new(width: u32, height: u32) -> windows::core::Result<Self> {
         let w = width.max(1);
         let h = height.max(1);
-        let fonts = DWriteTextCache::new().expect("DWrite");
-        Self {
+        let fonts = DWriteTextCache::new()?;
+        Ok(Self {
             width: w,
             height: h,
             fonts,
             d2d_cache: None,
             hits: Vec::new(),
-        }
-            }
+            expand_cache_bmp: None,
+            expand_cache_size: (0, 0),
+            expand_cache_key: None,
+        })
+    }
 
             pub fn resize(&mut self, width: u32, height: u32) {
                 let w = width.max(1);
@@ -43,7 +49,6 @@ impl Renderer {
                 if self.width != w || self.height != h {
                     self.width = w;
                     self.height = h;
-                    self.d2d_cache = None;
                     self.hits.clear();
                 }
             }
@@ -51,10 +56,173 @@ impl Renderer {
             /// Drop cached expanded/chrome pixmaps when idle to free heap memory.
             pub fn trim_idle_caches(&mut self) {
                 self.fonts.trim();
+                self.expand_cache_bmp = None;
+                self.expand_cache_size = (0, 0);
+                self.expand_cache_key = None;
             }
 
             pub fn clear_d2d_cache(&mut self) {
                 self.d2d_cache = None;
+                self.expand_cache_bmp = None;
+                self.expand_cache_size = (0, 0);
+                self.expand_cache_key = None;
+            }
+
+            /// Pre-renders the settled expanded panel once into an offscreen GPU
+            /// `ID2D1Bitmap1` before `BeginDraw()`, so every intermediate frame of
+            /// expand/close scales a single textured quad (`~0.1ms`) instead of
+            /// re-rasterizing DirectWrite glyphs at 50 fractional scales (`~10–25ms`).
+            ///
+            /// Must be called OUTSIDE `ctx.BeginDraw()..ctx.EndDraw()`.
+            pub fn prepare_expand_cache(
+                &mut self,
+                ctx: &windows::Win32::Graphics::Direct2D::ID2D1DeviceContext,
+                state: &AppState,
+            ) {
+                let w = state.current_width;
+                let h = state.current_height;
+                let exp_w = state.expanded_width();
+                let exp_h = state.expanded_height();
+                let settled_expanded =
+                    state.is_hovered && (w - exp_w).abs() < 0.5 && (h - exp_h).abs() < 0.5;
+                let t = if settled_expanded {
+                    1.0
+                } else {
+                    state.anim_expand_t.clamp(0.0, 1.0)
+                };
+                let height_only_morph = state.is_hovered
+                    && t > 0.92
+                    && (w - exp_w).abs() < 4.0
+                    && h >= (AppState::EXPANDED_HEIGHT * state.expanded_scale() - 4.0);
+
+                // Pre-warm the offscreen snapshot once during hover dwell (`hover_dwell_t >= 0.25`)
+                // so VRAM is already warm when the expand spring fires (zero mid-animation hitch).
+                let prewarm_during_dwell =
+                    state.is_hover_pending && !state.is_hovered && state.hover_dwell_t >= 0.25;
+
+                // Invalidate only when fully collapsed (outside hover dwell) so closing
+                // reuses the already-warm VRAM snapshot with 0ms frame-0 stall, while the
+                // next hover-expand captures fresh RAM/song/shelf data.
+                if t <= 0.005 && !prewarm_during_dwell {
+                    self.expand_cache_key = None;
+                    return;
+                }
+                if settled_expanded || height_only_morph {
+                    return;
+                }
+                if t < 0.01 && !prewarm_during_dwell {
+                    return;
+                }
+
+                let bw = exp_w.ceil().max(1.0) as u32;
+                let bh = exp_h.ceil().max(1.0) as u32;
+                let frosted = state.is_frosted_active();
+                let key = (
+                    state.mode,
+                    state.show_notif_history,
+                    bw,
+                    bh,
+                    frosted,
+                    state.type_scale,
+                );
+                if self.expand_cache_key == Some(key) && self.expand_cache_bmp.is_some() {
+                    return;
+                }
+
+                if self.d2d_cache.is_none() {
+                    match D2DResourceCache::new(ctx) {
+                        Ok(c) => self.d2d_cache = Some(c),
+                        Err(_) => return,
+                    }
+                }
+                if self.expand_cache_bmp.is_none() || self.expand_cache_size != (bw, bh) {
+                    use windows::Win32::Graphics::Direct2D::Common::{
+                        D2D1_ALPHA_MODE_PREMULTIPLIED, D2D1_PIXEL_FORMAT, D2D_SIZE_U,
+                    };
+                    use windows::Win32::Graphics::Direct2D::{
+                        D2D1_BITMAP_OPTIONS_TARGET, D2D1_BITMAP_PROPERTIES1,
+                    };
+                    use windows::Win32::Graphics::Dxgi::Common::DXGI_FORMAT_B8G8R8A8_UNORM;
+                    let props = D2D1_BITMAP_PROPERTIES1 {
+                        pixelFormat: D2D1_PIXEL_FORMAT {
+                            format: DXGI_FORMAT_B8G8R8A8_UNORM,
+                            alphaMode: D2D1_ALPHA_MODE_PREMULTIPLIED,
+                        },
+                        dpiX: 96.0,
+                        dpiY: 96.0,
+                        bitmapOptions: D2D1_BITMAP_OPTIONS_TARGET,
+                        colorContext: std::mem::ManuallyDrop::new(None),
+                    };
+                    match unsafe {
+                        ctx.CreateBitmap(D2D_SIZE_U { width: bw, height: bh }, None, 0, &props)
+                    } {
+                        Ok(bmp) => {
+                            self.expand_cache_bmp = Some(bmp);
+                            self.expand_cache_size = (bw, bh);
+                        }
+                        Err(_) => return,
+                    }
+                }
+
+                let Some(bmp) = self.expand_cache_bmp.as_ref() else {
+                    return;
+                };
+                let Some(cache) = self.d2d_cache.as_mut() else {
+                    return;
+                };
+
+                // Clone minimal state with anim_mode_t = 1.0 so cards are crisp & settled inside the snapshot.
+                let mut snap = state.clone();
+                snap.anim_mode_t = 1.0;
+                snap.anim_expand_t = 1.0;
+
+                let prev_target = unsafe { ctx.GetTarget().ok() };
+                unsafe {
+                    ctx.SetTarget(bmp);
+                    ctx.BeginDraw();
+                    ctx.SetTransform(&windows::Foundation::Numerics::Matrix3x2::identity());
+                    ctx.Clear(Some(&windows::Win32::Graphics::Direct2D::Common::D2D1_COLOR_F {
+                        r: 0.0,
+                        g: 0.0,
+                        b: 0.0,
+                        a: 0.0,
+                    }));
+                }
+
+                let target_s = snap.expanded_scale();
+                let base_w = snap.base_expanded_width();
+                let base_h = snap.base_expanded_height();
+                let mut dummy_hits = Vec::new();
+                let mut p = PainterD2D::new(
+                    ctx,
+                    cache,
+                    &mut self.fonts,
+                    target_s,
+                    0.0,
+                    0.0,
+                    None,
+                    &mut dummy_hits,
+                    false,
+                    1.0,
+                    snap.hover_slots,
+                    snap.micro_interactions,
+                    frosted,
+                    snap.frosted_opacity_pct,
+                    snap.type_scale,
+                );
+                Self::draw_expanded(&mut p, &snap, base_w, base_h, true);
+
+                let end_ok = unsafe { ctx.EndDraw(None, None).is_ok() };
+                unsafe {
+                    if let Some(t_prev) = prev_target.as_ref() {
+                        ctx.SetTarget(t_prev);
+                    } else {
+                        ctx.SetTarget(None);
+                    }
+                }
+                if end_ok {
+                    self.expand_cache_key = Some(key);
+                }
             }
 
             pub fn render_d2d(&mut self, ctx: &windows::Win32::Graphics::Direct2D::ID2D1DeviceContext, state: &AppState, pointer: Option<(f32, f32)>) {
@@ -81,6 +249,13 @@ impl Renderer {
                 let base_h = state.base_expanded_height();
                 let settled_expanded = state.is_hovered && (w - exp_w).abs() < 0.5 && (h - exp_h).abs() < 0.5;
                 let t = if settled_expanded { 1.0 } else { state.anim_expand_t.clamp(0.0, 1.0) };
+                // Already expanded at full width and only extending/retracting vertically
+                // (e.g. Shelf 4<->5 items or 5-item Shelf > another tab): keep dock/header
+                // locked at full scale and top origin (ox, oy) so nothing pops or jumps.
+                let height_only_morph = state.is_hovered
+                    && t > 0.92
+                    && (w - exp_w).abs() < 4.0
+                    && h >= (AppState::EXPANDED_HEIGHT * state.expanded_scale() - 4.0);
                 let (r_tl, r_tr, r_br, r_bl) = state.corner_radii();
 
                 let mut p = PainterD2D::new(
@@ -103,7 +278,7 @@ impl Renderer {
 
                 // 1. Borderless Volumetric Obsidian Shell (Box 1 only in Music mode so Box 2 & 3 float independently!)
                 let shell_h = if state.is_hovered && state.mode == NotchMode::Music && !state.show_notif_history {
-                    (134.0 * state.expanded_scale()).min(h)
+                    (164.0 * state.expanded_scale()).min(h)
                 } else {
                     h
                 };
@@ -113,6 +288,56 @@ impl Renderer {
                     (tok::obsidian_shell(), tok::obsidian_deep())
                 };
                 p.rrect_corners4_vertical_gradient(0.0, 0.0, w, shell_h, (r_tl, r_tr, r_br, r_bl), shell_top, shell_bot);
+
+                // Exclusive collapsed-capsule hover-dwell sweep: strictly gated to the
+                // unexpanded capsule (`!is_hovered && anim_expand_t <= 0.005`) so it
+                // never bleeds over the expanding/expanded notch panel.
+                // Smooth 0% -> luminous violet wave -> 0% opacity before the right edge.
+                let sweep_heat = state.hover_dwell_t.max(state.hover_afterglow);
+                if !state.is_hovered && state.anim_expand_t <= 0.005 && sweep_heat > 0.005 {
+                    let cap_h = state.idle_height().min(shell_h);
+                    let x_norm = state.hover_sweep_x.clamp(0.0, 1.0);
+                    let in_t = (x_norm / 0.14).clamp(0.0, 1.0);
+                    let fade_in = in_t * in_t * (3.0 - 2.0 * in_t);
+                    let out_t = ((0.98 - x_norm) / 0.34).clamp(0.0, 1.0);
+                    let fade_out = out_t * out_t * (3.0 - 2.0 * out_t);
+                    let decay_mul = if state.is_hover_pending {
+                        1.0
+                    } else {
+                        state.hover_afterglow.clamp(0.0, 1.0)
+                    };
+                    let boost = match state.hover_dwell_speed {
+                        crate::models::HoverDwellSpeed::Quick => 0.90,
+                        crate::models::HoverDwellSpeed::Normal => 1.0,
+                        crate::models::HoverDwellSpeed::Slow => 1.12,
+                    };
+                    let alpha = (fade_in * fade_out * decay_mul * boost).clamp(0.0, 1.0);
+                    if alpha > 0.004
+                        && p.prepare_corners4_clip(0.0, 0.0, w, cap_h, r_tl, r_tr, r_br, r_bl)
+                    {
+                        // Sub-pixel smooth optical wave (no 3px quantization, no hard 2px bar,
+                        // true 0% opacity at both tail and feathered leading edge).
+                        let band_w = (w * 0.42).max(48.0);
+                        let head = x_norm * (w + band_w * 0.18);
+                        let band_x = head - band_w * 0.85;
+
+                        let c_tail = rgba(124, 58, 237, 0);
+                        let c_crest = fade(rgba(192, 152, 255, 148), alpha);
+                        let c_lead = rgba(233, 213, 255, 0);
+                        p.rrect_horizontal_gradient_3stop(
+                            band_x,
+                            0.0,
+                            band_w,
+                            cap_h,
+                            0.0,
+                            c_tail,
+                            c_crest,
+                            c_lead,
+                            0.82,
+                        );
+                        p.pop_clip();
+                    }
+                }
 
                 // 2. Internal Atmospheric Aurora Glows
                 let glow_scale = if frosted { 0.38 } else { 1.0 };
@@ -239,19 +464,48 @@ impl Renderer {
                         }
                     }
                 } else {
-                    let fade_in = if settled_expanded { 1.0 } else { ((t - 0.26) / 0.74).clamp(0.0, 1.0) };
+                    let keep_full_chrome = settled_expanded || height_only_morph;
+                    let fade_in = if keep_full_chrome { 1.0 } else { ((t - 0.26) / 0.74).clamp(0.0, 1.0) };
                     if fade_in > 0.01 {
                         p.global_alpha = fade_in;
                         let target_s = state.expanded_scale();
-                        if settled_expanded {
+                        if keep_full_chrome {
                             p.s = target_s;
+                            let draw_h = (h / target_s).max(AppState::EXPANDED_HEIGHT);
+                            Self::draw_expanded(&mut p, state, base_w, draw_h, true);
                         } else {
                             let scale_fit = (w / base_w).min(h / base_h).min(target_s).max(0.15);
-                            p.s = scale_fit;
-                            p.origin_x = ox + (w - base_w * scale_fit) * 0.5;
-                            p.origin_y = oy + (h - base_h * scale_fit) * 0.5;
+                            let dst_ox = ox + (w - base_w * scale_fit) * 0.5;
+                            let dst_oy = oy + (h - base_h * scale_fit) * 0.5;
+                            if self.expand_cache_key.is_some()
+                                && let Some(bmp) = self.expand_cache_bmp.as_ref()
+                            {
+                                // Fast path: blit the pre-rendered settled panel as a single
+                                // GPU-filtered textured quad (~0.08ms, zero DirectWrite work).
+                                let dst_rect = windows::Win32::Graphics::Direct2D::Common::D2D_RECT_F {
+                                    left: dst_ox,
+                                    top: dst_oy,
+                                    right: dst_ox + base_w * scale_fit,
+                                    bottom: dst_oy + base_h * scale_fit,
+                                };
+                                unsafe {
+                                    ctx.DrawBitmap(
+                                        bmp,
+                                        Some(&dst_rect),
+                                        fade_in,
+                                        windows::Win32::Graphics::Direct2D::D2D1_INTERPOLATION_MODE_LINEAR,
+                                        None,
+                                        None,
+                                    );
+                                }
+                            } else {
+                                // Fallback (e.g. snap_d2d or tests without prepare_expand_cache).
+                                p.s = scale_fit;
+                                p.origin_x = dst_ox;
+                                p.origin_y = dst_oy;
+                                Self::draw_expanded(&mut p, state, base_w, base_h, false);
+                            }
                         }
-                        Self::draw_expanded(&mut p, state, base_w, base_h, settled_expanded);
                     }
                 }
 
@@ -354,16 +608,20 @@ impl Renderer {
         match state.mode {
             NotchMode::Home => {
                 if state.show_mascot {
+                    let (dy, alpha, _) = Self::mode_stagger(state, 0);
+                    let prev_alpha = p.global_alpha;
+                    p.global_alpha = prev_alpha * alpha;
                     let margin_x = 20.0;
                     Self::draw_cyno_mascot(
                         p,
                         margin_x + 30.0,
-                        card_y + 30.5,
+                        card_y + dy + 30.5,
                         0.96,
                         state.mascot_mood(),
                         anim_t,
                         false,
                     );
+                    p.global_alpha = prev_alpha;
                 }
             }
             NotchMode::Music => {
@@ -569,7 +827,7 @@ impl Renderer {
                     buf.as_str()
                 }
                 IdleMetric::NetSpeed => {
-                    let _ = write!(buf, "↓{}", format_speed_short(state.telemetry.net_down_kbps));
+                    let _ = write!(buf, "v{}", format_speed_short(state.telemetry.net_down_kbps));
                     buf.as_str()
                 }
                 IdleMetric::Cpu => {
@@ -652,6 +910,15 @@ impl Renderer {
 
     pub(super) fn draw_idle_capsule(p: &mut PainterD2D, state: &AppState, w: f32, h: f32) {
         let cy = h / 2.0;
+        // Two-line idle layout scales with the actual capsule height. Reference is
+        // h=32 (Standard): title 12.5px @ y=11, subtitle 10.5px @ y=22. Compact
+        // (28px) shrinks slightly; Large / X-Large (up to ~41px) grow with it.
+        let ts = (h / 32.0).clamp(0.86, 1.28);
+        let title_fs = 12.5 * ts;
+        let sub_fs = 10.5 * ts;
+        let title_y = cy - 5.0 * ts;
+        let sub_y = cy + 6.0 * ts;
+        let badge_fs = 11.5 * ts;
         let anim_t = state.anim_time;
         let pulse_i = state
             .shelf_fx
@@ -731,12 +998,12 @@ impl Renderer {
                     } else {
                         Cow::Borrowed(notif.title.as_str())
                     };
-                let title = p.ellipsize_cow(&title_raw, 12.2, Weight::Bold, max_txt_w);
+                let title = p.ellipsize_cow(&title_raw, title_fs - 0.3, Weight::Bold, max_txt_w);
                 p.text(
                     &title,
                     text_x + in_dx,
-                    18.5,
-                    12.2,
+                    title_y,
+                    title_fs - 0.3,
                     Weight::Bold,
                     fade(tok::text1(), in_alpha),
                 );
@@ -746,12 +1013,12 @@ impl Renderer {
                     } else {
                         notif.subtitle.as_str()
                     };
-                let sub = p.ellipsize_cow(sub_src, 10.5, Weight::Regular, max_txt_w);
+                let sub = p.ellipsize_cow(sub_src, sub_fs, Weight::Regular, max_txt_w);
                 p.text(
                     &sub,
                     text_x + in_dx,
-                    33.0,
-                    10.5,
+                    sub_y,
+                    sub_fs,
                     Weight::Regular,
                     fade(tok::text2(), in_alpha),
                 );
@@ -819,27 +1086,27 @@ impl Renderer {
                         let mut ram_title = StackStr::<32>::new();
                         let _ = write!(ram_title, "RAM {:.0}%", state.telemetry.memory_percent);
                         let title =
-                            p.ellipsize_cow(ram_title.as_str(), 12.5, Weight::Bold, max_txt_w);
+                            p.ellipsize_cow(ram_title.as_str(), title_fs, Weight::Bold, max_txt_w);
                         p.text(
                             &title,
                             text_x + in_dx,
-                            18.5,
-                            12.5,
+                            title_y,
+                            title_fs,
                             Weight::Bold,
                             fade(tok::text1(), in_alpha),
                         );
                         let mut raw = StackStr::<64>::new();
                         let _ = write!(
                             raw,
-                            "{:.1} GB • CPU {:.0}%",
+                            "{:.1} GB  -  CPU {:.0}%",
                             state.telemetry.memory_used_gb, state.telemetry.cpu_usage
                         );
-                        let sub = p.ellipsize_cow(raw.as_str(), 10.5, Weight::Regular, max_txt_w);
+                        let sub = p.ellipsize_cow(raw.as_str(), sub_fs, Weight::Regular, max_txt_w);
                         p.text(
                             &sub,
                             text_x + in_dx,
-                            33.0,
-                            10.5,
+                            sub_y,
+                            sub_fs,
                             Weight::Regular,
                             fade(tok::text2(), in_alpha),
                         );
@@ -849,7 +1116,7 @@ impl Renderer {
                         p,
                         badge_cx,
                         cy,
-                        11.5,
+                        badge_fs,
                         frac_opt,
                         arc_col,
                         badge_bg,
@@ -863,24 +1130,24 @@ impl Renderer {
                         p.text(
                             "Network",
                             text_x + in_dx,
-                            18.5,
-                            12.5,
+                            title_y,
+                            title_fs,
                             Weight::Bold,
                             fade(tok::text1(), in_alpha),
                         );
                         let mut raw = StackStr::<64>::new();
                         let _ = write!(
                             raw,
-                            "↓ {}   ↑ {}",
+                            "v {}   ^ {}",
                             format_speed_short(state.telemetry.net_down_kbps),
                             format_speed_short(state.telemetry.net_up_kbps)
                         );
-                        let sub = p.ellipsize_cow(raw.as_str(), 10.5, Weight::Semibold, max_txt_w);
+                        let sub = p.ellipsize_cow(raw.as_str(), sub_fs, Weight::Semibold, max_txt_w);
                         p.text(
                             &sub,
                             text_x + in_dx,
-                            33.0,
-                            10.5,
+                            sub_y,
+                            sub_fs,
                             Weight::Semibold,
                             fade(tok::cyan_hi(), in_alpha),
                         );
@@ -890,7 +1157,7 @@ impl Renderer {
                         p,
                         badge_cx,
                         cy,
-                        11.5,
+                        badge_fs,
                         frac_opt,
                         arc_col,
                         badge_bg,
@@ -904,12 +1171,12 @@ impl Renderer {
                         let mut cpu_buf = StackStr::<32>::new();
                         let _ = write!(cpu_buf, "CPU {:.0}%", state.telemetry.cpu_usage);
                         let title =
-                            p.ellipsize_cow(cpu_buf.as_str(), 12.5, Weight::Bold, max_txt_w);
+                            p.ellipsize_cow(cpu_buf.as_str(), title_fs, Weight::Bold, max_txt_w);
                         p.text(
                             &title,
                             text_x + in_dx,
-                            18.5,
-                            12.5,
+                            title_y,
+                            title_fs,
                             Weight::Bold,
                             fade(tok::text1(), in_alpha),
                         );
@@ -920,12 +1187,12 @@ impl Renderer {
                             state.telemetry.memory_percent, state.telemetry.memory_used_gb
                         );
                         let sub =
-                            p.ellipsize_cow(ram_buf.as_str(), 10.5, Weight::Regular, max_txt_w);
+                            p.ellipsize_cow(ram_buf.as_str(), sub_fs, Weight::Regular, max_txt_w);
                         p.text(
                             &sub,
                             text_x + in_dx,
-                            33.0,
-                            10.5,
+                            sub_y,
+                            sub_fs,
                             Weight::Regular,
                             fade(tok::text2(), in_alpha),
                         );
@@ -935,7 +1202,7 @@ impl Renderer {
                         p,
                         badge_cx,
                         cy,
-                        11.5,
+                        badge_fs,
                         frac_opt,
                         arc_col,
                         badge_bg,
@@ -950,32 +1217,32 @@ impl Renderer {
                         let mut clk_buf = StackStr::<48>::new();
                         let _ = write!(
                             clk_buf,
-                            "{:02}:{:02} • {:02}/{:02}",
+                            "{:02}:{:02}  -  {:02}/{:02}",
                             now.hour, now.minute, now.month, now.day
                         );
                         let title =
-                            p.ellipsize_cow(clk_buf.as_str(), 12.5, Weight::Bold, max_txt_w);
+                            p.ellipsize_cow(clk_buf.as_str(), title_fs, Weight::Bold, max_txt_w);
                         p.text(
                             &title,
                             text_x + in_dx,
-                            18.5,
-                            12.5,
+                            title_y,
+                            title_fs,
                             Weight::Bold,
                             fade(tok::text1(), in_alpha),
                         );
                         let mut sub_buf = StackStr::<64>::new();
                         let _ = write!(
                             sub_buf,
-                            "RAM {:.0}% • CPU {:.0}%",
+                            "RAM {:.0}%  -  CPU {:.0}%",
                             state.telemetry.memory_percent, state.telemetry.cpu_usage
                         );
                         let sub =
-                            p.ellipsize_cow(sub_buf.as_str(), 10.5, Weight::Regular, max_txt_w);
+                            p.ellipsize_cow(sub_buf.as_str(), sub_fs, Weight::Regular, max_txt_w);
                         p.text(
                             &sub,
                             text_x + in_dx,
-                            33.0,
-                            10.5,
+                            sub_y,
+                            sub_fs,
                             Weight::Regular,
                             fade(tok::text2(), in_alpha),
                         );
@@ -985,7 +1252,7 @@ impl Renderer {
                         p,
                         badge_cx,
                         cy,
-                        11.5,
+                        badge_fs,
                         frac_opt,
                         arc_col,
                         badge_bg,
@@ -1005,20 +1272,20 @@ impl Renderer {
                 }
             }
 
-            // First-run subtle onboarding hint pill (`Ctrl+Shift+C`) until user presses hotkey or expands 3x
+            // First-run subtle onboarding hint pill (`Ctrl+Alt+C`) until user presses hotkey or expands 3x
             if !state.seen_hotkey_hint && state.idle_metric != IdleMetric::Minimal {
                 let title_w = match state.idle_metric {
-                    IdleMetric::Ram => p.measure("RAM 100%", 12.5, Weight::Bold),
+                    IdleMetric::Ram => p.measure("RAM 100%", title_fs, Weight::Bold),
                     IdleMetric::Minimal => 0.0,
-                    IdleMetric::NetSpeed => p.measure("Network", 12.5, Weight::Bold),
+                    IdleMetric::NetSpeed => p.measure("Network", title_fs, Weight::Bold),
                     IdleMetric::Cpu => {
                         let mut b = StackStr::<32>::new();
                         let _ = write!(b, "CPU {:.0}%", state.telemetry.cpu_usage);
-                        p.measure(b.as_str(), 12.5, Weight::Bold)
+                        p.measure(b.as_str(), title_fs, Weight::Bold)
                     }
-                    IdleMetric::Clock => p.measure("00:00 • 00/00", 12.5, Weight::Bold),
+                    IdleMetric::Clock => p.measure("00:00  -  00/00", title_fs, Weight::Bold),
                 };
-                let hint_txt = "Ctrl+Shift+C";
+                let hint_txt = "Ctrl+Alt+C";
                 let pill_w = (p.measure(hint_txt, 8.2, Weight::Semibold) + 12.0).clamp(58.0, 86.0);
                 let pill_h = 14.0;
                 let pill_x = badge_cx - 18.0 - pill_w;
@@ -1048,26 +1315,36 @@ impl Renderer {
         }
     }
 
+    /// Unified **Blur-Fade Rise** staggered entrance (`480ms` Fluid Luxury timeline, `~45ms` stagger/item):
+    /// rises `+12px -> 0`, fades `0.0 -> 1.0`, and subtly scales `0.96 -> 1.0` with quartic ease-out.
+    /// Respects `SPI_GETCLIENTAREAANIMATION` via `state.are_animations_active()`, settling cleanly to `(0.0, 1.0, 1.0)` at `0Hz` idle.
+    pub(super) fn mode_stagger(state: &AppState, idx: usize) -> (f32, f32, f32) {
+        if !state.are_animations_active() || state.anim_mode_t >= 0.999 {
+            return (0.0, 1.0, 1.0);
+        }
+        let delay = (idx as f32 * 0.095).min(0.45);
+        let span = (1.0 - delay).max(0.42);
+        let local_t = ((state.anim_mode_t - delay) / span).clamp(0.0, 1.0);
+        let eased = 1.0 - (1.0 - local_t).powi(4);
+        let dy = (1.0 - eased) * 12.0;
+        let alpha = eased;
+        // Keep scale at 1.0 (pure Y-slide + fade) so Direct2D never re-rasterizes
+        // DirectWrite glyph runs on every frame of tab switches.
+        let scale = 1.0;
+        (dy, alpha, scale)
+    }
+
     // ─────────────────────────────────────────────────────────────────────────────
-    // VERTICAL IDLE CAPSULE (52 × 168/204/248 for Left / Right Edges)
+    // VERTICAL IDLE CAPSULE (52 x 168/204/248 for Left / Right Edges)
     // ─────────────────────────────────────────────────────────────────────────────
     pub(super) fn draw_expanded(p: &mut PainterD2D, state: &AppState, w: f32, h: f32, settled: bool) {
         Self::draw_expanded_header(p, state, w);
-        let prev_ox = p.origin_x;
-        let prev_alpha = p.global_alpha;
-        if state.are_animations_active() && state.anim_mode_t < 0.995 {
-            let me = crate::models::ease_out_cubic(state.anim_mode_t);
-            p.origin_x = prev_ox + (1.0 - me) * 12.0 * state.anim_mode_dir * p.s;
-            p.global_alpha = prev_alpha * (0.18 + 0.82 * me);
-        }
         Self::draw_expanded_body(p, state, w, h, settled);
-        p.origin_x = prev_ox;
-        p.global_alpha = prev_alpha;
     }
 
     fn draw_expanded_header(p: &mut PainterD2D, state: &AppState, w: f32) {
-        let dock_x = 20.0;
-        let dock_y = 14.0;
+        let dock_x = 24.0;
+        let dock_y = 16.0;
         let dock_h = 34.0;
 
         let dock_modes = state.visible_dock_modes();
@@ -1143,8 +1420,8 @@ impl Renderer {
             p.hit(ix, iy, item_w, 26.0, Action::SetMode(*mode));
         }
 
-        // Right Actions: [Lyrics Pill] [Bell] [Pin Lock] [Settings Gear]
-        let right_x = w - 20.0;
+        // Right Actions: [Bell] [Pin Lock] [Settings Gear]
+        let right_x = w - 24.0;
         let gear_x = right_x - 28.0;
         let is_settings_active = state.settings_open || state.mode == NotchMode::Settings;
         let gear_ht = p.hot_t(gear_x, dock_y + 3.0, 28.0, 28.0);
@@ -1273,7 +1550,7 @@ impl Renderer {
     }
 
     fn draw_expanded_body(p: &mut PainterD2D, state: &AppState, w: f32, h: f32, _settled: bool) {
-        let card_y = 60.0;
+        let card_y = 68.0;
         if state.show_notif_history {
             Self::draw_notif_history_view(p, state, w, h, card_y);
         } else {
@@ -1285,7 +1562,7 @@ impl Renderer {
                 NotchMode::Music => Self::draw_music_view(p, state, w, card_y),
                 NotchMode::Volume => Self::draw_volume_view(p, state, w, card_y),
                 NotchMode::MemReduct => Self::draw_memreduct_view(p, state, w, card_y),
-                NotchMode::Shelf => Self::draw_shelf_view(p, state, w, card_y),
+                NotchMode::Shelf => Self::draw_shelf_view(p, state, w, h, card_y),
                 NotchMode::Settings => Self::draw_settings_view(p, state, w, card_y),
             }
         }

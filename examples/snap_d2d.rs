@@ -194,7 +194,7 @@ fn notch_ptr(
         s.current_width.round().max(1.0) as u32,
         s.current_height.round().max(1.0) as u32,
     );
-    let mut r = Renderer::new(w, h);
+    let mut r = Renderer::new(w, h).unwrap();
     snap(ctx, dir, name, w, h, |c| r.render_d2d(c, s, pointer))
 }
 
@@ -317,7 +317,6 @@ fn main() -> Result<()> {
         ("settings_general", models::SettingsCategory::General, 0.0f32),
         ("settings_general_sliders", models::SettingsCategory::General, 260.0f32),
         ("settings_motion", models::SettingsCategory::Motion, 0.0f32),
-        ("settings_modules", models::SettingsCategory::Modules, 0.0f32),
         ("settings_notifications", models::SettingsCategory::Notifications, 0.0f32),
         ("settings_system", models::SettingsCategory::System, 0.0f32),
         ("settings_system_bottom", models::SettingsCategory::System, 160.0f32),
@@ -427,7 +426,7 @@ fn main() -> Result<()> {
                 ws.current_width.round().max(1.0) as u32,
                 ws.current_height.round().max(1.0) as u32,
             );
-            let mut r = Renderer::new(w, h);
+            let mut r = Renderer::new(w, h).unwrap();
             snap_transparent(&ctx, &dir, name, w, h, 20, |c| r.render_d2d(c, &ws, None))?;
         }
         // Also export a transparent Preferences screenshot for the v0.3.0 web comparison
@@ -483,18 +482,18 @@ fn main() -> Result<()> {
             );
             vs.sync_preview_settled();
             let (w, h) = (vs.current_width.round() as u32, vs.current_height.round() as u32);
-            let mut r = Renderer::new(w, h);
+            let mut r = Renderer::new(w, h).unwrap();
             snap_bg(&ctx, &dir, "v031_vert_shelf_frosted", w, h, dark_bg, |c| {
                 r.render_d2d(c, &vs, None)
             })?;
-            let mut r2 = Renderer::new(w, h);
+            let mut r2 = Renderer::new(w, h).unwrap();
             snap_bg(&ctx, &dir, "v031_vert_shelf_white_clamped", w, h, white_clamped_bg, |c| {
                 r2.render_d2d(c, &vs, None)
             })?;
 
             // Solid obsidian fallback (Windows Transparency OFF)
             vs.windows_transparency_enabled = false;
-            let mut r3 = Renderer::new(w, h);
+            let mut r3 = Renderer::new(w, h).unwrap();
             snap_bg(&ctx, &dir, "v031_vert_shelf_solid", w, h, dark_bg, |c| {
                 r3.render_d2d(c, &vs, None)
             })?;
@@ -514,7 +513,7 @@ fn main() -> Result<()> {
             );
             hs.sync_preview_settled();
             let (w, h) = (hs.current_width.round() as u32, hs.current_height.round() as u32);
-            let mut r = Renderer::new(w, h);
+            let mut r = Renderer::new(w, h).unwrap();
             snap_bg(&ctx, &dir, "v031_horiz_shelf_frosted", w, h, dark_bg, |c| {
                 r.render_d2d(c, &hs, None)
             })?;
@@ -533,7 +532,7 @@ fn main() -> Result<()> {
             );
             ns.sync_preview_settled();
             let (w, h) = (ns.current_width.round() as u32, ns.current_height.round() as u32);
-            let mut r = Renderer::new(w, h);
+            let mut r = Renderer::new(w, h).unwrap();
             snap_bg(&ctx, &dir, "v031_notif_capsule", w, h, dark_bg, |c| {
                 r.render_d2d(c, &ns, None)
             })?;

@@ -290,9 +290,9 @@ fn closed_form_spring_is_framerate_independent_and_respects_damping_profiles() {
 
 #[test]
 fn raycast_tactile_shelf_fx_has_mass_absorption_and_zero_buoyancy_oscillation() {
-    assert!((LIQUID_PLOP_DURATION_SECS - 0.38).abs() < 1e-4);
-    assert!((RAY_ABSORB_DURATION_SECS - 0.24).abs() < 1e-4);
-    assert!((RAY_ROW_ENTRY_DURATION_SECS - 0.12).abs() < 1e-4);
+    assert!((LIQUID_PLOP_DURATION_SECS - 0.60).abs() < 1e-4);
+    assert!((RAY_ABSORB_DURATION_SECS - 0.38).abs() < 1e-4);
+    assert!((RAY_ROW_ENTRY_DURATION_SECS - 0.48).abs() < 1e-4);
 
     let mut st = AppState::new();
     let id = st.push_shelf_item(ShelfKind::File, "Spec.pdf".into(), "C:\\Spec.pdf".into());
@@ -300,23 +300,23 @@ fn raycast_tactile_shelf_fx_has_mass_absorption_and_zero_buoyancy_oscillation() 
     st.shelf_fx.plop_started_at = Some(t0);
     st.shelf_fx.plop_item_id = Some(id);
 
-    // Row entry must monotonically decay from +6px -> 0 over 120ms with ZERO negative bounce
+    // Row entry (Blur-Fade Rise) must monotonically decay from +12px -> 0 over 480ms with ZERO negative bounce
     let mut prev = st.shelf_fx.buoyancy_offset(id, t0);
-    assert!((prev - 6.0).abs() < 0.2);
-    for ms in (10..=150).step_by(10) {
+    assert!((prev - 12.0).abs() < 0.2);
+    for ms in (20..=500).step_by(20) {
         let t = t0 + Duration::from_millis(ms);
         let cur = st.shelf_fx.buoyancy_offset(id, t);
         assert!(cur >= 0.0, "row entry must never overshoot negative at {ms}ms: {cur}");
         assert!(cur <= prev + 1e-4, "row entry must monotonically decrease at {ms}ms");
         prev = cur;
     }
-    assert_eq!(st.shelf_fx.buoyancy_offset(id, t0 + Duration::from_millis(125)), 0.0);
-    assert_eq!(st.shelf_fx.row_entry_alpha(id, t0 + Duration::from_millis(125)), 1.0);
+    assert_eq!(st.shelf_fx.buoyancy_offset(id, t0 + Duration::from_millis(490)), 0.0);
+    assert_eq!(st.shelf_fx.row_entry_alpha(id, t0 + Duration::from_millis(490)), 1.0);
 
-    // Mass Absorption card dip peaks around +3.5px and settles to 0.0 by 240ms
-    let peak = st.shelf_fx.card_absorb_offset(t0 + Duration::from_millis(55));
+    // Mass Absorption card dip peaks around +3.5px (~85ms) and settles to 0.0 by 380ms
+    let peak = st.shelf_fx.card_absorb_offset(t0 + Duration::from_millis(85));
     assert!(peak > 3.0 && peak <= 3.51, "unexpected Mass Absorption peak: {peak}");
-    assert_eq!(st.shelf_fx.card_absorb_offset(t0 + Duration::from_millis(245)), 0.0);
+    assert_eq!(st.shelf_fx.card_absorb_offset(t0 + Duration::from_millis(390)), 0.0);
 }
 
 #[test]
@@ -391,7 +391,7 @@ fn settings_general_removes_glass_sliders_and_expanded_notch_has_no_floating_toa
 
         let (nw, nh) = (ns.current_width.round() as u32, ns.current_height.round() as u32);
         let ntarget = make_target(&ctx, nw, nh)?;
-        let mut ren = Renderer::new(nw, nh);
+        let mut ren = Renderer::new(nw, nh).unwrap();
         unsafe {
             ctx.SetTarget(&ntarget);
             ctx.BeginDraw();

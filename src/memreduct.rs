@@ -100,6 +100,7 @@ unsafe extern "system" {
     ) -> i32;
     fn GetCurrentProcess() -> *mut c_void;
     fn GetCurrentProcessId() -> u32;
+    fn ProcessIdToSessionId(dw_process_id: u32, p_session_id: *mut u32) -> i32;
     fn GetLogicalDriveStringsW(n_buffer_length: u32, lp_buffer: *mut u16) -> u32;
     fn GetDriveTypeW(lp_root_path_name: *const u16) -> u32;
     fn CreateFileW(
@@ -433,6 +434,8 @@ pub fn execute_memory_clean_areas(areas: &CleanAreas) -> Option<CleanResult> {
         if areas.working_sets {
             areas_attempted += 1;
             let self_pid = GetCurrentProcessId();
+            let mut self_session = 0u32;
+            let _ = ProcessIdToSessionId(self_pid, &mut self_session);
             SetProcessWorkingSetSize(GetCurrentProcess(), usize::MAX, usize::MAX);
 
             let mut pids: [u32; 4096] = [0; 4096];
@@ -446,6 +449,12 @@ pub fn execute_memory_clean_areas(areas: &CleanAreas) -> Option<CleanResult> {
                 let count = ((bytes_needed as usize) / size_of::<u32>()).min(pids.len());
                 for &pid in &pids[..count] {
                     if pid == 0 || pid == self_pid {
+                        continue;
+                    }
+                    // Skip system/other-session processes: their working sets are
+                    // not ours to trim and trimming them can hurt OS responsiveness.
+                    let mut session = 0u32;
+                    if ProcessIdToSessionId(pid, &mut session) != 0 && session != self_session {
                         continue;
                     }
                     let handle = OpenProcess(PROCESS_QUERY_INFORMATION | PROCESS_SET_QUOTA, 0, pid);
@@ -656,14 +665,14 @@ unsafe fn flush_fixed_volume_caches() -> usize {
 /// Human-readable 1-line tooltip description for each Mem Reduct clean area chip (`0..=7`).
 pub fn clean_area_description(idx: usize) -> Option<&'static str> {
     match idx {
-        0 => Some("Working Set • Private app RAM"),
-        1 => Some("System WS • Kernel & driver RAM"),
-        2 => Some("Standby • Cached unused RAM"),
-        3 => Some("Modified Pg • Pending disk writes"),
-        4 => Some("Standby Lo • Priority 0-4 cache"),
-        5 => Some("Modified File • Unflushed cache"),
-        6 => Some("Registry • Loaded config hives"),
-        7 => Some("Combine • Deduplicate RAM pages"),
+        0 => Some("Working Set  -  Private app RAM"),
+        1 => Some("System WS  -  Kernel & driver RAM"),
+        2 => Some("Standby  -  Cached unused RAM"),
+        3 => Some("Modified Pg  -  Pending disk writes"),
+        4 => Some("Standby Lo  -  Priority 0-4 cache"),
+        5 => Some("Modified File  -  Unflushed cache"),
+        6 => Some("Registry  -  Loaded config hives"),
+        7 => Some("Combine  -  Deduplicate RAM pages"),
         _ => None,
     }
 }
@@ -680,7 +689,7 @@ mod tests {
     fn clean_area_descriptions_cover_all_8_chips() {
         for i in 0..8 {
             let desc = clean_area_description(i).expect("chip description missing");
-            assert!(desc.contains('•'));
+            assert!(desc.contains(" - "));
         }
         assert!(clean_area_description(8).is_none());
     }

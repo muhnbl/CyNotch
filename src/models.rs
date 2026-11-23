@@ -237,10 +237,10 @@ impl TypeScale {
     /// Keeps buttons, spacing, and banners responsive alongside typography.
     pub fn ui_scale(self) -> f32 {
         match self {
-            Self::Compact => 1.00,
-            Self::Standard => 1.09,
-            Self::Large => 1.22,
-            Self::ExtraLarge => 1.38,
+            Self::Compact => 1.12,
+            Self::Standard => 1.20,
+            Self::Large => 1.32,
+            Self::ExtraLarge => 1.50,
         }
     }
 
@@ -351,17 +351,15 @@ impl LyricStyle {
 pub enum SettingsCategory {
     General,
     Motion,
-    Modules,
     Notifications,
     System,
 }
 
 impl SettingsCategory {
-    pub const COUNT: usize = 5;
-    pub const ALL: [SettingsCategory; 5] = [
+    pub const COUNT: usize = 4;
+    pub const ALL: [SettingsCategory; 4] = [
         SettingsCategory::General,
         SettingsCategory::Motion,
-        SettingsCategory::Modules,
         SettingsCategory::Notifications,
         SettingsCategory::System,
     ];
@@ -370,9 +368,8 @@ impl SettingsCategory {
         match self {
             Self::General => 0,
             Self::Motion => 1,
-            Self::Modules => 2,
-            Self::Notifications => 3,
-            Self::System => 4,
+            Self::Notifications => 2,
+            Self::System => 3,
         }
     }
 
@@ -380,28 +377,8 @@ impl SettingsCategory {
         match self {
             Self::General => "General & Notch",
             Self::Motion => "Motion & Perf",
-            Self::Modules => "Dock & Modules",
             Self::Notifications => "Notifications",
             Self::System => "Memory & System",
-        }
-    }
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-pub struct ModuleVisibility {
-    pub music: bool,
-    pub volume: bool,
-    pub mem_reduct: bool,
-    pub shelf: bool,
-}
-
-impl Default for ModuleVisibility {
-    fn default() -> Self {
-        Self {
-            music: true,
-            volume: true,
-            mem_reduct: true,
-            shelf: true,
         }
     }
 }
@@ -422,24 +399,7 @@ pub enum ToggleId {
     ClipboardWatch = 10,
     CaptureClipboard = 11,
     AutoClean = 12,
-    AreaWs = 13,
-    AreaSys = 14,
-    AreaStandby = 15,
-    ScreenTime = 16,
-    ModMusic = 17,
-    ModVolume = 18,
-    ModMemReduct = 19,
-    ModTasks = 21,
-    ModShelf = 22,
-    ModCapture = 23,
-    ModTelemetry = 24,
     MinimizedIsland = 25,
-    AreaModPage = 26,
-    AreaStandbyLow = 27,
-    AreaModFile = 28,
-    AreaRegistry = 29,
-    AreaCombine = 30,
-    ShowCleanResults = 31,
     FrostedGlass = 33,
     NotifListener = 34,
     NotifExclusive = 35,
@@ -449,7 +409,7 @@ pub enum ToggleId {
 }
 
 impl ToggleId {
-    pub const ALL: [ToggleId; 37] = [
+    pub const ALL: [ToggleId; 20] = [
         ToggleId::Autostart,
         ToggleId::Chime,
         ToggleId::ClickToOpen,
@@ -463,24 +423,7 @@ impl ToggleId {
         ToggleId::ClipboardWatch,
         ToggleId::CaptureClipboard,
         ToggleId::AutoClean,
-        ToggleId::AreaWs,
-        ToggleId::AreaSys,
-        ToggleId::AreaStandby,
-        ToggleId::ScreenTime,
-        ToggleId::ModMusic,
-        ToggleId::ModVolume,
-        ToggleId::ModMemReduct,
-        ToggleId::ModTasks,
-        ToggleId::ModShelf,
-        ToggleId::ModCapture,
-        ToggleId::ModTelemetry,
         ToggleId::MinimizedIsland,
-        ToggleId::AreaModPage,
-        ToggleId::AreaStandbyLow,
-        ToggleId::AreaModFile,
-        ToggleId::AreaRegistry,
-        ToggleId::AreaCombine,
-        ToggleId::ShowCleanResults,
         ToggleId::FrostedGlass,
         ToggleId::NotifListener,
         ToggleId::NotifExclusive,
@@ -494,7 +437,6 @@ impl ToggleId {
 pub struct SettingEffects {
     pub redraw_notch: bool,
     pub update_autostart: Option<bool>,
-    pub reset_screentime: bool,
     pub trigger_purge: bool,
     pub quit_app: bool,
     pub close_settings: bool,
@@ -653,16 +595,11 @@ pub enum Action {
     ResetPosition,
     ToggleLyrics,
     ScrollLyrics(i32),
-    CycleLyricSize,
-    CycleLyricStyle,
-    SetLyricSize(LyricSize),
-    SetLyricStyle(LyricStyle),
     PrevTrack,
     TogglePlayPause,
     NextTrack,
     PurgeRam,
     ToggleAutoClean,
-    ToggleArea(u8), // 0..=7 matching Mem Reduct areas
     CycleThreshold, // 70 -> 80 -> 90 -> 0 (Disable) -> 60 -> 70
     CycleInterval,  // 0 (Disable) -> 5 -> 15 -> 30 -> 60 -> 90 -> 0
     SetCleanThreshold(u32),
@@ -722,12 +659,9 @@ pub enum Action {
     ActivateHistoryItem(usize),
     DismissHistoryItem(usize),
     ClearNotifHistory,
-    ToggleModule(NotchMode),
     ToggleLyricsMonitor,
     ToggleClipboardWatch,
     ToggleCaptureClipboard,
-    ToggleScreenTime,
-    ResetScreenTimeToday,
     ResetAllSettings,
     ToggleAutostart,
     ToggleChime,
@@ -852,10 +786,10 @@ pub struct ShelfUndoEntry {
 }
 
 pub const SHELF_UNDO_TTL_SECS: f32 = 8.0;
-pub const LIQUID_PLOP_DURATION_SECS: f32 = 0.38;
-pub const RAY_ABSORB_DURATION_SECS: f32 = 0.24;
-pub const RAY_ROW_ENTRY_DURATION_SECS: f32 = 0.12;
-pub const CLIPBOARD_PULSE_DURATION_SECS: f32 = 0.65;
+pub const LIQUID_PLOP_DURATION_SECS: f32 = 0.60;
+pub const RAY_ABSORB_DURATION_SECS: f32 = 0.38;
+pub const RAY_ROW_ENTRY_DURATION_SECS: f32 = 0.48;
+pub const CLIPBOARD_PULSE_DURATION_SECS: f32 = 0.90;
 
 /// State driving the Shelf drag-over meniscus aura, impact ripples, droplets,
 /// damped buoyancy bobbing on newly dropped rows, and the Opsi A Skenario 2
@@ -1008,11 +942,12 @@ impl LiquidPlopFx {
             return 0.0;
         }
         let u = (t / RAY_ROW_ENTRY_DURATION_SECS).clamp(0.0, 1.0);
-        // Snappy cubic-out settle from +6.0px -> 0 with zero oscillation
-        6.0 * (1.0 - ease_out_cubic(u))
+        // Blur-Fade Rise settle from +12.0px -> 0 with silky quintic ease-out
+        let eased = 1.0 - (1.0 - u).powi(4);
+        12.0 * (1.0 - eased)
     }
 
-    /// Raycast Tactile row entry opacity (`0 -> 1` over `120ms`).
+    /// Blur-Fade Rise row entry opacity (`0 -> 1` over `480ms`).
     pub fn row_entry_alpha(&self, item_id: u64, now: Instant) -> f32 {
         if self.plop_item_id != Some(item_id) {
             return 1.0;
@@ -1024,7 +959,8 @@ impl LiquidPlopFx {
         if t >= RAY_ROW_ENTRY_DURATION_SECS {
             return 1.0;
         }
-        ease_out_cubic((t / RAY_ROW_ENTRY_DURATION_SECS).clamp(0.0, 1.0))
+        let u = (t / RAY_ROW_ENTRY_DURATION_SECS).clamp(0.0, 1.0);
+        1.0 - (1.0 - u).powi(4)
     }
 
     /// Raycast Mass Absorption card dip (`--ray-absorb`, `240ms`, `+3.5px` dip & smooth recover,
@@ -1037,7 +973,7 @@ impl LiquidPlopFx {
         if t <= 0.0 || t >= RAY_ABSORB_DURATION_SECS {
             return 0.0;
         }
-        let peak_t = 0.055_f32;
+        let peak_t = 0.085_f32;
         if t < peak_t {
             let u = (t / peak_t).clamp(0.0, 1.0);
             3.5 * ease_out_cubic(u)
@@ -1055,60 +991,6 @@ pub struct CaptureState {
     pub last_dims: String,
     pub clipboard_ok: bool,
     pub total_captures: u32,
-}
-
-#[derive(Debug, Clone)]
-pub struct ScreenTimeStats {
-    pub today_secs: u64,
-    pub top_app_name: String,
-    pub top_app_secs: u64,
-    pub top_apps: Vec<(String, u64)>,
-    pub seven_day_avg_secs: u64,
-    pub tracked_days: usize,
-    pub peak_hour: usize,
-    pub peak_hour_str: String,
-    pub hourly_secs: [u64; 24],
-}
-
-impl Default for ScreenTimeStats {
-    fn default() -> Self {
-        Self {
-            today_secs: 0,
-            top_app_name: "--".to_string(),
-            top_app_secs: 0,
-            top_apps: Vec::new(),
-            seven_day_avg_secs: 0,
-            tracked_days: 1,
-            peak_hour: 0,
-            peak_hour_str: "--".to_string(),
-            hourly_secs: [0u64; 24],
-        }
-    }
-}
-
-impl ScreenTimeStats {
-    pub fn preview_sample() -> Self {
-        let mut hourly = [0u64; 24];
-        hourly[10] = 1400;
-        hourly[11] = 2200;
-        hourly[14] = 3800;
-        hourly[15] = 2900;
-        Self {
-            today_secs: 2 * 3600 + 2 * 60,
-            top_app_name: "Chrome".to_string(),
-            top_app_secs: 3600 + 5 * 60,
-            top_apps: vec![
-                ("Chrome".to_string(), 3900),
-                ("VS Code".to_string(), 2400),
-                ("Terminal".to_string(), 1020),
-            ],
-            seven_day_avg_secs: 3600 + 48 * 60,
-            tracked_days: 3,
-            peak_hour: 14,
-            peak_hour_str: "2 PM".to_string(),
-            hourly_secs: hourly,
-        }
-    }
 }
 
 #[derive(Debug, Clone)]
@@ -1164,6 +1046,14 @@ pub struct NotifHistoryEntry {
 }
 
 #[derive(Debug, Clone)]
+pub struct CoverArt {
+    pub key: u64,
+    pub w: u32,
+    pub h: u32,
+    pub pbgra: Vec<u8>,
+}
+
+#[derive(Debug, Clone)]
 pub struct MediaTrack {
     pub title: String,
     pub artist: String,
@@ -1171,6 +1061,7 @@ pub struct MediaTrack {
     pub is_playing: bool,
     pub position_ms: u64,
     pub duration_ms: u64,
+    pub cover_art: Option<std::sync::Arc<CoverArt>>,
 }
 
 impl Default for MediaTrack {
@@ -1188,6 +1079,7 @@ impl MediaTrack {
             is_playing: false,
             position_ms: 0,
             duration_ms: 0,
+            cover_art: None,
         }
     }
 
@@ -1199,6 +1091,7 @@ impl MediaTrack {
             is_playing: true,
             position_ms: 63_000,
             duration_ms: 214_000,
+            cover_art: None,
         }
     }
 
@@ -1290,7 +1183,7 @@ impl Default for MemReductConfig {
             when_above_pct: 70,
             every_mins: 0,
             auto_clean_enabled: true,
-            last_cleaned_status: "Ready • Click to purge standby & WS".to_string(),
+            last_cleaned_status: "Ready  -  Click to purge standby & WS".to_string(),
             last_freed_mb: 0.0,
             is_purging: false,
             cyno_quote: "Through me, the law is made manifest.".to_string(),
@@ -1301,7 +1194,7 @@ impl Default for MemReductConfig {
 impl MemReductConfig {
     pub fn preview_sample() -> Self {
         Self {
-            last_cleaned_status: "14 procs trimmed • 420 MB freed".to_string(),
+            last_cleaned_status: "14 procs trimmed  -  420 MB freed".to_string(),
             last_freed_mb: 420.0,
             ..Self::default()
         }
@@ -1327,6 +1220,12 @@ pub struct AppState {
     pub is_hovered: bool,
     pub is_hover_pending: bool,
     pub hover_dwell_t: f32,
+    /// Fades out the hover sweep when the cursor only passes by (dwell cancelled
+    /// before the notch opens), so the feedback never snaps off abruptly.
+    pub hover_afterglow: f32,
+    /// Sweep head position (0..1). Continues forward during afterglow instead of
+    /// retreating, so a cancelled hover reads like a wave washing out to sea.
+    pub hover_sweep_x: f32,
     pub anim_edge_glow_t: f32,
     pub hover_dwell_start: Option<std::time::Instant>,
     pub is_pinned: bool,
@@ -1372,11 +1271,9 @@ pub struct AppState {
     pub notif_over_fullscreen: bool,
     pub notif_listener_status: String,
     pub notif_suppressed_apps: usize,
-    pub modules: ModuleVisibility,
     pub lyrics_enabled: bool,
     pub clipboard_watch_enabled: bool,
     pub capture_to_clipboard: bool,
-    pub screentime_enabled: bool,
 
     // Settings Window UI State
     pub settings_open: bool,
@@ -1408,6 +1305,9 @@ pub struct AppState {
     pub anim_settings_cat_vel: f32,
     pub anim_settings_pane_t: f32,
     pub anim_settings_pane_dir: f32,
+    /// 0 -> 1 choreography when Preferences is first opened via the gear button.
+    /// Drives a subtle 0.96 -> 1.0 scale, +10px rise and fade-in.
+    pub anim_settings_open_t: f32,
     pub anim_vol_pct: f32,
     pub anim_ram_pct: f32,
     pub hover_target_idx: Option<usize>,
@@ -1425,7 +1325,6 @@ pub struct AppState {
     pub mem_reduct: MemReductConfig,
     pub capture: CaptureState,
     pub quick_note: String,
-    pub screen_time: ScreenTimeStats,
     pub notification: Option<NotificationBanner>,
     pub notif_queue: VecDeque<NotificationBanner>,
     pub notif_history: VecDeque<NotifHistoryEntry>,
@@ -1526,16 +1425,12 @@ struct PersistedConfig {
         hover_dwell_speed: HoverDwellSpeed,
         #[serde(default)]
         seen_hotkey_hint: bool,
-        #[serde(default)]
-        modules: ModuleVisibility,
         #[serde(default = "default_true")]
         lyrics_enabled: bool,
         #[serde(default = "default_true")]
         clipboard_watch_enabled: bool,
         #[serde(default = "default_true")]
         capture_to_clipboard: bool,
-        #[serde(default = "default_true")]
-        screentime_enabled: bool,
         #[serde(default = "default_lyric_size")]
         lyric_size: LyricSize,
         #[serde(default = "default_lyric_style")]
@@ -1631,16 +1526,16 @@ impl AppState {
     pub const VERT_BANNER_WIDTH: f32 = 356.0;
     pub const VERT_BANNER_HEIGHT: f32 = 90.0;
 
-    pub const EXPANDED_WIDTH: f32 = 620.0;
-    pub const EXPANDED_HEIGHT: f32 = 232.0;
+    pub const EXPANDED_WIDTH: f32 = 648.0;
+    pub const EXPANDED_HEIGHT: f32 = 292.0;
     pub const VERT_EXPANDED_WIDTH: f32 = 316.0;
     pub const VERT_EXPANDED_HEIGHT: f32 = 480.0;
 
-    pub const SETTINGS_WIDTH: f32 = 860.0;
-    pub const SETTINGS_HEIGHT: f32 = 720.0;
+    pub const SETTINGS_WIDTH: f32 = 900.0;
+    pub const SETTINGS_HEIGHT: f32 = 760.0;
 
-    pub const VOLUME_SLIDER_X: f32 = 200.0;
-    pub const VOLUME_SLIDER_W: f32 = 380.0;
+    pub const VOLUME_SLIDER_X: f32 = 212.0;
+    pub const VOLUME_SLIDER_W: f32 = 392.0;
     pub const VERT_VOLUME_SLIDER_X: f32 = 32.0;
     pub const VERT_VOLUME_SLIDER_W: f32 = 252.0;
 
@@ -1658,11 +1553,19 @@ impl AppState {
     }
 
     pub fn base_expanded_height(&self) -> f32 {
-        Self::EXPANDED_HEIGHT
+        if self.mode == NotchMode::Shelf && !self.show_notif_history {
+            let rows = self.shelf_items.len().div_ceil(4).clamp(1, 6);
+            Self::EXPANDED_HEIGHT + ((rows - 1) as f32) * 120.0
+        } else {
+            Self::EXPANDED_HEIGHT
+        }
     }
 
     pub fn expanded_scale(&self) -> f32 {
-        self.expanded_size.scale() * self.type_scale.ui_scale()
+        // Use the gentler idle scale so the expanded notch never grows past the
+        // screen edge. `ui_scale` is for Preferences controls; using it here made
+        // X-Large overflow and clip telemetry text at the top of the display.
+        self.expanded_size.scale() * self.type_scale.idle_ui_scale()
     }
 
     pub fn banner_scale(&self) -> f32 {
@@ -1787,14 +1690,14 @@ impl AppState {
                 IdleMetric::Ram => (
                     format!("RAM {:.0}%", self.telemetry.memory_percent),
                     format!(
-                        "{:.1} GB • CPU {:.0}%",
+                        "{:.1} GB  -  CPU {:.0}%",
                         self.telemetry.memory_used_gb, self.telemetry.cpu_usage
                     ),
                 ),
                 IdleMetric::NetSpeed => (
                     "Network".to_string(),
                     format!(
-                        "↓ {:.0} KB/s   ↑ {:.0} KB/s",
+                        "v {:.0} KB/s   ^ {:.0} KB/s",
                         self.telemetry.net_down_kbps, self.telemetry.net_up_kbps
                     ),
                 ),
@@ -1808,7 +1711,7 @@ impl AppState {
                 IdleMetric::Clock => (
                     "Clock".to_string(),
                     format!(
-                        "RAM {:.0}% • CPU {:.0}%",
+                        "RAM {:.0}%  -  CPU {:.0}%",
                         self.telemetry.memory_percent, self.telemetry.cpu_usage
                     ),
                 ),
@@ -2125,21 +2028,13 @@ impl AppState {
     }
 
     pub fn visible_dock_modes(&self) -> Vec<NotchMode> {
-        let mut modes = Vec::with_capacity(6);
-        modes.push(NotchMode::Home);
-        if self.modules.music {
-            modes.push(NotchMode::Music);
-        }
-        if self.modules.volume {
-            modes.push(NotchMode::Volume);
-        }
-        if self.modules.mem_reduct {
-            modes.push(NotchMode::MemReduct);
-        }
-        if self.modules.shelf {
-            modes.push(NotchMode::Shelf);
-        }
-        modes
+        vec![
+            NotchMode::Home,
+            NotchMode::Music,
+            NotchMode::Volume,
+            NotchMode::MemReduct,
+            NotchMode::Shelf,
+        ]
     }
 
     pub fn active_dock_target(&self) -> (f32, f32) {
@@ -2149,7 +2044,7 @@ impl AppState {
         let dock_x = if self.placement.is_vertical() {
             (Self::VERT_EXPANDED_WIDTH - dock_w) * 0.5
         } else {
-            20.0
+            24.0
         };
         (dock_x + 4.0 + (idx as f32) * item_w, item_w)
     }
@@ -2161,12 +2056,14 @@ impl AppState {
             60 => 16,
             _ => {
                 let hz = self.detected_hz.max(60);
-                if hz >= 115 {
+                if hz >= 135 {
+                    7
+                } else if hz >= 115 {
                     8
                 } else if hz >= 85 {
                     11
                 } else {
-                    (1000 / hz).clamp(8, 16)
+                    (1000 / hz).clamp(7, 16)
                 }
             }
         }
@@ -2187,22 +2084,7 @@ impl AppState {
             ToggleId::ClipboardWatch => self.clipboard_watch_enabled,
             ToggleId::CaptureClipboard => self.capture_to_clipboard,
             ToggleId::AutoClean => self.mem_reduct.auto_clean_enabled,
-            ToggleId::AreaWs => self.mem_reduct.clean_working_sets,
-            ToggleId::AreaSys => self.mem_reduct.clean_system_ws,
-            ToggleId::AreaStandby => self.mem_reduct.clean_standby_list,
-            ToggleId::ScreenTime => self.screentime_enabled,
-            ToggleId::ModMusic => self.modules.music,
-            ToggleId::ModVolume => self.modules.volume,
-            ToggleId::ModMemReduct => self.modules.mem_reduct,
-            ToggleId::ModTasks | ToggleId::ModCapture | ToggleId::ModTelemetry => false,
-            ToggleId::ModShelf => self.modules.shelf,
             ToggleId::MinimizedIsland => self.minimized_island,
-            ToggleId::AreaModPage => self.mem_reduct.clean_modified_page_list,
-            ToggleId::AreaStandbyLow => self.mem_reduct.clean_standby_low,
-            ToggleId::AreaModFile => self.mem_reduct.clean_modified_file_cache,
-            ToggleId::AreaRegistry => self.mem_reduct.clean_registry_cache,
-            ToggleId::AreaCombine => self.mem_reduct.clean_combine_memory_lists,
-            ToggleId::ShowCleanResults => self.mem_reduct.show_clean_results,
             ToggleId::FrostedGlass => self.frosted_glass_enabled,
             ToggleId::NotifListener => self.notif_listener_enabled,
             ToggleId::NotifExclusive => self.notif_exclusive_mode,
@@ -2499,6 +2381,12 @@ impl AppState {
                     self.show_notif_history = !self.show_notif_history;
                     self.hover_target_idx = None;
                     self.hover_slots = [0.0; 48];
+                    if self.is_hovered {
+                        self.target_height = self.expanded_height();
+                        if self.are_animations_active() {
+                            self.anim_mode_t = 0.0;
+                        }
+                    }
                     eff.redraw_notch = true;
                 }
             }
@@ -2513,35 +2401,6 @@ impl AppState {
                 self.notif_history.clear();
                 self.hover_target_idx = None;
                 eff.redraw_notch = true;
-            }
-            Action::CycleLyricSize => {
-                self.lyric_size = self.lyric_size.next();
-                self.save_config();
-            }
-            Action::CycleLyricStyle => {
-                self.lyric_style = self.lyric_style.next();
-                self.save_config();
-            }
-            Action::SetLyricSize(sz) => {
-                self.lyric_size = sz;
-                self.save_config();
-            }
-            Action::SetLyricStyle(st) => {
-                self.lyric_style = st;
-                self.save_config();
-            }
-            Action::ToggleModule(m) => {
-                match m {
-                    NotchMode::Music => self.modules.music = !self.modules.music,
-                    NotchMode::Volume => self.modules.volume = !self.modules.volume,
-                    NotchMode::MemReduct => self.modules.mem_reduct = !self.modules.mem_reduct,
-                    NotchMode::Shelf => self.modules.shelf = !self.modules.shelf,
-                    _ => {}
-                }
-                if !self.visible_dock_modes().contains(&self.mode) {
-                    self.set_mode(NotchMode::Home);
-                }
-                self.save_config();
             }
             Action::ToggleLyricsMonitor => {
                 self.lyrics_enabled = !self.lyrics_enabled;
@@ -2558,9 +2417,6 @@ impl AppState {
             Action::ToggleAutoClean => {
                 self.mem_reduct.auto_clean_enabled = !self.mem_reduct.auto_clean_enabled;
                 self.save_config();
-            }
-            Action::ToggleArea(idx) => {
-                self.toggle_mem_area(idx);
             }
             Action::CycleThreshold => {
                 self.cycle_threshold();
@@ -2590,14 +2446,6 @@ impl AppState {
             Action::ToggleChime => {
                 self.chime_enabled = !self.chime_enabled;
                 self.save_config();
-            }
-            Action::ToggleScreenTime => {
-                self.screentime_enabled = !self.screentime_enabled;
-                self.save_config();
-            }
-            Action::ResetScreenTimeToday => {
-                self.screen_time = ScreenTimeStats::default();
-                eff.reset_screentime = true;
             }
             Action::ResetPosition => {
                 self.x_offset = 0;
@@ -2684,11 +2532,9 @@ impl AppState {
             notification_volume: self.notification_volume,
             hover_dwell_speed: self.hover_dwell_speed,
             seen_hotkey_hint: self.seen_hotkey_hint,
-            modules: self.modules,
             lyrics_enabled: self.lyrics_enabled,
             clipboard_watch_enabled: self.clipboard_watch_enabled,
             capture_to_clipboard: self.capture_to_clipboard,
-            screentime_enabled: self.screentime_enabled,
             lyric_size: self.lyric_size,
             lyric_style: self.lyric_style,
             frosted_glass_enabled: self.frosted_glass_enabled,
@@ -2775,11 +2621,9 @@ impl AppState {
         self.notification_volume = cfg.notification_volume.clamp(0, 100);
         self.hover_dwell_speed = cfg.hover_dwell_speed;
         self.seen_hotkey_hint = cfg.seen_hotkey_hint;
-        self.modules = cfg.modules;
         self.lyrics_enabled = cfg.lyrics_enabled;
         self.clipboard_watch_enabled = cfg.clipboard_watch_enabled;
         self.capture_to_clipboard = cfg.capture_to_clipboard;
-        self.screentime_enabled = cfg.screentime_enabled;
         self.lyric_size = cfg.lyric_size;
         self.lyric_style = cfg.lyric_style;
         self.frosted_glass_enabled = cfg.frosted_glass_enabled;
@@ -2977,11 +2821,9 @@ impl AppState {
         let mut notification_volume = 80;
                 let mut hover_dwell_speed = HoverDwellSpeed::Normal;
                 let mut seen_hotkey_hint = false;
-        let mut modules = ModuleVisibility::default();
         let mut lyrics_enabled = true;
         let mut clipboard_watch_enabled = true;
         let mut capture_to_clipboard = true;
-        let mut screentime_enabled = true;
         let mut lyric_size = LyricSize::Standard;
         let mut lyric_style = LyricStyle::ClassicList;
         let mut frosted_glass_enabled = true;
@@ -3042,11 +2884,9 @@ impl AppState {
             notification_volume = cfg.notification_volume.clamp(0, 100);
                         hover_dwell_speed = cfg.hover_dwell_speed;
                         seen_hotkey_hint = cfg.seen_hotkey_hint;
-            modules = cfg.modules;
             lyrics_enabled = cfg.lyrics_enabled;
             clipboard_watch_enabled = cfg.clipboard_watch_enabled;
             capture_to_clipboard = cfg.capture_to_clipboard;
-            screentime_enabled = cfg.screentime_enabled;
             lyric_size = cfg.lyric_size;
             lyric_style = cfg.lyric_style;
             frosted_glass_enabled = cfg.frosted_glass_enabled;
@@ -3077,7 +2917,7 @@ impl AppState {
             crate::capture::read_clipboard_text(windows::Win32::Foundation::HWND::default());
         let quick_note = if let Some(ref clip_text) = initial_clip {
             format!(
-                "{} words · Clipboard",
+                "{} words  -  Clipboard",
                 clip_text.split_whitespace().count()
             )
         } else {
@@ -3132,6 +2972,8 @@ impl AppState {
                     is_hovered: is_pinned,
                     is_hover_pending: false,
                     hover_dwell_t: 0.0,
+                    hover_afterglow: 0.0,
+                    hover_sweep_x: 0.0,
                     anim_edge_glow_t: 0.0,
                     hover_dwell_start: None,
                     is_pinned,
@@ -3175,11 +3017,9 @@ impl AppState {
             notif_over_fullscreen,
             notif_listener_status,
             notif_suppressed_apps,
-            modules,
             lyrics_enabled,
             clipboard_watch_enabled,
             capture_to_clipboard,
-            screentime_enabled,
             settings_open: false,
             settings_category: SettingsCategory::General,
             settings_scroll: [0.0; SettingsCategory::COUNT],
@@ -3199,7 +3039,7 @@ impl AppState {
             target_anchor_y,
             anim_anchor_x: target_anchor_x,
             anim_anchor_y: target_anchor_y,
-            anim_dock_x: 24.0,
+            anim_dock_x: 28.0,
             anim_dock_w: 32.0,
             anim_dock_x_vel: 0.0,
             anim_dock_w_vel: 0.0,
@@ -3207,6 +3047,7 @@ impl AppState {
             anim_settings_cat_vel: 0.0,
             anim_settings_pane_t: 1.0,
             anim_settings_pane_dir: 1.0,
+            anim_settings_open_t: 1.0,
             anim_vol_pct: vol.clamp(0.0, 1.0),
             anim_ram_pct: ram_pct,
             hover_target_idx: None,
@@ -3222,7 +3063,6 @@ impl AppState {
             mem_reduct,
             capture: CaptureState::default(),
             quick_note,
-            screen_time: ScreenTimeStats::default(),
             notification: None,
             notif_queue: VecDeque::new(),
             notif_history: VecDeque::new(),
@@ -3274,6 +3114,8 @@ impl AppState {
             is_hovered: false,
             is_hover_pending: false,
             hover_dwell_t: 0.0,
+            hover_afterglow: 0.0,
+            hover_sweep_x: 0.0,
             anim_edge_glow_t: 0.0,
             hover_dwell_start: None,
             is_pinned: false,
@@ -3317,11 +3159,9 @@ impl AppState {
             notif_over_fullscreen: false,
             notif_listener_status: "Listening".to_string(),
             notif_suppressed_apps: 0,
-            modules: ModuleVisibility::default(),
             lyrics_enabled: true,
             clipboard_watch_enabled: true,
             capture_to_clipboard: true,
-            screentime_enabled: true,
             settings_open: false,
             settings_category: SettingsCategory::General,
             settings_scroll: [0.0; SettingsCategory::COUNT],
@@ -3341,7 +3181,7 @@ impl AppState {
             target_anchor_y: 0.5,
             anim_anchor_x: 0.5,
             anim_anchor_y: 0.5,
-            anim_dock_x: 24.0,
+            anim_dock_x: 28.0,
             anim_dock_w: 32.0,
             anim_dock_x_vel: 0.0,
             anim_dock_w_vel: 0.0,
@@ -3349,6 +3189,7 @@ impl AppState {
             anim_settings_cat_vel: 0.0,
             anim_settings_pane_t: 1.0,
             anim_settings_pane_dir: 1.0,
+            anim_settings_open_t: 1.0,
             anim_vol_pct: 0.70,
             anim_ram_pct: 0.57,
             hover_target_idx: None,
@@ -3363,8 +3204,7 @@ impl AppState {
             telemetry: HardwareTelemetry::default(),
             mem_reduct: MemReductConfig::preview_sample(),
             capture: CaptureState::default(),
-            quick_note: "14 words · Chrome".to_string(),
-            screen_time: ScreenTimeStats::preview_sample(),
+            quick_note: "14 words  -  Chrome".to_string(),
             notification: None,
             notif_queue: VecDeque::new(),
             notif_history: VecDeque::new(),
@@ -3447,10 +3287,17 @@ impl AppState {
         self.is_hover_pending = true;
         self.hover_dwell_start = Some(now);
         self.hover_dwell_t = 0.0;
+        self.hover_afterglow = 0.0;
+        self.hover_sweep_x = 0.0;
         // Start smoothly from 0.0 without any snap or pop-in
     }
 
     pub fn cancel_hover_dwell(&mut self) {
+        // A cursor that just passes by should not make the sweep vanish instantly.
+        // Hand the current heat to an afterglow that decays over the next frames.
+        if self.hover_dwell_t > 0.0 {
+            self.hover_afterglow = self.hover_dwell_t;
+        }
         self.is_hover_pending = false;
         self.hover_dwell_start = None;
         self.hover_dwell_t = 0.0;
@@ -3468,6 +3315,7 @@ impl AppState {
                 let changed = (smooth - self.hover_dwell_t).abs() > 0.001
                     || (raw >= 1.0 && self.hover_dwell_t < 1.0);
                 self.hover_dwell_t = smooth;
+                self.hover_sweep_x = smooth;
                 changed
             } else if self.hover_dwell_t > 0.0 || self.hover_dwell_start.is_some() {
                 self.hover_dwell_t = 0.0;
@@ -3505,7 +3353,14 @@ impl AppState {
 
     pub fn set_hovered(&mut self, hovered: bool) {
         if hovered {
-            self.cancel_hover_dwell();
+            // Expanding the notch ends the collapsed hover-dwell phase immediately:
+            // never hand dwell heat to `hover_afterglow`, so the capsule sweep never
+            // bleeds over the expanding/expanded panel or throttles the expand spring.
+            self.is_hover_pending = false;
+            self.hover_dwell_start = None;
+            self.hover_dwell_t = 0.0;
+            self.hover_afterglow = 0.0;
+            self.hover_sweep_x = 0.0;
         }
         if self.is_hovered == hovered {
             return;
@@ -3518,7 +3373,11 @@ impl AppState {
             }
             self.target_width = self.expanded_width();
             self.target_height = self.expanded_height();
+            if self.are_animations_active() {
+                self.anim_mode_t = 0.0;
+            }
         } else {
+            self.show_notif_history = false;
             if let Some(ref mut notif) = self.notification {
                 notif.resume(now);
                 self.anim_notif_t = 1.0;
@@ -3668,11 +3527,9 @@ impl AppState {
         }
         self.settings_scroll = [0.0; SettingsCategory::COUNT];
         self.settings_scroll_target = [0.0; SettingsCategory::COUNT];
-        self.modules = ModuleVisibility::default();
         self.lyrics_enabled = true;
         self.clipboard_watch_enabled = true;
         self.capture_to_clipboard = true;
-        self.screentime_enabled = true;
         self.chime_enabled = true;
         self.mem_reduct.clean_working_sets = true;
         self.mem_reduct.clean_system_ws = true;
@@ -4017,15 +3874,19 @@ impl AppState {
             self.shelf_items.pop();
         }
         self.shelf_scroll = 0;
+        if self.is_hovered && self.mode == NotchMode::Shelf {
+            self.target_height = self.expanded_height();
+        }
         id
     }
 
     pub fn remove_shelf_item_by_id(&mut self, id: u64, record_undo: bool) -> Option<ShelfItem> {
         let pos = self.shelf_items.iter().position(|s| s.id == id)?;
         let item = self.shelf_items.remove(pos);
-        let vis = if self.placement.is_vertical() { 6 } else { 3 };
-        let max_s = self.shelf_items.len().saturating_sub(vis);
-        self.shelf_scroll = self.shelf_scroll.min(max_s);
+        self.shelf_scroll = 0;
+        if self.is_hovered && self.mode == NotchMode::Shelf {
+            self.target_height = self.expanded_height();
+        }
         if record_undo {
             self.shelf_undo = Some(ShelfUndoEntry {
                 item: item.clone(),
@@ -4049,6 +3910,9 @@ impl AppState {
                 self.shelf_items.pop();
             }
             self.shelf_scroll = 0;
+            if self.is_hovered && self.mode == NotchMode::Shelf {
+                self.target_height = self.expanded_height();
+            }
         }
         true
     }
@@ -4079,7 +3943,7 @@ impl AppState {
 
     pub fn push_clipboard(&mut self, text: String, app_name: &str) {
         let words = text.split_whitespace().count();
-        self.quick_note = format!("{} words · {}", words, app_name);
+        self.quick_note = format!("{} words  -  {}", words, app_name);
         let single_line = text.lines().next().unwrap_or(&text).trim().to_string();
         let kind = if Self::is_likely_url(&text) {
             ShelfKind::Url
@@ -4093,7 +3957,7 @@ impl AppState {
 
     /// Parks a copied image or Snipping Tool bitmap on the Bento Shelf and fires Skenario 2 Gold Pulse.
     pub fn push_clipboard_image(&mut self, filename: String, full_path: String) {
-        self.quick_note = format!("Image · {}", filename);
+        self.quick_note = format!("Image  -  {}", filename);
         let id = self.push_shelf_item(ShelfKind::Image, filename, full_path);
         self.shelf_fx.trigger_plop(160.0, 72.0, id);
         self.capture_anim_until =
@@ -4239,6 +4103,7 @@ impl AppState {
         if (cat_tgt - self.anim_settings_cat_y).abs() >= 0.35
             || self.anim_settings_cat_vel.abs() >= 3.0
             || self.anim_settings_pane_t < 0.992
+            || self.anim_settings_open_t < 0.992
         {
             return true;
         }
@@ -4294,11 +4159,13 @@ impl AppState {
     /// Returns desired high-frequency timer interval (ms) or None when static.
     pub fn needs_animation_timer_ms(&self) -> Option<u32> {
         let notif_ring_ticking = self.notification.is_some() && !self.is_hovered;
+        let hover_sweep_active =
+            !self.is_hovered && (self.is_hover_pending || self.hover_afterglow > 0.0);
         if !self.are_animations_active() {
             // Even with Windows Animation Effects disabled, keep a lightweight timer
             // while hover dwell is counting down, RAM purge is running, or a visible
             // notification countdown ring is ticking (stashed/paused notifications stay 0 Hz).
-            if (self.is_hover_pending && !self.is_hovered) || self.mem_reduct.is_purging {
+            if hover_sweep_active || self.mem_reduct.is_purging {
                 return Some(25);
             }
             if notif_ring_ticking {
@@ -4309,6 +4176,7 @@ impl AppState {
         let act = self.desired_active_interval_ms();
         if self.is_size_moving()
             || self.is_micro_animating()
+            || hover_sweep_active
             || self.mem_reduct.is_purging
             || self.shelf_fx.is_active(Instant::now())
         {
@@ -4320,12 +4188,16 @@ impl AppState {
             let mood = self.mascot_mood();
             if mascot_vis && mood == MascotMood::Purging {
                 Some(20)
-            } else if mascot_vis && mood == MascotMood::Capture {
+            } else if (mascot_vis && matches!(mood, MascotMood::Capture | MascotMood::Music))
+                || self.is_equalizer_visible()
+            {
                 Some(25)
-            } else if self.is_equalizer_visible() || (mascot_vis && mood == MascotMood::Music) {
-                Some(25)
-            } else if notif_ring_ticking || mascot_vis {
+            } else if notif_ring_ticking {
                 Some(33)
+            } else if mascot_vis {
+                // Slow idle Wolf Eyes breathing/blinking runs smoothly at 20 FPS (50ms)
+                // while cutting idle laptop GPU/DWM wakeups by ~35%.
+                Some(50)
             } else {
                 None
             }
@@ -4350,7 +4222,52 @@ impl AppState {
         self.sync_capsule_state_transition();
         let plop_moved = self.shelf_fx.step(dt, anim_on, now_inst);
 
-        let mut moved = self.update_hover_dwell(now_inst) || plop_moved || shrink_released;
+        // Decay the hover-sweep afterglow (~260ms to near zero) only while collapsed
+        // so a cursor that merely brushes past leaves a soft trail instead of a hard cut.
+        let afterglow_moved = if self.is_hovered {
+            if self.hover_afterglow > 0.0 || self.hover_sweep_x > 0.0 {
+                self.hover_afterglow = 0.0;
+                self.hover_sweep_x = 0.0;
+                true
+            } else {
+                false
+            }
+        } else if self.hover_afterglow > 0.0 {
+            // Keep gliding forward while fading to 0% opacity before the right edge.
+            self.hover_sweep_x = (self.hover_sweep_x + dt * 1.4).min(1.0);
+            let decay = (-dt / 0.13).exp();
+            self.hover_afterglow *= decay;
+            if self.hover_afterglow < 0.01 {
+                self.hover_afterglow = 0.0;
+                self.hover_sweep_x = 0.0;
+            }
+            true
+        } else {
+            false
+        };
+
+        // Smooth Shelf exit: hold the pre-drag mode until the drag aura has
+        // faded out, so the shelf does not snap back to transparent abruptly.
+        let mut shelf_exit_moved = false;
+        if !self.shelf_fx.drag_hover_active
+            && self.shelf_fx.drag_hover_t <= 0.02
+            && let Some(prev_mode) = self.shelf_fx.drag_pre_mode
+        {
+            self.shelf_fx.drag_pre_mode = None;
+            self.mode = prev_mode;
+            if self.is_hovered {
+                self.target_height = self.expanded_height();
+            } else if !self.is_pinned && self.shelf_fx.drag_pre_hovered {
+                self.set_hovered(false);
+            }
+            shelf_exit_moved = true;
+        }
+
+        let mut moved = self.update_hover_dwell(now_inst)
+            || plop_moved
+            || afterglow_moved
+            || shrink_released
+            || shelf_exit_moved;
         let expand_tgt = if self.is_hovered { 1.0 } else { 0.0 };
         let (dx_tgt, dw_tgt) = self.active_dock_target();
 
@@ -4392,23 +4309,23 @@ impl AppState {
             return moved || snapped || expired || self.mem_reduct.is_purging || notif_ticking;
         }
 
-        let k_fast = 26.0;
+        let k_fast = 15.0;
 
         // Hover edge-glow disabled: capsule stays calm until hover dwell opens it.
         if self.anim_edge_glow_t > 0.0 {
-            let (ng, mg) = ease_exp(self.anim_edge_glow_t, 0.0, 6.0, dt, 0.002);
+            let (ng, mg) = ease_exp(self.anim_edge_glow_t, 0.0, 4.0, dt, 0.002);
             self.anim_edge_glow_t = if ng <= 0.002 { 0.0 } else { ng };
             moved |= mg;
         }
 
-        // Coupled closed-form iOS/macOS Dynamic Island springs (Claude Fast ~250-320ms settle):
+        // Coupled closed-form Fluid Luxury (~1.6x calmer) iOS/macOS Dynamic Island springs (~420–480ms settle):
         let notif_open = self.notification.is_some() && !self.is_hovered;
         let (fw, zw, fh, zh) = if self.is_hovered {
-            (3.40, 0.86, 3.20, 0.86)
+            (2.15, 0.88, 2.05, 0.88)
         } else if notif_open {
-            (3.10, 0.86, 2.90, 0.88)
+            (2.00, 0.88, 1.90, 0.90)
         } else {
-            (2.75, 0.92, 2.85, 0.92)
+            (1.75, 0.94, 1.80, 0.94)
         };
         let (nw, vw, mw) = spring_step_analytic(
             self.current_width,
@@ -4437,14 +4354,14 @@ impl AppState {
 
         let mut m_notif = false;
         if notif_open {
-            let (nn, mn) = ease_exp(self.anim_notif_t, 1.0, 16.0, dt, 0.005);
+            let (nn, mn) = ease_exp(self.anim_notif_t, 1.0, 9.5, dt, 0.005);
             self.anim_notif_t = nn;
             m_notif = mn;
         } else if self.notification.is_none() {
             self.anim_notif_t = 0.0;
         }
 
-        let (expand_f, expand_z) = if self.is_hovered { (3.20, 0.86) } else { (2.90, 0.92) };
+        let (expand_f, expand_z) = if self.is_hovered { (2.05, 0.88) } else { (1.80, 0.94) };
         let (nt, vt, mt) = spring_step_analytic(
             self.anim_expand_t,
             self.anim_expand_vel,
@@ -4458,11 +4375,16 @@ impl AppState {
         self.anim_expand_t = nt.clamp(0.0, 1.0);
         self.anim_expand_vel = vt;
 
-        let (nmt, mmt) = ease_exp(self.anim_mode_t, 1.0, 22.0, dt, 0.006);
-        self.anim_mode_t = nmt;
+        // Blur-Fade Rise unified 480ms linear timeline (eased per-card via mode_stagger)
+        let mmt = if self.anim_mode_t < 1.0 {
+            self.anim_mode_t = (self.anim_mode_t + dt / 0.48).min(1.0);
+            true
+        } else {
+            false
+        };
 
         let mct = if self.anim_capsule_t < 1.0 {
-            self.anim_capsule_t = (self.anim_capsule_t + dt / 0.42).min(1.0);
+            self.anim_capsule_t = (self.anim_capsule_t + dt / 0.65).min(1.0);
             true
         } else {
             false
@@ -4475,12 +4397,12 @@ impl AppState {
         moved |= mw || mh || mt || mmt || mct || m_notif || max_chg || may_chg;
 
         if self.micro_interactions {
-            // Raycast Tactile 140ms critically damped mode dock indicator pill (0% overshoot)
+            // Fluid Luxury ~260ms critically damped mode dock indicator pill (0% overshoot)
             let (ndx, vdx, mdx) = spring_step_analytic(
                 self.anim_dock_x,
                 self.anim_dock_x_vel,
                 dx_tgt,
-                5.4,
+                3.2,
                 1.0,
                 dt,
                 0.25,
@@ -4490,7 +4412,7 @@ impl AppState {
                 self.anim_dock_w,
                 self.anim_dock_w_vel,
                 dw_tgt,
-                5.4,
+                3.2,
                 1.0,
                 dt,
                 0.25,
@@ -4520,8 +4442,8 @@ impl AppState {
                 } else {
                     0.0
                 };
-                // Smooth hover bloom ease (gentle in, crisp out)
-                let rate = if tgt > *slot { 11.0 } else { 16.0 };
+                // Smooth Fluid Luxury hover bloom ease
+                let rate = if tgt > *slot { 6.8 } else { 10.0 };
                 let (next, chg) = ease_exp(*slot, tgt, rate, dt, 0.012);
                 *slot = next;
                 moved |= chg;
@@ -4553,7 +4475,9 @@ impl AppState {
         if !self.are_animations_active() {
             let mut changed = (self.anim_settings_cat_y - cat_tgt).abs() > 0.25
                 || (self.anim_settings_pane_t - 1.0).abs() > 0.005
+                || (self.anim_settings_open_t - 1.0).abs() > 0.005
                 || (self.settings_scroll[cidx] - self.settings_scroll_target[cidx]).abs() > 0.25;
+            self.anim_settings_open_t = 1.0;
             self.anim_settings_cat_y = cat_tgt;
             self.anim_settings_cat_vel = 0.0;
             self.anim_settings_pane_t = 1.0;
@@ -4575,16 +4499,16 @@ impl AppState {
             return changed;
         }
 
-        let k = 25.0;
+        let k = 14.5;
         let mut changed = false;
 
-        // Shared-element spring glide for sidebar category highlight pill
+        // Fluid Luxury spring glide for sidebar category highlight pill
         let (ncy, vcy, mcy) = spring_step(
             self.anim_settings_cat_y,
             self.anim_settings_cat_vel,
             cat_tgt,
-            440.0,
-            34.0,
+            210.0,
+            26.0,
             dt,
             0.35,
             3.0,
@@ -4593,16 +4517,26 @@ impl AppState {
         self.anim_settings_cat_vel = vcy;
         changed |= mcy;
 
-        // Smooth directional fade/glide for settings detail pane
-        let (npt, mpt) = ease_exp(self.anim_settings_pane_t, 1.0, 14.0, dt, 0.006);
-        self.anim_settings_pane_t = npt;
+        // Blur-Fade Rise 480ms timeline for settings detail pane
+        let mpt = if self.anim_settings_pane_t < 1.0 {
+            self.anim_settings_pane_t = (self.anim_settings_pane_t + dt / 0.48).min(1.0);
+            true
+        } else {
+            false
+        };
         changed |= mpt;
+
+        // Gear-open choreography: 0 -> 1 over 420ms.
+        if self.anim_settings_open_t < 1.0 {
+            self.anim_settings_open_t = (self.anim_settings_open_t + dt / 0.42).min(1.0);
+            changed = true;
+        }
 
         // Smooth wheel scroll interpolation
         let (nsc, msc) = ease_exp(
             self.settings_scroll[cidx],
             self.settings_scroll_target[cidx],
-            18.5,
+            12.0,
             dt,
             0.35,
         );
@@ -4676,12 +4610,12 @@ impl AppState {
         let priv_lbl = if res.is_elevated { "Admin" } else { "User" };
         self.mem_reduct.last_cleaned_status = if res.kernel_caches_purged {
             format!(
-                "{} procs + kernel • {:.0} MB ({}%->{}%)",
+                "{} procs + kernel  -  {:.0} MB ({}%->{}%)",
                 res.trimmed_processes, res.freed_mb, res.old_load_pct, res.new_load_pct
             )
         } else {
             format!(
-                "{} procs ({}) • {:.0} MB ({}%->{}%)",
+                "{} procs ({})  -  {:.0} MB ({}%->{}%)",
                 res.trimmed_processes, priv_lbl, res.freed_mb, res.old_load_pct, res.new_load_pct
             )
         };
@@ -4696,7 +4630,7 @@ impl AppState {
             self.set_notification(
                 "Memory Cleaned".to_string(),
                 format!(
-                    "{:.0} MB freed ({}% -> {}%) • {}",
+                    "{:.0} MB freed ({}% -> {}%)  -  {}",
                     res.freed_mb, res.old_load_pct, res.new_load_pct, priv_lbl
                 ),
                 NotificationKind::MemoryPurge,

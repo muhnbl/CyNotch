@@ -1,4 +1,4 @@
-# CyNotch v0.3.1 — Motion System (Final Locked Spec)
+# CyNotch v1.0.0 — Motion System (Final Locked Spec)
 
 > **Hybrid Architecture**:
 > - **Shell & Notifications**: **iOS / macOS Dynamic Island** (coupled closed-form fluid springs, organic surface-tension settle, velocity-preserving interruption, coalesced replacement, Auto-Stash to Bell on expand).
@@ -9,26 +9,34 @@
 
 ## 1. Physics & Timing Tokens
 
-### 1.1 Closed-Form Coupled Springs (Shell & Notifications — iOS/macOS Feel)
+### 1.1 Closed-Form Coupled Springs (`Fluid Luxury` Tempo — ~1.6× Calmer)
 Evaluated analytically from `(x0, v0, dt)` so `60Hz–240Hz` produce identical trajectories and mid-motion interruptions preserve velocity:
 
 | Transition | Axis | `f` (Hz) | `ζ` (Damping) | Overshoot | Character |
 | :--- | :--- | :---: | :---: | :---: | :--- |
-| **Notif Open** (`136×34 → 368×64`) | Width / Height / Radius | `3.10` / `2.90` / `2.90` | `0.86` / `0.88` / `0.88` | `~0.5%` | Claude Fast snappy expand (`~250ms` settle) |
-| **Notif Coalesced Replace** | Width / Height velocity kick | `+140px/s` / `+26px/s` | `0.86` / `0.88` | subtle pulse | Updates toast in-place without close/reopen |
-| **Notif / Shell Collapse** | Width / Height / Radius | `2.75` / `2.85` / `2.85` | `0.92` / `0.92` / `0.92` | `0%` | Smooth critically-damped shrink (`~300ms` settle) |
-| **Shell Expand** (`→ Quick Shelf`) | Width / Height / Radius | `3.40` / `3.20` / `3.20` | `0.86` / `0.86` / `0.86` | `~0.5%` | Snappy user-triggered hover expand (`~240ms` settle) |
-| **Staged Capsule Choreography** | `anim_capsule_t` (`420ms`) | `0.0..0.42` exit / `0.30..1.0` enter | `220ms` shrink delay | `0%` | Roll-down exit + overlapped roll-in before capsule shrinks to Wolf Eyes |
+| **Notif Open** (`136×34 → 368×64`) | Width / Height / Radius | `2.00` / `1.90` / `1.90` | `0.88` / `0.90` / `0.90` | `~0.3%` | Fluid Luxury organic expand (`~420ms` settle) |
+| **Notif Coalesced Replace** | Width / Height velocity kick | `+140px/s` / `+26px/s` | `0.88` / `0.90` | subtle pulse | Updates toast in-place without close/reopen |
+| **Notif / Shell Collapse** | Width / Height / Radius | `1.75` / `1.80` / `1.80` | `0.94` / `0.94` / `0.94` | `0%` | Calm critically-damped shrink (`~480ms` settle) |
+| **Shell Expand** (`→ Expanded Notch`) | Width / Height / Radius | `2.15` / `2.05` / `2.05` | `0.88` / `0.88` / `0.88` | `~0.3%` | Smooth, unhurried hover expand (`~420ms` settle) |
+| **Staged Capsule Choreography** | `anim_capsule_t` (`650ms`) | `0.0..0.42` exit / `0.30..1.0` enter | `220ms` shrink delay | `0%` | Roll-down exit + overlapped roll-in before capsule shrinks |
 
-### 1.2 Raycast Tactile Tweens (Controls, Dock & Shelf)
+### 1.2 Unified Signature Appear Animation (`Blur-Fade Rise`) & Controls
+Every section, card, bento tile, notification row, and Settings category pane shares one cohesive entrance signature:
+- **Signature**: **`Blur-Fade Rise`** (`480ms`, quartic ease-out `1 - (1 - u)^4`, `0%` overshoot):
+  - Vertical rise: `+12px → 0px`
+  - Opacity dissolve: `0.0 → 1.0`
+  - Optical scale: `0.96 → 1.0` (`0.97 → 1.0` for full Settings pane)
+  - **Staggered Cascade**: `~45ms` (`0.095 × 480ms`) per card/tile/row.
+- **Triggers**: Expanding notch from idle, switching notch tabs (`Home` / `Music` / `Volume` / `MemReduct` / `Shelf` / `Notifications`), new item entering Temporary Shelf (`Ctrl+C`, `Win+Shift+S`, drag-drop), and switching categories in Settings.
+
 | Token | Duration | Curve | Overshoot | Used For |
 | :--- | :--- | :--- | :---: | :--- |
-| **`--ray-press`** | `70ms` | `cubic-bezier(0.16, 1, 0.3, 1)` | `0%` | Button / row `:active` micro-press (`scale(0.975)` + `1.12x` brightness) |
-| **`--ray-fast`** | `120ms` | `cubic-bezier(0.16, 1, 0.3, 1)` | `0%` | Shelf item entry (`+6px → 0`, `opacity 0 → 1`), row hover, content fade |
-| **`--ray-pill`** | `140ms` | `cubic-bezier(0.16, 1, 0.3, 1)` | `0%` | Mode dock sliding indicator pill (`x` + `width`), settings segmented pill |
-| **`--ray-absorb`** | `240ms` | `cubic-bezier(0.16, 1, 0.3, 1)` | `0%` | Shelf drop **Mass Absorption** (`+3.5px` vertical dip & recover) |
-| **`--ray-refract`** | `380ms` | `ease-out cubic` | `0%` | Single crisp glass refraction hairline ring (`r: 6px → 84px`, alpha → `0`) |
-| **`--ray-hover`** | `420ms` in / `280ms` out | `cubic-bezier(0.22, 1, 0.36, 1)` | `0%` | Gentle bottom-up Amber-Gold liquid bloom inside glass buttons |
+| **`--blur-fade-rise`** | `480ms` | quartic ease-out (`1 - (1 - u)^4`) | `0%` | Unified section, card, shelf tile, notif row & Settings pane appear (`+12px → 0`, fade `0 → 1`, scale `0.96 → 1.0`) |
+| **`--ray-pill`** | `~260ms` (`f = 3.2 Hz`) | critically damped spring | `0%` | Mode dock sliding indicator pill (`x` + `width`), settings sidebar pill |
+| **`--ray-absorb`** | `380ms` | `ease-out` | `0%` | Shelf drop **Mass Absorption** (`+3.5px` vertical dip & recover) |
+| **`--ray-refract`** | `600ms` | `ease-out cubic` | `0%` | Single crisp glass refraction hairline ring (`r: 6px → 84px`, alpha → `0`) |
+| **`--ray-hover`** | `~550ms` in / `~380ms` out | exponential (`6.8` / `10.0`) | `0%` | Gentle bottom-up Amber-Gold liquid bloom inside glass buttons |
+| **`--clipboard-pulse`** | `900ms` | lingering peak + snap-off | `0%` | Skenario 2 clipboard / Snipping Tool pulse without popup banner |
 
 ---
 

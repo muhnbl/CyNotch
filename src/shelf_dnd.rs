@@ -90,8 +90,8 @@ pub fn is_clipboard_sensitive(hwnd: HWND) -> bool {
             return true;
         }
         let hist = fmt_can_include_history();
-        if hist != 0 && IsClipboardFormatAvailable(hist).is_ok() {
-            if OpenClipboard(hwnd).is_ok() {
+        if hist != 0 && IsClipboardFormatAvailable(hist).is_ok()
+            && OpenClipboard(hwnd).is_ok() {
                 let mut disallowed = false;
                 if let Ok(handle) = GetClipboardData(hist) {
                     let hglobal = HGLOBAL(handle.0);
@@ -109,7 +109,6 @@ pub fn is_clipboard_sensitive(hwnd: HWND) -> bool {
                     return true;
                 }
             }
-        }
         false
     }
 }
@@ -127,7 +126,10 @@ pub fn shelf_cache_dir() -> PathBuf {
 /// single-instance mutex succeeds) and on clean exit.
 pub fn wipe_shelf_cache() {
     let dir = shelf_cache_dir();
-    if dir.exists() {
+    if std::fs::symlink_metadata(&dir)
+        .map(|m| m.file_type().is_dir() && !m.file_type().is_symlink())
+        .unwrap_or(false)
+    {
         let _ = std::fs::remove_dir_all(&dir);
     }
 }
@@ -179,6 +181,14 @@ fn enforce_cache_budget(root: &Path) {
 
 fn next_friendly_image_path() -> Option<(String, PathBuf)> {
     let root = shelf_cache_dir();
+    // Refuse to write through a reparse point planted by another process:
+    // the cache root lives under %LOCALAPPDATA% and is wiped on exit.
+    if std::fs::symlink_metadata(&root)
+        .map(|m| m.file_type().is_symlink())
+        .unwrap_or(false)
+    {
+        return None;
+    }
     let _ = std::fs::create_dir_all(&root);
     enforce_cache_budget(&root);
     let seq = CACHE_SEQ.fetch_add(1, Ordering::Relaxed);
@@ -242,7 +252,7 @@ pub fn save_dib_to_cache(dib: &[u8]) -> Option<(String, String)> {
     };
     let palette_bytes = (hdr.biClrUsed as usize) * 4;
     let pixel_offset = header_size.checked_add(mask_bytes)?.checked_add(palette_bytes)?;
-    let row_stride = ((width * (bpp as usize) + 31) / 32) * 4;
+    let row_stride = (width * (bpp as usize)).div_ceil(32) * 4;
     let required = pixel_offset.checked_add(row_stride.checked_mul(height)?)?;
     if dib.len() < required {
         return None;
@@ -283,7 +293,7 @@ pub fn save_dib_to_cache(dib: &[u8]) -> Option<(String, String)> {
 
     // Many 32bpp CF_DIB sources leave alpha=0 everywhere; promote to opaque 255 so image isn't invisible.
     if !any_nonzero_alpha {
-        for px in bgra.chunks_exact_mut(4) {
+        for px in bgra.as_chunks_mut::<4>().0 {
             px[3] = 255;
         }
     }
@@ -336,7 +346,7 @@ unsafe fn read_medium_bytes(med: &STGMEDIUM, max_bytes: usize) -> Option<Vec<u8>
         let _ = GlobalUnlock(hglobal);
         Some(data)
     } else if med.tymed == TYMED_ISTREAM.0 as u32 {
-        let stream_opt: &Option<IStream> = &*med.u.pstm;
+        let stream_opt: &Option<IStream> = &med.u.pstm;
         let stream = stream_opt.as_ref()?;
         let mut out = Vec::new();
         let mut buf = [0u8; 8192];
@@ -359,7 +369,7 @@ unsafe fn read_medium_bytes(med: &STGMEDIUM, max_bytes: usize) -> Option<Vec<u8>
 
 unsafe fn read_utf16_z(bytes: &[u8]) -> String {
     let u16s: Vec<u16> = bytes
-        .chunks_exact(2)
+        .as_chunks::<2>().0.iter()
         .map(|c| u16::from_le_bytes([c[0], c[1]]))
         .take_while(|&w| w != 0)
         .collect();
@@ -383,7 +393,7 @@ unsafe fn extract_dropped_payloads(obj: &IDataObject) -> Vec<DroppedPayload> {
     let f_hdrop = make_formatetc(CF_HDROP.0, TYMED_HGLOBAL.0 as u32);
     if let Ok(med) = obj.GetData(&f_hdrop) {
         let guard = StgMediumGuard(med);
-        if guard.0.tymed == TYMED_HGLOBAL.0 as u32 {
+        if guard.0.tymed == TYMED_HGLOBAL.0 as u32 && !guard.0.u.hGlobal.0.is_null() {
             let hdrop = HDROP(guard.0.u.hGlobal.0);
             let count = DragQueryFileW(hdrop, 0xFFFF_FFFF, None);
             if count > 0 {
@@ -472,6 +482,7 @@ unsafe fn extract_dropped_payloads(obj: &IDataObject) -> Vec<DroppedPayload> {
 struct ShelfDropTarget {
     hwnd: HWND,
     helper: Option<IDropTargetHelper>,
+    helper_active: AtomicBool,
     accepting: AtomicBool,
 }
 
@@ -488,6 +499,7 @@ impl ShelfDropTarget {
         Self {
             hwnd,
             helper,
+            helper_active: AtomicBool::new(false),
             accepting: AtomicBool::new(false),
         }
     }
@@ -530,7 +542,10 @@ impl IDropTarget_Impl for ShelfDropTarget_Impl {
                 && let Some(obj) = pdataobj
             {
                 let p = POINT { x: pt.x, y: pt.y };
-                let _ = helper.DragEnter(self.hwnd, obj, &p, eff);
+                let ok = helper.DragEnter(self.hwnd, obj, &p, eff).is_ok();
+                self.helper_active.store(ok, Ordering::Release);
+            } else {
+                self.helper_active.store(false, Ordering::Release);
             }
             if supported {
                 let (cx, cy) = self.to_client(pt);
@@ -562,7 +577,9 @@ impl IDropTarget_Impl for ShelfDropTarget_Impl {
             if !pdweffect.is_null() {
                 *pdweffect = eff;
             }
-            if let Some(ref helper) = self.helper {
+            if self.helper_active.load(Ordering::Acquire)
+                && let Some(ref helper) = self.helper
+            {
                 let p = POINT { x: pt.x, y: pt.y };
                 let _ = helper.DragOver(&p, eff);
             }
@@ -581,7 +598,9 @@ impl IDropTarget_Impl for ShelfDropTarget_Impl {
     fn DragLeave(&self) -> Result<()> {
         let res = catch_unwind(AssertUnwindSafe(|| unsafe {
             let was_accepting = self.accepting.swap(false, Ordering::AcqRel);
-            if let Some(ref helper) = self.helper {
+            if self.helper_active.swap(false, Ordering::AcqRel)
+                && let Some(ref helper) = self.helper
+            {
                 let _ = helper.DragLeave();
             }
             if was_accepting {
@@ -625,14 +644,17 @@ impl IDropTarget_Impl for ShelfDropTarget_Impl {
             if !pdweffect.is_null() {
                 *pdweffect = eff;
             }
-            if let Some(ref helper) = self.helper
+            if self.helper_active.swap(false, Ordering::AcqRel)
+                && let Some(ref helper) = self.helper
                 && let Some(obj) = pdataobj
             {
                 let p = POINT { x: pt.x, y: pt.y };
                 let _ = helper.Drop(obj, &p, eff);
             }
             let (cx, cy) = self.to_client(pt);
-            crate::window::on_ole_drop(self.hwnd, cx, cy, payloads);
+            // Defer state/window/DComp mutations off the synchronous COM RPC Drop callback
+            // so Explorer finishes DoDragDrop cleanly before SetWindowPos/ResizeBuffers/WIC run.
+            crate::window::enqueue_ole_drop(self.hwnd, cx, cy, payloads);
             Ok(())
         }));
         match res {
@@ -642,11 +664,17 @@ impl IDropTarget_Impl for ShelfDropTarget_Impl {
     }
 }
 
+/// # Safety
+/// `hwnd` must be a valid, live top-level window handle owned by this thread.
+/// It must not be destroyed until [`revoke_drop_target`] has been called.
 pub unsafe fn register_drop_target(hwnd: HWND) -> bool {
     let target: IDropTarget = ShelfDropTarget::new(hwnd).into();
     RegisterDragDrop(hwnd, &target).is_ok()
 }
 
+/// # Safety
+/// `hwnd` must be the same valid handle previously passed to
+/// [`register_drop_target`], and must still be alive.
 pub unsafe fn revoke_drop_target(hwnd: HWND) {
     let _ = RevokeDragDrop(hwnd);
 }
@@ -839,6 +867,11 @@ unsafe fn create_shell_file_data_object(hwnd: HWND, path: &str) -> Result<IDataO
 /// Starts a synchronous OLE drag-out operation for a Shelf item.
 /// Caller MUST release all `AppState` locks before calling this (nested message loop!).
 /// Returns `true` if the drop target accepted the item (`COPY` or `LINK`).
+///
+/// # Safety
+/// `hwnd` must be a valid, live window handle owned by the calling thread.
+/// `item.payload` must remain a valid path for the duration of the nested
+/// OLE message loop, and no `AppState` lock may be held on entry.
 pub unsafe fn start_shelf_drag_out(hwnd: HWND, item: &ShelfItem) -> bool {
     let data_obj: IDataObject = match item.kind {
         ShelfKind::File | ShelfKind::Image => {

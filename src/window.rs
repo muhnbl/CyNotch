@@ -31,7 +31,7 @@ use windows::Win32::System::LibraryLoader::GetModuleHandleW;
 use windows::Win32::System::Threading::GetCurrentProcessId;
 use windows::Win32::UI::Input::KeyboardAndMouse::*;
 use windows::Win32::UI::Shell::{
-    NIF_ICON, NIF_MESSAGE, NIF_TIP, NIM_ADD, NIM_DELETE, NIM_MODIFY, NOTIFYICONDATAW,
+    NIF_ICON, NIF_MESSAGE, NIF_TIP, NIM_ADD, NIM_DELETE, NIM_MODIFY, NOTIFYICONDATAW, QUNS_BUSY,
     QUNS_PRESENTATION_MODE, QUNS_RUNNING_D3D_FULL_SCREEN, SHQueryUserNotificationState,
     Shell_NotifyIconW,
 };
@@ -65,6 +65,8 @@ const TIMER_POLL_ID: usize = 2;
 const TIMER_HOVER_OPEN_ID: usize = 3;
 const TIMER_DRAG_LEAVE_ID: usize = 4;
 const TIMER_DRAG_EXPAND_ID: usize = 5;
+/// One-shot: collapse the notch first, then open Preferences (gear choreography).
+const TIMER_OPEN_SETTINGS_ID: usize = 6;
 const WM_MOUSELEAVE_CODE: u32 = 0x02A3;
 const WM_CLIPBOARDUPDATE: u32 = 0x031D;
 const WM_DROPFILES_CODE: u32 = 0x0233;
@@ -79,6 +81,11 @@ pub const WM_APP_QUIT: u32 = 0x8000 + 7;
 pub const WM_APP_SYNC_FROSTED: u32 = 0x8000 + 8;
 pub const WM_APP_UPDATE_TRAY: u32 = 0x8000 + 9;
 pub const WM_APP_HIGHRES_ANIM_TICK: u32 = 0x8000 + 10;
+const WM_APP_OLE_DROP: u32 = 0x8000 + 11;
+
+static PENDING_OLE_DROPS: Mutex<
+    std::collections::VecDeque<(f32, f32, Vec<crate::shelf_dnd::DroppedPayload>)>,
+> = Mutex::new(std::collections::VecDeque::new());
 
 const HOTKEY_TOGGLE_NOTCH: i32 = 1001;
 const HOTKEY_PURGE_RAM: i32 = 1002;
@@ -211,6 +218,7 @@ fn run_highres_pacer_loop() {
         let mut to_post: [(isize, u32, usize); 2] = [(0, 0, 0), (0, 0, 1)];
         let mut post_len = 0usize;
         let mut min_wait: Option<std::time::Duration> = None;
+        let mut any_in_flight = false;
 
         for idx in 0..2 {
             let slot = if idx == 0 {
@@ -221,7 +229,7 @@ fn run_highres_pacer_loop() {
             if slot.hwnd != 0 && slot.interval_ms > 0 {
                 if slot.in_flight
                     && let Some(lp) = slot.last_post
-                    && now.duration_since(lp) >= std::time::Duration::from_millis(150)
+                    && now.duration_since(lp) >= std::time::Duration::from_millis(60)
                 {
                     slot.in_flight = false;
                 }
@@ -239,8 +247,7 @@ fn run_highres_pacer_loop() {
                         min_wait = Some(min_wait.map_or(rem, |m| m.min(rem)));
                     }
                 } else {
-                    let step = std::time::Duration::from_millis(slot.interval_ms as u64);
-                    min_wait = Some(min_wait.map_or(step, |m| m.min(step)));
+                    any_in_flight = true;
                 }
             }
         }
@@ -277,6 +284,14 @@ fn run_highres_pacer_loop() {
         }
 
         match min_wait {
+            None if any_in_flight => {
+                // Park on the condvar so `clear_*_pacer_in_flight()` wakes immediately
+                // when the UI thread finishes a frame (no extra full-interval dead sleep).
+                let (g, _) = cv
+                    .wait_timeout(guard, std::time::Duration::from_millis(20))
+                    .unwrap_or_else(|e| e.into_inner());
+                guard = g;
+            }
             None => {
                 guard = cv.wait(guard).unwrap_or_else(|e| e.into_inner());
             }
@@ -338,15 +353,25 @@ fn set_pacer_slot(is_settings: bool, hwnd: HWND, msg: u32, interval_ms: u32) {
         } else {
             &mut g.notch
         };
-        let changed = slot.hwnd != hwnd_raw || slot.interval_ms != interval_ms;
+        let hwnd_changed = slot.hwnd != hwnd_raw;
+        let interval_changed = slot.interval_ms != interval_ms;
         slot.hwnd = hwnd_raw;
         slot.msg = msg;
         slot.interval_ms = interval_ms;
-        if changed {
+        if hwnd_changed {
             slot.in_flight = false;
             slot.last_post = None;
             slot.next_due =
                 std::time::Instant::now() + std::time::Duration::from_millis(interval_ms as u64);
+        } else if interval_changed {
+            // Keep the existing cadence when only the interval changes (e.g. hover
+            // dwell 25ms -> expand 8ms). Resetting next_due here inserts a dead gap
+            // right at the start of the expand animation, which reads as stutter.
+            // The new step is picked up on the very next scheduling pass.
+            if slot.next_due > std::time::Instant::now() + std::time::Duration::from_millis(40) {
+                slot.next_due = std::time::Instant::now()
+                    + std::time::Duration::from_millis(interval_ms as u64);
+            }
         }
         cv.notify_all();
     }
@@ -383,16 +408,52 @@ pub fn clear_settings_pacer_in_flight() {
     }
 }
 
+fn hz_from_devmode(dm: DEVMODEW) -> u32 {
+    if dm.dmDisplayFrequency >= 30 {
+        return dm.dmDisplayFrequency.clamp(60, 240);
+    }
+    60
+}
+
+/// Refresh rate of the monitor that currently hosts `hwnd`.
+///
+/// `EnumDisplaySettingsW(None, ..)` only ever reports the primary monitor,
+/// which paces the notch wrongly on mixed-refresh multi-monitor setups.
+pub fn detect_monitor_hz_for(hwnd: HWND) -> u32 {
+    unsafe {
+        let monitor = MonitorFromWindow(hwnd, MONITOR_DEFAULTTONEAREST);
+        if !monitor.is_invalid() {
+            let mut mi = MONITORINFOEXW {
+                monitorInfo: MONITORINFO {
+                    cbSize: std::mem::size_of::<MONITORINFOEXW>() as u32,
+                    ..Default::default()
+                },
+                ..Default::default()
+            };
+            if GetMonitorInfoW(monitor, &mut mi.monitorInfo).as_bool() {
+                let mut dm = DEVMODEW {
+                    dmSize: std::mem::size_of::<DEVMODEW>() as u16,
+                    ..Default::default()
+                };
+                if EnumDisplaySettingsW(PCWSTR(mi.szDevice.as_ptr()), ENUM_CURRENT_SETTINGS, &mut dm)
+                    .as_bool()
+                {
+                    return hz_from_devmode(dm);
+                }
+            }
+        }
+    }
+    detect_monitor_hz()
+}
+
 pub fn detect_monitor_hz() -> u32 {
     unsafe {
         let mut dm = DEVMODEW {
             dmSize: std::mem::size_of::<DEVMODEW>() as u16,
             ..Default::default()
         };
-        if EnumDisplaySettingsW(None, ENUM_CURRENT_SETTINGS, &mut dm).as_bool()
-            && dm.dmDisplayFrequency >= 30
-        {
-            return dm.dmDisplayFrequency.clamp(60, 240);
+        if EnumDisplaySettingsW(None, ENUM_CURRENT_SETTINGS, &mut dm).as_bool() {
+            return hz_from_devmode(dm);
         }
     }
     60
@@ -811,9 +872,13 @@ struct NotchUi {
     hover_hit_idx: Option<usize>,
     drag_mode: DragMode,
     last_other_hwnd: Option<HWND>,
+    last_any_fg_hwnd: Option<HWND>,
+    bypass_topmost_guard: bool,
     anim_timer_interval_ms: u32,
     last_anim_instant: Option<std::time::Instant>,
     last_second_tick: Option<std::time::Instant>,
+    last_heavy_poll: Option<std::time::Instant>,
+    last_foreign_fs: bool,
     hidden_for_fullscreen: bool,
     has_ulw_initialized: bool,
     dpi_generation: u64,
@@ -913,9 +978,9 @@ unsafe fn sync_notch_window_region(hwnd: HWND, state: &AppState, cw: i32, ch: i3
         })
         .unwrap_or(false);
     let mut spec = compute_window_region_spec_for_canvas(state, cw, ch);
-    if state.shelf_fx.drag_hover_active {
-        // Freeze region to full canvas during active OLE drag so expand animation
-        // never thrashes SetWindowRgn / DragLeave.
+    if state.shelf_fx.drag_hover_active || state.is_size_moving() {
+        // Freeze region to full canvas during active OLE drag or size animation so
+        // SetWindowRgn never forces synchronous DWM region rebuilds mid-frame.
         spec = (0, 0, cw, ch, 0, 250, spec.6, 0);
     } else if hotzone {
         // Tight +24px drop hot-zone around collapsed pill only after user has actively dragged >= 12px.
@@ -1023,7 +1088,9 @@ unsafe fn sync_animation_timer(hwnd: HWND, desired_ms: Option<u32>) {
             let prev = ui.anim_timer_interval_ms;
             if target == 0 {
                 ui.last_anim_instant = None;
-            } else if prev == 0 {
+            } else if prev == 0 || (prev > 16 && target <= 16) {
+                // Reset timestamp when stepping up from idle (e.g. 50ms) to high-res
+                // active pacing (7–16ms) so Frame 1 of expand/close never lurches by 33ms.
                 ui.last_anim_instant = Some(std::time::Instant::now());
             }
             ui.anim_timer_interval_ms = target;
@@ -1034,7 +1101,7 @@ unsafe fn sync_animation_timer(hwnd: HWND, desired_ms: Option<u32>) {
         if ms == 0 {
             let _ = KillTimer(hwnd, TIMER_ANIMATION_ID);
             set_notch_pacer(hwnd, 0);
-        } else if ms < 16 {
+        } else if ms <= 16 {
             let _ = KillTimer(hwnd, TIMER_ANIMATION_ID);
             set_notch_pacer(hwnd, ms);
         } else {
@@ -1048,7 +1115,10 @@ unsafe fn tick_notch_animation(hwnd: HWND) {
     let now = std::time::Instant::now();
     let dt = NOTCH_UI.with_borrow_mut(|ui| {
         let d = if let Some(prev) = ui.last_anim_instant {
-            now.duration_since(prev).as_secs_f32().clamp(0.002, 0.05)
+            // Match the spring integrator's cap (1/30s): a larger dt here makes
+            // the window glide advance while the spring lags, which looks like
+            // a stutter during the hover expand transition.
+            now.duration_since(prev).as_secs_f32().clamp(0.002, 1.0 / 30.0)
         } else {
             0.016
         };
@@ -1061,14 +1131,15 @@ unsafe fn tick_notch_animation(hwnd: HWND) {
     let mut target_win_pos = None;
     let mut target_canvas = None;
     let mut active_interval = 16u32;
-    let mut idle_collapsed = false;
+    let mut size_moving = false;
     if let Some(state_mutex) = get_global_state()
         && let Ok(mut state) = state_mutex.lock()
     {
         needs_redraw = state.update_animation(dt);
         desired_ms = state.needs_animation_timer_ms();
         active_interval = state.desired_active_interval_ms();
-        idle_collapsed = is_idle_collapsed(&state);
+        let idle_collapsed = is_idle_collapsed(&state);
+        size_moving = state.is_size_moving();
         let mon = get_monitor_rect(hwnd);
         let (wx, wy, cw, ch) = compute_active_window_layout(&mon, &state, idle_collapsed);
         target_win_pos = Some((wx, wy));
@@ -1128,14 +1199,14 @@ unsafe fn tick_notch_animation(hwnd: HWND) {
         desired_ms
     };
     sync_animation_timer(hwnd, effective_ms);
-    let needs_compact_shrink = if !needs_redraw && idle_collapsed && !win_glide_still_active {
+    let needs_canvas_trim = if !needs_redraw && !size_moving && !win_glide_still_active {
         target_canvas.is_some_and(|(cw, ch)| {
             NOTCH_UI.with_borrow(|ui| ui.prev_dib_w != cw || ui.prev_dib_h != ch)
         })
     } else {
         false
     };
-    if needs_redraw || needs_compact_shrink {
+    if needs_redraw || needs_canvas_trim {
         redraw_window(hwnd);
     }
 }
@@ -1258,7 +1329,9 @@ unsafe fn is_foreign_fullscreen_active(notch_hwnd: HWND) -> bool {
         rc.left <= mr.left && rc.top <= mr.top && rc.right >= mr.right && rc.bottom >= mr.bottom;
 
     let quns_exclusive = SHQueryUserNotificationState()
-        .map(|s| s == QUNS_RUNNING_D3D_FULL_SCREEN || s == QUNS_PRESENTATION_MODE)
+        .map(|s| {
+            s == QUNS_RUNNING_D3D_FULL_SCREEN || s == QUNS_PRESENTATION_MODE || s == QUNS_BUSY
+        })
         .unwrap_or(false);
 
     let style_bits = GetWindowLongW(fg, GWL_STYLE) as u32;
@@ -1363,14 +1436,14 @@ unsafe fn attach_hwnd_resources(hwnd: HWND) {
     let _ = RegisterHotKey(
         hwnd,
         HOTKEY_TOGGLE_NOTCH,
-        MOD_CONTROL | MOD_SHIFT,
+        MOD_CONTROL | MOD_ALT,
         'C' as u32,
     );
-    let _ = RegisterHotKey(hwnd, HOTKEY_PURGE_RAM, MOD_CONTROL | MOD_SHIFT, 'M' as u32);
+    let _ = RegisterHotKey(hwnd, HOTKEY_PURGE_RAM, MOD_CONTROL | MOD_ALT, 'M' as u32);
     let _ = RegisterHotKey(
         hwnd,
         HOTKEY_CAPTURE_SCREEN,
-        MOD_CONTROL | MOD_SHIFT,
+        MOD_CONTROL | MOD_ALT,
         'S' as u32,
     );
 
@@ -1383,9 +1456,12 @@ unsafe fn attach_hwnd_resources(hwnd: HWND) {
     add_tray_icon(hwnd);
 
     NOTCH_UI.with_borrow_mut(|ui| {
-        ui.last_second_tick = Some(std::time::Instant::now());
+        let now = std::time::Instant::now();
+        ui.last_second_tick = Some(now);
+        ui.last_heavy_poll = None;
+        ui.last_foreign_fs = false;
     });
-    SetTimer(hwnd, TIMER_POLL_ID, 250, None);
+    SetTimer(hwnd, TIMER_POLL_ID, 50, None);
 }
 
 unsafe fn detach_hwnd_resources(hwnd: HWND) {
@@ -1455,7 +1531,7 @@ impl NotchWindow {
         };
         let (x, y, canvas_w, canvas_h) =
             compute_active_window_layout(&mon, &snap, is_idle_collapsed(&snap));
-        let r = Renderer::new(canvas_w as u32, canvas_h as u32);
+        let r = Renderer::new(canvas_w as u32, canvas_h as u32)?;
         unsafe {
             NOTCH_UI.with_borrow_mut(|ui| {
                 ui.renderer = Some(r);
@@ -1721,7 +1797,7 @@ unsafe fn add_tray_icon(hwnd: HWND) {
         ..Default::default()
     };
     let tip_str = format!(
-        "CyNotch · RAM {}% ({:.1}/{:.1} GB)\0",
+        "CyNotch  -  RAM {}% ({:.1}/{:.1} GB)\0",
         pct, used_gb, total_gb
     );
     let tip: Vec<u16> = tip_str.encode_utf16().collect();
@@ -1759,7 +1835,7 @@ unsafe fn update_tray_icon(hwnd: HWND) {
         nid.hIcon = ic;
     }
     let tip_str = format!(
-        "CyNotch · RAM {}% ({:.1}/{:.1} GB)\0",
+        "CyNotch  -  RAM {}% ({:.1}/{:.1} GB)\0",
         pct, used_gb, total_gb
     );
     let tip: Vec<u16> = tip_str.encode_utf16().collect();
@@ -1786,7 +1862,7 @@ unsafe fn show_notch_context_menu(hwnd: HWND, bottom_align: bool) {
             hmenu,
             MF_STRING,
             MENU_TOGGLE,
-            w!("Toggle CyNotch (Ctrl+Shift+C)"),
+            w!("Toggle CyNotch (Ctrl+Alt+C)"),
         );
         let _ = AppendMenuW(
             hmenu,
@@ -1802,9 +1878,9 @@ unsafe fn show_notch_context_menu(hwnd: HWND, bottom_align: bool) {
             hmenu,
             MF_STRING,
             MENU_CAPTURE,
-            w!("Capture Screen (Ctrl+Shift+S)"),
+            w!("Capture Screen (Ctrl+Alt+S)"),
         );
-        let _ = AppendMenuW(hmenu, MF_STRING, MENU_PURGE, w!("Purge RAM (Ctrl+Shift+M)"));
+        let _ = AppendMenuW(hmenu, MF_STRING, MENU_PURGE, w!("Purge RAM (Ctrl+Alt+M)"));
         let _ = AppendMenuW(
             hmenu,
             if pinned {
@@ -1844,17 +1920,20 @@ unsafe fn remove_tray_icon(hwnd: HWND) {
     swap_tray_hicon(HICON::default(), false);
 }
 
-unsafe fn track_last_foreground(exclude_hwnd: HWND) {
+unsafe fn track_last_foreground(exclude_hwnd: HWND) -> bool {
     let fg = GetForegroundWindow();
     if !fg.0.is_null()
         && fg != exclude_hwnd
         && IsWindowVisible(fg).as_bool()
         && !IsIconic(fg).as_bool()
     {
-        NOTCH_UI.with_borrow_mut(|ui| {
+        return NOTCH_UI.with_borrow_mut(|ui| {
+            let changed = ui.last_other_hwnd != Some(fg);
             ui.last_other_hwnd = Some(fg);
+            changed
         });
     }
+    false
 }
 
 unsafe fn perform_capture_async(hwnd: HWND, active_window_only: bool) {
@@ -1928,7 +2007,7 @@ unsafe fn perform_capture_async(hwnd: HWND, active_window_only: bool) {
             if let Some(cap) = res {
                 state.capture.last_path = Some(cap.path.clone());
                 state.capture.last_filename = cap.filename.clone();
-                state.capture.last_dims = format!("{} × {}", cap.width, cap.height);
+                state.capture.last_dims = format!("{} x {}", cap.width, cap.height);
                 state.capture.clipboard_ok = cap.clipboard_ok;
                 state.capture.total_captures += 1;
 
@@ -1987,7 +2066,7 @@ unsafe fn trigger_purge_ram_async(hwnd: HWND) {
                 chime = state.chime_enabled;
                 state.apply_clean_result(clean_res);
             } else {
-                state.mem_reduct.last_cleaned_status = "Ready • Clean finished".to_string();
+                state.mem_reduct.last_cleaned_status = "Ready  -  Clean finished".to_string();
             }
         }
         if chime {
@@ -2024,14 +2103,15 @@ unsafe fn wnd_proc_inner(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPARAM) -
         WM_WINDOWPOSCHANGING => {
             if lparam.0 != 0 {
                 let wp = &mut *(lparam.0 as *mut WINDOWPOS);
-                let hidden = NOTCH_UI
+                let (hidden, bypass) = NOTCH_UI
                     .try_with(|cell| {
                         cell.try_borrow()
-                            .map(|ui| ui.hidden_for_fullscreen)
-                            .unwrap_or(false)
+                            .map(|ui| (ui.hidden_for_fullscreen, ui.bypass_topmost_guard))
+                            .unwrap_or((false, false))
                     })
-                    .unwrap_or(false);
+                    .unwrap_or((false, false));
                 if !hidden
+                    && !bypass
                     && !CAPTURE_IN_PROGRESS.load(Ordering::Acquire)
                     && (wp.flags.0 & SWP_HIDEWINDOW.0) == 0
                     && (wp.flags.0 & SWP_NOZORDER.0) == 0
@@ -2042,7 +2122,7 @@ unsafe fn wnd_proc_inner(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPARAM) -
             DefWindowProcW(hwnd, msg, wparam, lparam)
         }
         WM_DISPLAYCHANGE => {
-            let hz = detect_monitor_hz();
+            let hz = detect_monitor_hz_for(hwnd);
             if let Some(state_mutex) = get_global_state()
                 && let Ok(mut s) = state_mutex.lock()
             {
@@ -2073,7 +2153,7 @@ unsafe fn wnd_proc_inner(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPARAM) -
                     SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE,
                 );
             }
-            let hz = detect_monitor_hz();
+            let hz = detect_monitor_hz_for(hwnd);
             if let Some(state_mutex) = get_global_state()
                 && let Ok(mut s) = state_mutex.lock()
             {
@@ -2139,13 +2219,16 @@ unsafe fn wnd_proc_inner(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPARAM) -
                 if st.shelf_fx.drag_hover_active {
                     return LRESULT(1); // HTCLIENT across full canvas during OLE drag
                 }
-                let (cw, ch) = NOTCH_UI.with_borrow(|ui| {
-                    if ui.prev_dib_w > 0 && ui.prev_dib_h > 0 {
-                        (ui.prev_dib_w as f32, ui.prev_dib_h as f32)
-                    } else {
-                        (st.canvas_width() as f32, st.canvas_height() as f32)
-                    }
-                });
+                let (cw, ch) = NOTCH_UI
+                    .try_with(|cell| {
+                        cell.try_borrow()
+                            .ok()
+                            .filter(|ui| ui.prev_dib_w > 0 && ui.prev_dib_h > 0)
+                            .map(|ui| (ui.prev_dib_w as f32, ui.prev_dib_h as f32))
+                    })
+                    .ok()
+                    .flatten()
+                    .unwrap_or_else(|| (st.canvas_width() as f32, st.canvas_height() as f32));
                 Renderer::point_in_capsule(&st, cw, ch, pt.x as f32, pt.y as f32)
             } else {
                 false
@@ -2163,6 +2246,19 @@ unsafe fn wnd_proc_inner(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPARAM) -
         WM_APP_HIGHRES_ANIM_TICK => {
             tick_notch_animation(hwnd);
             clear_notch_pacer_in_flight();
+            LRESULT(0)
+        }
+        WM_APP_OLE_DROP => {
+            loop {
+                let next = PENDING_OLE_DROPS
+                    .lock()
+                    .ok()
+                    .and_then(|mut q| q.pop_front());
+                let Some((cx, cy, payloads)) = next else {
+                    break;
+                };
+                on_ole_drop(hwnd, cx, cy, payloads);
+            }
             LRESULT(0)
         }
         WM_APP_UPDATE_TRAY => {
@@ -2506,8 +2602,9 @@ unsafe fn wnd_proc_inner(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPARAM) -
                         }
                     }
                     NotchMode::Shelf => {
-                        let vis = if state.placement.is_vertical() { 6 } else { 3 };
-                        let max_scroll = state.shelf_items.len().saturating_sub(vis);
+                        let cols = if state.placement.is_vertical() { 2 } else { 4 };
+                        let total_rows = state.shelf_items.len().div_ceil(cols);
+                        let max_scroll = total_rows.saturating_sub(1);
                         let next_scroll = if steps > 0 {
                             state.shelf_scroll.saturating_sub(1)
                         } else {
@@ -2877,17 +2974,42 @@ unsafe fn wnd_proc_inner(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPARAM) -
                 let _ = TrackMouseEvent(&mut tme);
                 track_last_foreground(hwnd);
 
-                if let Some(state_mutex) = get_global_state()
+                let (hidden_fs, cw_mm, ch_mm) = NOTCH_UI.with_borrow(|ui| {
+                    (ui.hidden_for_fullscreen, ui.prev_dib_w, ui.prev_dib_h)
+                });
+                if !hidden_fs
+                    && let Some(state_mutex) = get_global_state()
                     && let Ok(mut state) = state_mutex.lock()
                     && !state.click_to_open
                     && state.notification.is_none()
                     && !state.is_hovered
                     && !state.is_hover_pending
                 {
-                    // Keep notification banners unexpanded on hover so the user can reach the dismiss/action buttons.
-                    let dwell_ms = state.hover_dwell_ms() as u32;
-                    state.begin_hover_dwell(std::time::Instant::now());
-                    let _ = SetTimer(hwnd, TIMER_HOVER_OPEN_ID, dwell_ms, None);
+                    let (w, h) = if cw_mm > 0 && ch_mm > 0 {
+                        (cw_mm as f32, ch_mm as f32)
+                    } else {
+                        (state.canvas_width() as f32, state.canvas_height() as f32)
+                    };
+                    if !Renderer::point_in_capsule(&state, w, h, px, py) {
+                        // Cursor is only in the transparent HWND margin, not on the capsule.
+                    } else if state.hide_in_fullscreen && is_foreign_fullscreen_active(hwnd) {
+                        // Suppress hover-dwell while a foreign fullscreen app is active.
+                    } else {
+                        // Keep notification banners unexpanded on hover so the user can reach the dismiss/action buttons.
+                        let dwell_ms = state.hover_dwell_ms() as u32;
+                        state.begin_hover_dwell(std::time::Instant::now());
+                        let _ = SetTimer(hwnd, TIMER_HOVER_OPEN_ID, dwell_ms, None);
+                        // Drive the animation ticker during the dwell pause so
+                        // hover_dwell_t actually advances (thermal aura + progress).
+                        // Without this, TIMER_ANIMATION_ID stays off and the dwell
+                        // progress remains 0 until the notch snaps open.
+                        let step_ms = if state.are_animations_active() {
+                            state.desired_active_interval_ms()
+                        } else {
+                            25
+                        };
+                        sync_animation_timer(hwnd, Some(step_ms));
+                    }
                 }
             }
 
@@ -2923,6 +3045,27 @@ unsafe fn wnd_proc_inner(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPARAM) -
             }
             LRESULT(0)
         }
+        WM_ACTIVATEAPP => {
+            // Alt-Tab / focus loss: the physical cursor may still sit over the
+            // notch, but clicks no longer reach it. Collapse the hover state so
+            // the next hover re-arms hit testing instead of leaving a dead,
+            // stuck-expanded notch.
+            if wparam.0 == 0 {
+                let mut need_redraw = false;
+                if let Some(state_mutex) = get_global_state()
+                    && let Ok(mut st) = state_mutex.lock()
+                {
+                    if st.is_hovered {
+                        st.set_hovered(false);
+                        need_redraw = true;
+                    }
+                }
+                if need_redraw {
+                    redraw_window(hwnd);
+                }
+            }
+            LRESULT(0)
+        }
         WM_MOUSELEAVE_CODE => {
             // Guard against synthetic WM_MOUSELEAVE caused by transient SetWindowPos/SetWindowRgn:
             // if the physical cursor is still inside the visible notch capsule, re-arm tracking.
@@ -2941,13 +3084,23 @@ unsafe fn wnd_proc_inner(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPARAM) -
                                 (st.canvas_width() as f32, st.canvas_height() as f32)
                             }
                         });
-                        Renderer::point_in_capsule(
-                            &st,
-                            cw,
-                            ch,
-                            client_pt.x as f32,
-                            client_pt.y as f32,
-                        )
+                        // When expanded, the visible surface is much larger than
+                        // the idle capsule. A cursor still over that surface must
+                        // count as "inside" or WM_MOUSELEAVE after Alt+Tab will
+                        // clear is_hovered, make the window click-through and kill
+                        // the animation timer while the notch looks still open.
+                        if st.is_hovered {
+                            client_pt.x >= 0 && client_pt.y >= 0
+                                && (client_pt.x as f32) <= cw && (client_pt.y as f32) <= ch
+                        } else {
+                            Renderer::point_in_capsule(
+                                &st,
+                                cw,
+                                ch,
+                                client_pt.x as f32,
+                                client_pt.y as f32,
+                            )
+                        }
                     } else {
                         false
                     }
@@ -2961,7 +3114,11 @@ unsafe fn wnd_proc_inner(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPARAM) -
                     hwndTrack: hwnd,
                     dwHoverTime: 0,
                 };
-                let _ = TrackMouseEvent(&mut tme);
+                if TrackMouseEvent(&mut tme).is_err() {
+                    NOTCH_UI.with_borrow_mut(|ui| {
+                        ui.is_tracking_mouse = false;
+                    });
+                }
                 return LRESULT(0);
             }
 
@@ -3010,7 +3167,6 @@ unsafe fn wnd_proc_inner(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPARAM) -
                 })
             });
             let _ = hit_action;
-            return LRESULT(0);
             LRESULT(0)
         }
         WM_RBUTTONUP => {
@@ -3193,9 +3349,9 @@ unsafe fn wnd_proc_inner(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPARAM) -
             let clip_copy: Option<String> = None;
             let mut create_capture_dir = false;
             let mut autostart_update: Option<bool> = None;
-            let mut open_settings_win = false;
+
             let mut notify_settings = false;
-            let mut start_grip_offset: Option<i32> = None;
+            let start_grip_offset: Option<i32> = None;
             let start_idle_press: Option<i32> = None;
             let mut new_drag_mode: Option<DragMode> = None;
             let mut extra_effects: Option<SettingEffects> = None;
@@ -3263,10 +3419,6 @@ unsafe fn wnd_proc_inner(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPARAM) -
                             state.mem_reduct.auto_clean_enabled =
                                 !state.mem_reduct.auto_clean_enabled;
                             state.save_config();
-                            notify_settings = true;
-                        }
-                        Action::ToggleArea(idx) => {
-                            state.toggle_mem_area(idx);
                             notify_settings = true;
                         }
                         Action::CycleThreshold => {
@@ -3353,6 +3505,9 @@ unsafe fn wnd_proc_inner(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPARAM) -
                             state.shelf_items.clear();
                             state.shelf_undo = None;
                             state.shelf_scroll = 0;
+                            if state.is_hovered && state.mode == NotchMode::Shelf {
+                                state.target_height = state.expanded_height();
+                            }
                         }
                         Action::CaptureScreen => {
                             cap_trigger = Some(false);
@@ -3433,7 +3588,17 @@ unsafe fn wnd_proc_inner(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPARAM) -
                             }
                         }
                         Action::OpenSettings => {
-                            open_settings_win = true;
+                            // Choreography: fold the notch away first, then reveal
+                            // Preferences. Cancel any pending settings open so a
+                            // double-click cannot queue two windows.
+                            let _ = KillTimer(hwnd, TIMER_OPEN_SETTINGS_ID);
+                            state.set_hovered(false);
+                            let ms = state.needs_animation_timer_ms().unwrap_or(220).min(220).max(120);
+                            SetTimer(hwnd, TIMER_OPEN_SETTINGS_ID, ms, None);
+                            // Do NOT call redraw_window here: the wnd_proc already
+                            // holds the state mutex, and redraw_window locks it again
+                            // -> deadlock ("Not responding"). The animation timer
+                            // scheduled by wnd_proc handles the redraw.
                         }
                         Action::ToggleAutostart => {
                             state.autostart = !state.autostart;
@@ -3602,11 +3767,7 @@ unsafe fn wnd_proc_inner(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPARAM) -
             if let Some(c) = chime_to_play {
                 play_chime_async(c);
             }
-            if open_settings_win {
-                if let Some(state_mutex) = get_global_state() {
-                    crate::settings_window::open_or_focus(state_mutex);
-                }
-            } else if notify_settings {
+            if notify_settings {
                 crate::settings_window::post_redraw();
             }
 
@@ -3661,14 +3822,18 @@ unsafe fn wnd_proc_inner(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPARAM) -
                 if cursor_ok {
                     let _ = ScreenToClient(hwnd, &mut client_pt);
                 }
-                let (cw, ch) = NOTCH_UI.with_borrow(|ui| (ui.prev_dib_w, ui.prev_dib_h));
+                let (cw, ch, hidden_fs) = NOTCH_UI.with_borrow(|ui| {
+                    (ui.prev_dib_w, ui.prev_dib_h, ui.hidden_for_fullscreen)
+                });
                 let mut should_redraw = false;
                 let mut cursor_left = false;
                 if let Some(state_mutex) = get_global_state()
                     && let Ok(mut state) = state_mutex.lock()
                     && state.is_hover_pending
                 {
-                    let still_inside = cursor_ok && {
+                    let fs_blocked = hidden_fs
+                        || (state.hide_in_fullscreen && is_foreign_fullscreen_active(hwnd));
+                    let still_inside = !fs_blocked && cursor_ok && {
                         let (w, h) = if cw > 0 && ch > 0 {
                             (cw as f32, ch as f32)
                         } else {
@@ -3682,7 +3847,6 @@ unsafe fn wnd_proc_inner(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPARAM) -
                             client_pt.y as f32,
                         )
                     };
-                    state.cancel_hover_dwell();
                     if still_inside
                         && !state.click_to_open
                         && state.notification.is_none()
@@ -3693,10 +3857,13 @@ unsafe fn wnd_proc_inner(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPARAM) -
                             state.save_config();
                         }
                         should_redraw = true;
-                    } else if !still_inside {
-                        state.hover_target_idx = None;
-                        cursor_left = true;
-                        should_redraw = true;
+                    } else {
+                        state.cancel_hover_dwell();
+                        if !still_inside {
+                            state.hover_target_idx = None;
+                            cursor_left = true;
+                            should_redraw = true;
+                        }
                     }
                 }
                 if cursor_left {
@@ -3732,30 +3899,57 @@ unsafe fn wnd_proc_inner(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPARAM) -
             } else if wparam.0 == TIMER_DRAG_LEAVE_ID {
                 let _ = KillTimer(hwnd, TIMER_DRAG_LEAVE_ID);
                 finish_ole_drag_leave(hwnd);
+            } else if wparam.0 == TIMER_OPEN_SETTINGS_ID {
+                let _ = KillTimer(hwnd, TIMER_OPEN_SETTINGS_ID);
+                if let Some(state_mutex) = get_global_state() {
+                    crate::settings_window::open_or_focus(state_mutex);
+                }
             } else if wparam.0 == TIMER_POLL_ID {
                 poll_ole_drag_hotzone_and_watchdog(hwnd);
                 let now = std::time::Instant::now();
-                let one_sec_elapsed = NOTCH_UI.with_borrow_mut(|ui| match ui.last_second_tick {
-                    Some(prev)
-                        if now.duration_since(prev) >= std::time::Duration::from_millis(950) =>
-                    {
-                        ui.last_second_tick = Some(now);
-                        true
-                    }
-                    None => {
-                        ui.last_second_tick = Some(now);
-                        false
-                    }
-                    _ => false,
+                let (one_sec_elapsed, heavy_poll_elapsed) = NOTCH_UI.with_borrow_mut(|ui| {
+                    let sec = match ui.last_second_tick {
+                        Some(prev)
+                            if now.duration_since(prev) >= std::time::Duration::from_millis(950) =>
+                        {
+                            ui.last_second_tick = Some(now);
+                            true
+                        }
+                        None => {
+                            ui.last_second_tick = Some(now);
+                            false
+                        }
+                        _ => false,
+                    };
+                    let heavy = match ui.last_heavy_poll {
+                        Some(prev)
+                            if now.duration_since(prev) >= std::time::Duration::from_millis(240) =>
+                        {
+                            ui.last_heavy_poll = Some(now);
+                            true
+                        }
+                        None => {
+                            ui.last_heavy_poll = Some(now);
+                            true
+                        }
+                        _ => false,
+                    };
+                    (sec, heavy)
                 });
                 let mut needs_redraw = false;
                 let mut hide_fullscreen_pref = false;
                 let mut is_protected = false;
                 let mut idle_collapsed = false;
                 let mut start_dwell_ms: Option<u32> = None;
+                let mut start_anim_ms: Option<u32> = None;
                 let mut cancel_dwell = false;
-                let (cw_poll, ch_poll, hidden_poll) = NOTCH_UI.with_borrow(|ui| {
-                    (ui.prev_dib_w, ui.prev_dib_h, ui.hidden_for_fullscreen)
+                let (cw_poll, ch_poll, hidden_poll, cached_fs) = NOTCH_UI.with_borrow(|ui| {
+                    (
+                        ui.prev_dib_w,
+                        ui.prev_dib_h,
+                        ui.hidden_for_fullscreen,
+                        ui.last_foreign_fs,
+                    )
                 });
                 let mut cur_poll = POINT::default();
                 let cursor_poll_ok = !hidden_poll
@@ -3764,6 +3958,13 @@ unsafe fn wnd_proc_inner(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPARAM) -
                 if cursor_poll_ok {
                     let _ = ScreenToClient(hwnd, &mut cur_poll);
                 }
+                let foreign_fs = if heavy_poll_elapsed {
+                    let fs = is_foreign_fullscreen_active(hwnd);
+                    NOTCH_UI.with_borrow_mut(|ui| ui.last_foreign_fs = fs);
+                    fs
+                } else {
+                    cached_fs
+                };
                 if let Some(state_mutex) = get_global_state()
                     && let Ok(mut state) = state_mutex.lock()
                 {
@@ -3772,12 +3973,22 @@ unsafe fn wnd_proc_inner(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPARAM) -
                         || state.is_pinned
                         || CAPTURE_IN_PROGRESS.load(Ordering::Acquire)
                         || state.notification_overlays_fullscreen();
+                    if hide_fullscreen_pref && !is_protected && foreign_fs {
+                        if state.is_hover_pending {
+                            state.cancel_hover_dwell();
+                            cancel_dwell = true;
+                        }
+                        if state.anim_edge_glow_t > 0.0 {
+                            state.anim_edge_glow_t = 0.0;
+                        }
+                    }
                     if state.notification.is_some() && state.expire_notification() {
                         needs_redraw = true;
                     }
                     // When collapsed with click-through (`WS_EX_TRANSPARENT`), WM_MOUSEMOVE does not fire;
                     // poll cursor position here so hover dwell still opens the panel reliably.
                     if cursor_poll_ok
+                        && !(hide_fullscreen_pref && foreign_fs)
                         && !state.click_to_open
                         && !state.is_hovered
                         && state.notification.is_none()
@@ -3798,6 +4009,28 @@ unsafe fn wnd_proc_inner(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPARAM) -
                             if !state.is_hover_pending {
                                 state.begin_hover_dwell(now);
                                 start_dwell_ms = Some(state.hover_dwell_speed.ms() as u32);
+                                // Collapsed + click-through means WM_MOUSEMOVE never fires,
+                                // so this poll path is the ONLY place that starts the dwell.
+                                // Kick the animation ticker here too, otherwise hover_dwell_t
+                                // stays at 0 and the thermal aura never renders.
+                                let step_ms = if state.are_animations_active() {
+                                    state.desired_active_interval_ms()
+                                } else {
+                                    25
+                                };
+                                start_anim_ms = Some(step_ms);
+                            } else if state.hover_dwell_start.is_some_and(|s| {
+                                now.saturating_duration_since(s).as_millis()
+                                    >= state.hover_dwell_ms() as u128
+                            }) {
+                                // Self-healing failsafe: if TIMER_HOVER_OPEN_ID was cancelled
+                                // or coalesced while the cursor stayed on the capsule, expand now.
+                                state.set_hovered(true);
+                                if state.record_notch_expand_for_hint() {
+                                    state.save_config();
+                                }
+                                cancel_dwell = true;
+                                needs_redraw = true;
                             }
                         } else if state.is_hover_pending {
                             state.cancel_hover_dwell();
@@ -3821,7 +4054,7 @@ unsafe fn wnd_proc_inner(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPARAM) -
                             .duration_since(std::time::UNIX_EPOCH)
                             .map(|d| d.as_secs())
                             .unwrap_or(0);
-                        if now_sec % 10 == 0 {
+                        if now_sec.is_multiple_of(10) {
                             let win_trans = notifications::is_windows_transparency_enabled();
                             let win_anim = notifications::is_windows_animations_enabled();
                             if state.windows_transparency_enabled != win_trans
@@ -3838,7 +4071,11 @@ unsafe fn wnd_proc_inner(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPARAM) -
 
                 if let Some(ms) = start_dwell_ms {
                     SetTimer(hwnd, TIMER_HOVER_OPEN_ID, ms.max(100), None);
-                } else if cancel_dwell {
+                }
+                if let Some(ms) = start_anim_ms {
+                    sync_animation_timer(hwnd, Some(ms));
+                }
+                if cancel_dwell {
                     let _ = KillTimer(hwnd, TIMER_HOVER_OPEN_ID);
                 }
 
@@ -3859,24 +4096,115 @@ unsafe fn wnd_proc_inner(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPARAM) -
                     }
                 });
 
-                if !idle_collapsed || one_sec_elapsed {
-                    track_last_foreground(hwnd);
-                    if hide_fullscreen_pref && !is_protected && is_foreign_fullscreen_active(hwnd) {
-                        let became_hidden = NOTCH_UI.with_borrow_mut(|ui| {
-                            if let Some(ref mut glow) = ui.edge_glow {
-                                glow.hide();
-                            }
-                            if !ui.hidden_for_fullscreen {
-                                ui.hidden_for_fullscreen = true;
-                                true
-                            } else {
-                                false
-                            }
-                        });
-                        if became_hidden {
-                            let _ = ShowWindow(hwnd, SW_HIDE);
+                let fg_now = GetForegroundWindow();
+                let raw_fg_changed = NOTCH_UI.with_borrow_mut(|ui| {
+                    let prev_any = ui.last_any_fg_hwnd;
+                    let any_changed = !fg_now.0.is_null() && fg_now != hwnd && prev_any != Some(fg_now);
+                    if !fg_now.0.is_null() && fg_now != hwnd {
+                        ui.last_any_fg_hwnd = Some(fg_now);
+                        if IsWindowVisible(fg_now).as_bool() && !IsIconic(fg_now).as_bool() {
+                            ui.last_other_hwnd = Some(fg_now);
                         }
-                    } else if !CAPTURE_IN_PROGRESS.load(Ordering::Acquire) {
+                    }
+                    any_changed
+                });
+                if !CAPTURE_IN_PROGRESS.load(Ordering::Acquire)
+                    && (raw_fg_changed || heavy_poll_elapsed)
+                {
+                    let expanded_snap = get_global_state()
+                        .and_then(|m| m.lock().ok().filter(|s| s.is_hovered).map(|s| s.clone()));
+                    if let Some(st_snap) = expanded_snap {
+                        let hidden_fs = NOTCH_UI.with_borrow(|ui| ui.hidden_for_fullscreen);
+                        if !hidden_fs {
+                            sync_click_through_ex_style(hwnd, &st_snap);
+                            if raw_fg_changed {
+                                // Windows 11 Alt+Tab / Task Switcher workaround:
+                                // Bounce HWND_NOTOPMOST -> HWND_TOPMOST (with mutex released!)
+                                // so Win32k/DWM re-registers hit-test Z-order & input routing.
+                                NOTCH_UI.with_borrow_mut(|ui| {
+                                    ui.bypass_topmost_guard = true;
+                                });
+                                let _ = SetWindowPos(
+                                    hwnd,
+                                    HWND_NOTOPMOST,
+                                    0,
+                                    0,
+                                    0,
+                                    0,
+                                    SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE | SWP_NOREDRAW,
+                                );
+                                NOTCH_UI.with_borrow_mut(|ui| {
+                                    ui.bypass_topmost_guard = false;
+                                });
+                                let _ = SetWindowPos(
+                                    hwnd,
+                                    HWND_TOPMOST,
+                                    0,
+                                    0,
+                                    0,
+                                    0,
+                                    SWP_NOMOVE
+                                        | SWP_NOSIZE
+                                        | SWP_NOACTIVATE
+                                        | SWP_SHOWWINDOW
+                                        | SWP_FRAMECHANGED,
+                                );
+                                // Keep the notch expanded and interactive after
+                                // Alt+Tab. The Z-order bounce restores routing, but
+                                // mouse tracking stays disarmed until a WM_MOUSEMOVE
+                                // arrives, so hover/clicks appear dead. Re-apply the
+                                // still-hovered region and synthesize one mouse move
+                                // at the real cursor to re-arm tracking.
+                                let (cw_cur, ch_cur) = NOTCH_UI.with_borrow_mut(|ui| {
+                                    ui.last_rgn = None;
+                                    ui.is_tracking_mouse = false;
+                                    ui.drag_mode = DragMode::None;
+                                    (ui.prev_dib_w, ui.prev_dib_h)
+                                });
+                                let _ = SetWindowRgn(hwnd, HRGN::default(), true);
+                                if cw_cur > 0 && ch_cur > 0 {
+                                    sync_notch_window_region(hwnd, &st_snap, cw_cur, ch_cur);
+                                }
+                                let mut cursor_pt = POINT::default();
+                                if GetCursorPos(&mut cursor_pt).is_ok()
+                                    && ScreenToClient(hwnd, &mut cursor_pt).as_bool()
+                                {
+                                    let lp = ((cursor_pt.y as i32 & 0xffff) << 16)
+                                        | (cursor_pt.x as i32 & 0xffff);
+                                    let _ = PostMessageW(
+                                        hwnd,
+                                        WM_MOUSEMOVE,
+                                        WPARAM(0),
+                                        LPARAM(lp as isize),
+                                    );
+                                }
+                                // Ensure the interactive (non-click-through) style
+                                // is applied and the layered hit-test region is
+                                // refreshed after the focus/Z-order change.
+                                sync_click_through_ex_style(hwnd, &st_snap);
+                                let _ = SetLayeredWindowAttributes(hwnd, COLORREF(0), 255, LWA_ALPHA);
+                                needs_redraw = true;
+                            }
+                        }
+                    }
+                }
+                if hide_fullscreen_pref && !is_protected && foreign_fs {
+                    let became_hidden = NOTCH_UI.with_borrow_mut(|ui| {
+                        if let Some(ref mut glow) = ui.edge_glow {
+                            glow.hide();
+                        }
+                        if !ui.hidden_for_fullscreen {
+                            ui.hidden_for_fullscreen = true;
+                            true
+                        } else {
+                            false
+                        }
+                    });
+                    if became_hidden {
+                        let _ = KillTimer(hwnd, TIMER_HOVER_OPEN_ID);
+                        let _ = ShowWindow(hwnd, SW_HIDE);
+                    }
+                } else if !CAPTURE_IN_PROGRESS.load(Ordering::Acquire) {
                         let became_shown = NOTCH_UI.with_borrow_mut(|ui| {
                             if ui.hidden_for_fullscreen {
                                 ui.hidden_for_fullscreen = false;
@@ -3897,10 +4225,9 @@ unsafe fn wnd_proc_inner(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPARAM) -
                                 SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE | SWP_SHOWWINDOW,
                             );
                             needs_redraw = true;
-                        } else {
+                        } else if heavy_poll_elapsed {
                             ensure_topmost_zorder(hwnd);
                         }
-                    }
                 }
                 if needs_redraw {
                     redraw_window(hwnd);
@@ -3929,6 +4256,8 @@ unsafe fn wnd_proc_inner(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPARAM) -
                 ui.anim_timer_interval_ms = 0;
                 ui.last_anim_instant = None;
                 ui.last_second_tick = None;
+                ui.last_heavy_poll = None;
+                ui.last_foreign_fs = false;
                 ui.hidden_for_fullscreen = false;
                 ui.has_ulw_initialized = false;
                 ui.prev_dib_w = 0;
@@ -4001,8 +4330,27 @@ unsafe fn redraw_window(hwnd: HWND) {
     let idle_collapsed = is_idle_collapsed(&state_snapshot);
     let compact_idle = idle_collapsed && !snap_glide;
     let mon = get_monitor_rect(hwnd);
-    let (target_x, target_y, canvas_w, canvas_h) =
+    let (mut target_x, mut target_y, mut canvas_w, mut canvas_h) =
         compute_active_window_layout(&mon, &state_snapshot, compact_idle);
+    // Never shrink the SwapChain/HWND mid-animation: hold the existing larger canvas
+    // while `is_size_moving()` so shrinking (e.g. Shelf 5>4 items or Shelf>Home)
+    // runs with ZERO DXGI ResizeBuffers and ZERO SetWindowPos stalls, then trims once on settle.
+    if !compact_idle && state_snapshot.is_size_moving() {
+        let (hold_w, hold_h) = NOTCH_UI.with_borrow(|ui| {
+            if ui.has_ulw_initialized {
+                (ui.prev_dib_w.max(canvas_w), ui.prev_dib_h.max(canvas_h))
+            } else {
+                (canvas_w, canvas_h)
+            }
+        });
+        if hold_w != canvas_w || hold_h != canvas_h {
+            canvas_w = hold_w;
+            canvas_h = hold_h;
+            let (wx, wy) = compute_window_pos(&mon, &state_snapshot, canvas_w, canvas_h);
+            target_x = wx;
+            target_y = wy;
+        }
+    }
     let (win_x, win_y) = NOTCH_UI.with_borrow_mut(|ui| {
         if idle_collapsed {
             if ui.idle_since.is_none() {
@@ -4052,16 +4400,16 @@ unsafe fn redraw_window(hwnd: HWND) {
             let s = state_snapshot.expanded_scale();
             let cw_f = state_snapshot.current_width.max(1.0);
             let ch_f = state_snapshot.current_height.max(1.0);
-            let b1h = (134.0 * s).min(ch_f);
-            let btn_w = 54.0 * s;
+            let b1h = (164.0 * s).min(ch_f);
+            let btn_w = 56.0 * s;
             let btn_h = 36.0 * s;
-            let btn_gap = 10.0 * s;
-            let btn_y = 194.0 * s;
+            let btn_gap = 12.0 * s;
+            let btn_y = 250.0 * s;
             let start_x = cw_f * 0.5 - (btn_w * 3.0 + btn_gap * 2.0) * 0.5;
             (
                 Some(b1h),
                 Some([
-                    (0.0, 146.0 * s, cw_f, 42.0 * s, 16.0 * s),
+                    (0.0, 176.0 * s, cw_f, 66.0 * s, 16.0 * s),
                     (start_x, btn_y, btn_w, btn_h, 13.0 * s),
                     (start_x + btn_w + btn_gap, btn_y, btn_w, btn_h, 13.0 * s),
                     (start_x + (btn_w + btn_gap) * 2.0, btn_y, btn_w, btn_h, 13.0 * s),
@@ -4106,15 +4454,16 @@ unsafe fn redraw_window(hwnd: HWND) {
         } else {
             host.resize(canvas_w as u32, canvas_h as u32)
         };
-        if resize_res.is_ok()
-            && let Ok(ctx) = host.begin_d2d_draw()
-        {
-            ren.render_d2d(&ctx, &state_snapshot, pointer_pos);
-            ok = host.end_d2d_draw_and_present().is_ok();
-            if ok {
-                let blur_ok = host.set_blur(blur_spec);
-                if blur_spec.is_some() && !blur_ok {
-                    blur_failed = true;
+        if resize_res.is_ok() {
+            ren.prepare_expand_cache(host.d2d_context(), &state_snapshot);
+            if let Ok(ctx) = host.begin_d2d_draw() {
+                ren.render_d2d(ctx, &state_snapshot, pointer_pos);
+                ok = host.end_d2d_draw_and_present().is_ok();
+                if ok {
+                    let blur_ok = host.set_blur(blur_spec);
+                    if blur_spec.is_some() && !blur_ok {
+                        blur_failed = true;
+                    }
                 }
             }
         }
@@ -4125,8 +4474,9 @@ unsafe fn redraw_window(hwnd: HWND) {
         // releases the HWND binding before recreating DCompHost on the same HWND.
         host_opt = None;
         if let Ok(mut new_host) = DCompHost::new(hwnd, canvas_w as u32, canvas_h as u32) {
+            ren.prepare_expand_cache(new_host.d2d_context(), &state_snapshot);
             if let Ok(ctx) = new_host.begin_d2d_draw() {
-                ren.render_d2d(&ctx, &state_snapshot, pointer_pos);
+                ren.render_d2d(ctx, &state_snapshot, pointer_pos);
                 ok = new_host.end_d2d_draw_and_present().is_ok();
                 if ok {
                     let blur_ok = new_host.set_blur(blur_spec);
@@ -4280,13 +4630,11 @@ unsafe fn poll_ole_drag_hotzone_and_watchdog(hwnd: HWND) {
                         && cur.x <= wr.right + pad
                         && cur.y >= wr.top - pad
                         && cur.y <= wr.bottom + pad
-                    {
-                        if let Some(m) = get_global_state()
+                        && let Some(m) = get_global_state()
                             && let Ok(st) = m.lock()
                         {
                             want_hotzone = !st.is_hovered && !st.shelf_fx.drag_hover_active;
                         }
-                    }
                 }
             }
         }
@@ -4325,13 +4673,22 @@ unsafe fn sync_click_through_ex_style(hwnd: HWND, state: &AppState) {
         .unwrap_or((false, false));
     let want_transparent = !state.click_to_open
         && !state.is_hovered
+        && !state.is_size_moving()
         && state.notification.is_none()
         && !state.shelf_fx.drag_hover_active
         && !ole_hotzone
         && !is_dragging;
     let mask = WS_EX_LAYERED.0 | WS_EX_TRANSPARENT.0;
     let ex_style = GetWindowLongW(hwnd, GWL_EXSTYLE) as u32;
-    let has_transparent = (ex_style & mask) == mask;
+    let has_transparent = (ex_style & WS_EX_TRANSPARENT.0) != 0;
+    // Never flip WS_EX_TRANSPARENT ON mid-hover-dwell (e.g. right as a close
+    // animation finishes while the user is already re-hovering the capsule),
+    // because SetWindowLongW(WS_EX_TRANSPARENT) triggers a synthetic WM_MOUSELEAVE.
+    let want_transparent = if !has_transparent && state.is_hover_pending {
+        false
+    } else {
+        want_transparent
+    };
     if want_transparent != has_transparent {
         let next_style = if want_transparent {
             ex_style | mask
@@ -4348,6 +4705,11 @@ unsafe fn sync_click_through_ex_style(hwnd: HWND, state: &AppState) {
             0,
             SWP_NOMOVE | SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE | SWP_FRAMECHANGED,
         );
+        // Changing WS_EX_LAYERED/WS_EX_TRANSPARENT at runtime freezes the
+        // window's hit-test region at its old size (see Wails #5001). Refresh
+        // the layered state so mouse hit-testing matches the current geometry.
+        // Full opacity is intentional: alpha compositing is done by DComp.
+        let _ = SetLayeredWindowAttributes(hwnd, COLORREF(0), 255, LWA_ALPHA);
     }
 }
 
@@ -4390,50 +4752,64 @@ unsafe fn sync_cursor_hover_after_ole(hwnd: HWND) {
 unsafe fn finish_ole_drag_leave(hwnd: HWND) {
     let _ = KillTimer(hwnd, TIMER_DRAG_EXPAND_ID);
     let _ = KillTimer(hwnd, TIMER_DRAG_LEAVE_ID);
-    NOTCH_UI.with_borrow_mut(|ui| {
-        ui.ole_drag_last_seen = None;
-        ui.ole_drag_pending_expand = false;
-        ui.ole_drag_hotzone = false;
-        ui.last_rgn = None;
+    let _ = NOTCH_UI.try_with(|cell| {
+        if let Ok(mut ui) = cell.try_borrow_mut() {
+            ui.ole_drag_last_seen = None;
+            ui.ole_drag_pending_expand = false;
+            ui.ole_drag_hotzone = false;
+            ui.last_rgn = None;
+        }
     });
     let mut post_ms = None;
     if let Some(state_mutex) = get_global_state()
         && let Ok(mut state) = state_mutex.lock()
     {
+        // Let the drag aura fade, then AppState::update_animation restores the
+        // pre-drag mode. This removes the abrupt shelf -> transparent snap.
         state.shelf_fx.drag_hover_active = false;
-        if let Some(prev_mode) = state.shelf_fx.drag_pre_mode.take() {
-            state.mode = prev_mode;
-        }
-        let was_hovered = state.shelf_fx.drag_pre_hovered;
-        if !was_hovered && !state.is_pinned {
-            state.set_hovered(false);
-        }
         post_ms = state.needs_animation_timer_ms();
     }
     sync_animation_timer(hwnd, post_ms);
     redraw_window(hwnd);
 }
 
+pub(crate) unsafe fn enqueue_ole_drop(
+    hwnd: HWND,
+    client_x: f32,
+    client_y: f32,
+    payloads: Vec<crate::shelf_dnd::DroppedPayload>,
+) {
+    if let Ok(mut q) = PENDING_OLE_DROPS.lock() {
+        q.push_back((client_x, client_y, payloads));
+    }
+    let _ = PostMessageW(hwnd, WM_APP_OLE_DROP, WPARAM(0), LPARAM(0));
+}
+
 pub(crate) unsafe fn on_ole_drag_enter(hwnd: HWND, client_x: f32, client_y: f32) {
     let _ = KillTimer(hwnd, TIMER_DRAG_LEAVE_ID);
     let _ = KillTimer(hwnd, TIMER_HOVER_OPEN_ID);
     let now = std::time::Instant::now();
-    NOTCH_UI.with_borrow_mut(|ui| {
-        ui.ole_drag_last_seen = Some(now);
-        ui.ole_drag_hotzone = false;
+    let _ = NOTCH_UI.try_with(|cell| {
+        if let Ok(mut ui) = cell.try_borrow_mut() {
+            ui.ole_drag_last_seen = Some(now);
+            ui.ole_drag_hotzone = false;
+        }
     });
     let mut need_dwell_expand = false;
     let mut post_ms = None;
     if let Some(state_mutex) = get_global_state()
         && let Ok(mut state) = state_mutex.lock()
     {
-        let (cw, ch) = NOTCH_UI.with_borrow(|ui| {
-            if ui.prev_dib_w > 0 && ui.prev_dib_h > 0 {
-                (ui.prev_dib_w as f32, ui.prev_dib_h as f32)
-            } else {
-                (state.canvas_width() as f32, state.canvas_height() as f32)
-            }
-        });
+        let (cw, ch) = NOTCH_UI
+            .try_with(|cell| {
+                cell.try_borrow()
+                    .ok()
+                    .filter(|ui| ui.prev_dib_w > 0 && ui.prev_dib_h > 0)
+                    .map(|ui| (ui.prev_dib_w as f32, ui.prev_dib_h as f32))
+            })
+            .ok()
+            .flatten()
+            .unwrap_or_else(|| (state.canvas_width() as f32, state.canvas_height() as f32));
         let (ox, oy) = Renderer::compute_origin(&state, cw, ch);
         let sc = state.expanded_scale().max(0.5);
         let lx = (client_x - ox) / sc;
@@ -4449,37 +4825,46 @@ pub(crate) unsafe fn on_ole_drag_enter(hwnd: HWND, client_x: f32, client_y: f32)
 
         if state.is_hovered {
             state.mode = NotchMode::Shelf;
+            state.target_height = state.expanded_height();
         } else {
             need_dwell_expand = true;
         }
         post_ms = state.needs_animation_timer_ms();
     }
     if need_dwell_expand {
-        NOTCH_UI.with_borrow_mut(|ui| {
-            ui.ole_drag_pending_expand = true;
+        let _ = NOTCH_UI.try_with(|cell| {
+            if let Ok(mut ui) = cell.try_borrow_mut() {
+                ui.ole_drag_pending_expand = true;
+            }
         });
         // 120ms dwell avoids accidental expansion when dragging toward browser tab bar.
         SetTimer(hwnd, TIMER_DRAG_EXPAND_ID, 120, None);
     }
     sync_animation_timer(hwnd, post_ms);
-    redraw_window(hwnd);
+    // Defer redraw/SetWindowPos/ResizeBuffers off the synchronous COM IDropTarget::DragEnter RPC.
+    let _ = PostMessageW(hwnd, WM_APP_REDRAW, WPARAM(0), LPARAM(0));
 }
 
 pub(crate) unsafe fn on_ole_drag_over(hwnd: HWND, client_x: f32, client_y: f32) {
     let _ = KillTimer(hwnd, TIMER_DRAG_LEAVE_ID);
-    NOTCH_UI.with_borrow_mut(|ui| {
-        ui.ole_drag_last_seen = Some(std::time::Instant::now());
+    let _ = NOTCH_UI.try_with(|cell| {
+        if let Ok(mut ui) = cell.try_borrow_mut() {
+            ui.ole_drag_last_seen = Some(std::time::Instant::now());
+        }
     });
     if let Some(state_mutex) = get_global_state()
         && let Ok(mut state) = state_mutex.lock()
     {
-        let (cw, ch) = NOTCH_UI.with_borrow(|ui| {
-            if ui.prev_dib_w > 0 && ui.prev_dib_h > 0 {
-                (ui.prev_dib_w as f32, ui.prev_dib_h as f32)
-            } else {
-                (state.canvas_width() as f32, state.canvas_height() as f32)
-            }
-        });
+        let (cw, ch) = NOTCH_UI
+            .try_with(|cell| {
+                cell.try_borrow()
+                    .ok()
+                    .filter(|ui| ui.prev_dib_w > 0 && ui.prev_dib_h > 0)
+                    .map(|ui| (ui.prev_dib_w as f32, ui.prev_dib_h as f32))
+            })
+            .ok()
+            .flatten()
+            .unwrap_or_else(|| (state.canvas_width() as f32, state.canvas_height() as f32));
         let (ox, oy) = Renderer::compute_origin(&state, cw, ch);
         let sc = state.expanded_scale().max(0.5);
         state.shelf_fx.drag_cursor_target = ((client_x - ox) / sc, (client_y - oy) / sc);
@@ -4488,8 +4873,10 @@ pub(crate) unsafe fn on_ole_drag_over(hwnd: HWND, client_x: f32, client_y: f32) 
 
 pub(crate) unsafe fn on_ole_drag_leave(hwnd: HWND) {
     let _ = KillTimer(hwnd, TIMER_DRAG_EXPAND_ID);
-    NOTCH_UI.with_borrow_mut(|ui| {
-        ui.ole_drag_pending_expand = false;
+    let _ = NOTCH_UI.try_with(|cell| {
+        if let Ok(mut ui) = cell.try_borrow_mut() {
+            ui.ole_drag_pending_expand = false;
+        }
     });
     // 200ms debounce avoids false collapse if SetWindowPos/SetWindowRgn briefly perturbs hit-test.
     SetTimer(hwnd, TIMER_DRAG_LEAVE_ID, 200, None);
@@ -4503,11 +4890,13 @@ pub(crate) unsafe fn on_ole_drop(
 ) {
     let _ = KillTimer(hwnd, TIMER_DRAG_LEAVE_ID);
     let _ = KillTimer(hwnd, TIMER_DRAG_EXPAND_ID);
-    NOTCH_UI.with_borrow_mut(|ui| {
-        ui.ole_drag_last_seen = None;
-        ui.ole_drag_pending_expand = false;
-        ui.ole_drag_hotzone = false;
-        ui.last_rgn = None;
+    let _ = NOTCH_UI.try_with(|cell| {
+        if let Ok(mut ui) = cell.try_borrow_mut() {
+            ui.ole_drag_last_seen = None;
+            ui.ole_drag_pending_expand = false;
+            ui.ole_drag_hotzone = false;
+            ui.last_rgn = None;
+        }
     });
 
     if payloads.is_empty() {
@@ -4526,14 +4915,18 @@ pub(crate) unsafe fn on_ole_drop(
         state.shelf_fx.drag_pre_mode = None;
         state.mode = NotchMode::Shelf;
         state.set_hovered(true);
+        state.target_height = state.expanded_height();
 
-        let (cw, ch) = NOTCH_UI.with_borrow(|ui| {
-            if ui.prev_dib_w > 0 && ui.prev_dib_h > 0 {
-                (ui.prev_dib_w as f32, ui.prev_dib_h as f32)
-            } else {
-                (state.canvas_width() as f32, state.canvas_height() as f32)
-            }
-        });
+        let (cw, ch) = NOTCH_UI
+            .try_with(|cell| {
+                cell.try_borrow()
+                    .ok()
+                    .filter(|ui| ui.prev_dib_w > 0 && ui.prev_dib_h > 0)
+                    .map(|ui| (ui.prev_dib_w as f32, ui.prev_dib_h as f32))
+            })
+            .ok()
+            .flatten()
+            .unwrap_or_else(|| (state.canvas_width() as f32, state.canvas_height() as f32));
         let (ox, oy) = Renderer::compute_origin(&state, cw, ch);
         let sc = state.expanded_scale().max(0.5);
         let lx = (client_x - ox) / sc;
@@ -4563,11 +4956,14 @@ pub(crate) unsafe fn on_ole_drop(
                 }
             }
         }
+        state.target_height = state.expanded_height();
         if last_id != 0 {
             state.shelf_fx.trigger_plop(lx, ly, last_id);
         }
         play_plop = state.chime_enabled;
-        suppressed_fs = NOTCH_UI.with_borrow(|ui| ui.hidden_for_fullscreen);
+        suppressed_fs = NOTCH_UI
+            .try_with(|cell| cell.try_borrow().map(|ui| ui.hidden_for_fullscreen).unwrap_or(false))
+            .unwrap_or(false);
         post_ms = state.needs_animation_timer_ms();
     }
 

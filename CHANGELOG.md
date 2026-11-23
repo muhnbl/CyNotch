@@ -1,5 +1,25 @@
 # Changelog
 
+## v1.0.0 (2026-11-24)
+- First stable release (final major patch line promoted directly from v0.3.1 to v1.0.0).
+- **144Hz GPU Expand/Close & DWM Pipeline Overhaul**:
+  - Pre-rendered offscreen GPU `ID2D1Bitmap1` snapshot during hover dwell (`hover_dwell_t >= 0.25`) and close transitions, eliminating per-frame DirectWrite glyph re-rasterization and cutting expand/close frame time from `10–25ms` down to **`2.4–3.5ms`** (`3.7×` faster).
+  - Kept the DirectComposition `HostBackdropBrush` blur visual at fixed size/offset `(0, 0)` with full-canvas mask coordinates and upgraded both main & mask DXGI swapchains to **triple-buffering (`BufferCount: 3`)**, eliminating `dwm.exe` blur target reallocation stalls during expand/close.
+  - Added native `144Hz` (`7ms`) pacing, instant condvar wakeup on `clear_notch_pacer_in_flight()`, high-res waitable-timer pacing for `<= 16ms` (60Hz–144Hz), and `last_anim_instant` reset on idle-to-active transitions (eliminating frame-1 `33ms` close lurch).
+  - Deferred `WS_EX_TRANSPARENT` re-enabling until close animations settle (`!is_size_moving()`) and while `is_hover_pending`, preventing mid-close DWM freezes and synthetic `WM_MOUSELEAVE` hover-cancel races.
+- **Exclusive Capsule Hover Sweep & Self-Healing Hover Dwell**:
+  - Strictly gated the hover-dwell sweep to the collapsed capsule (`!is_hovered && anim_expand_t <= 0.005`) and cleared dwell/afterglow immediately on expand so it never bleeds over the expanded panel.
+  - Replaced the 3px-quantized 55%-alpha-floor scanline with a smooth 3-stop optical light wave that enters at `0%` opacity and dissolves cleanly to `0%` opacity before the right edge.
+  - Tightened collapsed click-through hover polling (`250ms → 50ms`) while throttling heavy fullscreen/Z-order checks to `250ms`, and added a self-healing dwell-completion check in `TIMER_POLL_ID` so rapid hover open/close cycles never stall.
+- **Preferences Redesign & Zero-Churn Motion**:
+  - Graphite obsidian, macOS-inspired grouped layout with CyNotch violet accent (no blue), Linear-style rows (leading glyph, hover lift, hairline separators), and flat outer surface without per-frame offscreen aurora `PushLayer` overhead.
+  - Replaced non-1.0 text scaling on Preferences open/category-switch and expanded tab switches with smooth fade + Y-slide (`scale = 1.0`), eliminating DirectWrite glyph churn.
+  - Acrylic backdrop blur is always requested (in-app Frosted toggle removed); removed "Position & Lock" row (lock via notch padlock, center via drag); larger UI scale defaults (`1.12 / 1.20 / 1.32 / 1.50`) and humanized copy.
+- **Idle Efficiency & Polish**:
+  - Throttled idle Wolf Eyes breathing to `20 FPS` (`50ms`), gated expanded poll snapshots to foreground-change / `250ms` ticks, lazy-allocated unused `bgra_scratch`, and raised D2D brush cache caps to `1024`.
+  - Fixed text clipping at screen edges (`idle_ui_scale`), repaired mojibake (`â€¢`, `â€"`), centered Purge RAM label, and confirmed zero sleep/screensaver-blocking APIs (`SetThreadExecutionState` unused).
+- **Verified**: Release build (`1.70 MB` / `1,704,448` bytes) with `0` warnings, `147/147` tests passing, `clippy` 0 errors, visual D2D snapshots verified.
+
 ## v0.3.1 (2026-11-22)
 ### 1. Pure Stealth Idle (Glowing Purple Wolf Eyes) & Staged Choreography
 - Replaced static `"CyNotch"` idle branding text in Minimal mode with **2 Glowing Purple Wolf Eyes** (`draw_wolf_eyes` in `src/renderer/mascot.rs`) featuring subtle breathing luminescence, slow natural blinks, and `~650ms` predator squint + violet micro-reaction on clipboard/capture events.
@@ -14,11 +34,12 @@
 - Added `BlurSpec.box1_h` & `BlurSpec.extra_boxes` (`src/dcomp_blur.rs`, `src/composition.rs`) so all 3 separated boxes receive identical `15px` WinRT `GaussianBlur` + Optical Luminosity Clamp while gaps remain 100% transparent.
 - Upgraded media transport (`src/media.rs`) to **WinRT SMTC** (`TryTogglePlayPauseAsync`, `TrySkipNextAsync`, `TrySkipPreviousAsync`) with `VK_MEDIA` fallback, and added monotonic SMTC progress clamping in `src/main.rs` to eliminate playhead jitter.
 
-### 3. Focused 5-Mode Hub, Top-Center Lock, Click-Through & Silent OLE Shelf
-- **Locked Top-Center & Pruned Scope**: Locked notch to `NotchPlacement::Top` (removed grip drag, edge snap, `-90°/+90°` side dock, `Tasks`, `Capture`, `ScreenTime`, and manual 8-area MemReduct selection in favor of a safe non-stuttering profile: `Working Sets + System File Cache + Low-Priority Standby`).
-- **Home & Shelf Polish**: Expanded Home `Command Hub` into 2 spacious full-height cards (`Now Playing` + `Quick Shelf`) and standardized `Quick Shelf` to a uniform 3-column box grid.
-- **True Click-Through Default (`src/window.rs`)**: `WS_EX_LAYERED | WS_EX_TRANSPARENT` when collapsed (`click_to_open` OFF), `HoverDwellSpeed` (`300ms / 650ms / 1000ms`), `0Hz` hover glow, `Win+Shift+S` `CF_DIB` capture to Shelf, and Stealth Wolf Eyes app icon (`assets/cynotch.ico`).
-- **Verified**: `147/147` tests passing across 14 suites (`cargo test`) and release build deployed to `C:\Users\muhna\.local\bin\cynotch.exe`.
+### 3. Focused 5-Mode Hub, Top-Center Lock, Vertical Shelf & Privacy Hardening
+- **Locked Top-Center & Pruned Scope**: Locked notch to `NotchPlacement::Top` (removed grip drag, edge snap, `-90°/+90°` side dock, `Tasks`, `Capture`, `ScreenTime`, `Dock & Modules`, lyric size/style chips, and manual 8-area MemReduct selection in favor of the non-stuttering **Safe Trim** profile: *"Frees unused RAM safely • keeps apps & tabs intact"*).
+- **Vertical Quick Shelf & Staggered Mode Motion**: Converted `Quick Shelf` to a 3-visible-row vertical stacked list (`draw_shelf_item_row` with kind icon, ellipsized label, hover highlight, `✕` remove button, and vertical scroll), and upgraded all 5 modes (`Home`, `Music`, `Volume`, `MemReduct`, `Shelf`) to `--ray-fast` (`120ms`, `+6px → 0` + fade) per-card/per-box staggered entrances respecting `SPI_GETCLIENTAREAANIMATION`.
+- **Streamlined 4-Section Preferences**: Consolidated Settings into `General & Notch` (including Background Listeners), `Motion & Perf`, `Notifications`, and `Memory & System`, with card stagger on category switch.
+- **Click-Through, Fullscreen Auto-Suppress & Clipboard Privacy (`src/window.rs`)**: `WS_EX_LAYERED | WS_EX_TRANSPARENT` when collapsed (`click_to_open` OFF), `HoverDwellSpeed` defaulting to `Normal (650ms)` (`300ms / 650ms / 1000ms`), conflict-free global hotkeys (`Ctrl+Alt+C` / `Ctrl+Alt+M` / `Ctrl+Alt+S`), `SHQueryUserNotificationState` fullscreen auto-suppress over games/videos, and Windows clipboard privacy format checks (`ExcludeClipboardContentFromMonitorProcessing` & `CanIncludeInClipboardHistory`) skipping password managers.
+- **Verified**: All test suites passing (`cargo test`), visual D2D snapshots verified (`snap_d2d`), and release build deployed to `C:\Users\muhna\.local\bin\cynotch.exe`.
 
 ## v0.3.0 (2026-11-20)
 ### 1. GPU Direct2D + DirectWrite Renderer & 55.9% Binary Size Reduction

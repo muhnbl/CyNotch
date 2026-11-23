@@ -151,7 +151,7 @@ fn main() -> Result<()> {
         );
         vs.sync_preview_settled();
         let (w, h) = (vs.current_width.round() as u32, vs.current_height.round() as u32);
-        let mut r = Renderer::new(w, h);
+        let mut r = Renderer::new(w, h).unwrap();
         snap_transparent(&ctx, &dir, "1_vertical_shelf_transparent", w, h, |c| {
             r.render_d2d(c, &vs, None)
         })?;
@@ -170,7 +170,7 @@ fn main() -> Result<()> {
         );
         ns.sync_preview_settled();
         let (w, h) = (ns.current_width.round() as u32, ns.current_height.round() as u32);
-        let mut r = Renderer::new(w, h);
+        let mut r = Renderer::new(w, h).unwrap();
         snap_transparent(&ctx, &dir, "2_notif_capsule_transparent", w, h, |c| {
             r.render_d2d(c, &ns, None)
         })?;
@@ -186,7 +186,7 @@ fn main() -> Result<()> {
         ms.set_hovered(true);
         ms.sync_preview_settled();
         let (w, h) = (ms.current_width.round() as u32, ms.current_height.round() as u32);
-        let mut r = Renderer::new(w, h);
+        let mut r = Renderer::new(w, h).unwrap();
         snap_transparent(&ctx, &dir, "3_music_transparent", w, h, |c| {
             r.render_d2d(c, &ms, None)
         })?;
@@ -207,7 +207,7 @@ fn main() -> Result<()> {
         let py = 60.0 + 29.0 + 8.0;
         let scale = ms.expanded_scale();
         let (w, h) = (ms.current_width.round() as u32, ms.current_height.round() as u32);
-        let mut r = Renderer::new(w, h);
+        let mut r = Renderer::new(w, h).unwrap();
         snap_transparent(&ctx, &dir, "4_memreduct_hover_transparent", w, h, |c| {
             r.render_d2d(c, &ms, Some((px * scale, py * scale)))
         })?;

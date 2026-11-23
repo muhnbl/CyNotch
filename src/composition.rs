@@ -24,7 +24,7 @@ use windows::Win32::Graphics::Direct3D::{
 use windows::Win32::Graphics::Direct2D::{
     D2D1CreateFactory, D2D1_ANTIALIAS_MODE_PER_PRIMITIVE, D2D1_BITMAP_OPTIONS_CANNOT_DRAW,
     D2D1_BITMAP_OPTIONS_TARGET, D2D1_BITMAP_PROPERTIES1, D2D1_FACTORY_TYPE_SINGLE_THREADED,
-    ID2D1Bitmap1, ID2D1Device, ID2D1DeviceContext, ID2D1Factory1,
+    ID2D1Bitmap1, ID2D1Device, ID2D1DeviceContext, ID2D1Factory1, ID2D1SolidColorBrush,
 };
 use windows::Win32::Graphics::Dwm::{
     DWMWA_USE_HOSTBACKDROPBRUSH, DwmExtendFrameIntoClientArea, DwmSetWindowAttribute,
@@ -203,6 +203,8 @@ struct BlurLayer {
     _mask_surface_brush: CompositionSurfaceBrush,
     mask_w: u32,
     mask_h: u32,
+    mask_target: Option<ID2D1Bitmap1>,
+    white_brush: Option<ID2D1SolidColorBrush>,
 }
 
 pub struct DCompHost {
@@ -285,7 +287,7 @@ fn init_blur_layer(
             Quality: 0,
         },
         BufferUsage: DXGI_USAGE_RENDER_TARGET_OUTPUT,
-        BufferCount: 2,
+        BufferCount: 3,
         Scaling: DXGI_SCALING_STRETCH,
         SwapEffect: DXGI_SWAP_EFFECT_FLIP_SEQUENTIAL,
         AlphaMode: DXGI_ALPHA_MODE_PREMULTIPLIED,
@@ -295,6 +297,8 @@ fn init_blur_layer(
     let mask_surface = unsafe { comp_interop.CreateCompositionSurfaceForSwapChain(&mask_swap_chain)? };
     let mask_surface_brush = compositor.CreateSurfaceBrushWithSurface(&mask_surface)?;
     mask_surface_brush.SetStretch(CompositionStretch::None)?;
+    mask_surface_brush.SetHorizontalAlignmentRatio(0.0)?;
+    mask_surface_brush.SetVerticalAlignmentRatio(0.0)?;
 
     let mask_brush = compositor.CreateMaskBrush()?;
     let effect_brush_base: CompositionBrush = brush.cast()?;
@@ -314,6 +318,8 @@ fn init_blur_layer(
         _mask_surface_brush: mask_surface_brush,
         mask_w: mw,
         mask_h: mh,
+        mask_target: None,
+        white_brush: None,
     })
 }
 
@@ -423,7 +429,7 @@ impl DCompHost {
             _surface_brush: surface_brush,
             width: w,
             height: h,
-            bgra_scratch: vec![0u8; (w as usize) * (h as usize) * 4],
+            bgra_scratch: Vec::new(),
             prev_dirty: None,
             d2d_target: None,
             last_blur: None,
@@ -507,53 +513,91 @@ impl DCompHost {
         }
 
         if prev.is_none_or(|p| {
-            (p.w, p.h, p.radii, p.box1_h, p.extra_boxes)
-                != (s.w, s.h, s.radii, s.box1_h, s.extra_boxes)
+            (
+                (p.x * 2.0).round() as i32,
+                (p.y * 2.0).round() as i32,
+                (p.w * 2.0).round() as i32,
+                (p.h * 2.0).round() as i32,
+                p.radii,
+                p.box1_h,
+                p.extra_boxes,
+            ) != (
+                (s.x * 2.0).round() as i32,
+                (s.y * 2.0).round() as i32,
+                (s.w * 2.0).round() as i32,
+                (s.h * 2.0).round() as i32,
+                s.radii,
+                s.box1_h,
+                s.extra_boxes,
+            )
         }) {
-            let mw = w.ceil().max(1.0) as u32;
-            let mh = h.ceil().max(1.0) as u32;
+            let need_w = (s.x + w).ceil().max(1.0) as u32;
+            let need_h = (s.y + h).ceil().max(1.0) as u32;
+            let cap_w = self.width.max(need_w);
+            let cap_h = self.height.max(need_h);
+            let need_grow = need_w > layer.mask_w || need_h > layer.mask_h;
+            let need_trim = layer.mask_w > cap_w + 360 || layer.mask_h > cap_h + 360;
+            let mut visual_resized = false;
             let ok = unsafe {
-                let resized = if layer.mask_w != mw || layer.mask_h != mh {
+                let resized = if need_grow || need_trim {
+                    // Release cached D2D bitmap bound to backbuffer 0 before ResizeBuffers.
+                    layer.mask_target = None;
+                    let target_mw = if need_grow { cap_w.max(layer.mask_w) } else { cap_w };
+                    let target_mh = if need_grow { cap_h.max(layer.mask_h) } else { cap_h };
                     layer
                         .mask_swap_chain
                         .ResizeBuffers(
-                            2,
-                            mw,
-                            mh,
+                            3,
+                            target_mw,
+                            target_mh,
                             DXGI_FORMAT_B8G8R8A8_UNORM,
                             DXGI_SWAP_CHAIN_FLAG(0),
                         )
                         .map(|_| {
-                            layer.mask_w = mw;
-                            layer.mask_h = mh;
+                            layer.mask_w = target_mw;
+                            layer.mask_h = target_mh;
+                            visual_resized = true;
                         })
                 } else {
                     Ok(())
                 };
                 let draw_res = resized.and_then(|()| {
-                    let surface: IDXGISurface = layer.mask_swap_chain.GetBuffer(0)?;
-                    let props = D2D1_BITMAP_PROPERTIES1 {
-                        pixelFormat: D2D1_PIXEL_FORMAT {
-                            format: DXGI_FORMAT_B8G8R8A8_UNORM,
-                            alphaMode: D2D1_ALPHA_MODE_PREMULTIPLIED,
-                        },
-                        dpiX: 96.0,
-                        dpiY: 96.0,
-                        bitmapOptions: D2D1_BITMAP_OPTIONS_TARGET | D2D1_BITMAP_OPTIONS_CANNOT_DRAW,
-                        colorContext: std::mem::ManuallyDrop::new(None),
-                    };
-                    let mask_bmp: ID2D1Bitmap1 =
-                        self.d2d_context.CreateBitmapFromDxgiSurface(&surface, Some(&props))?;
+                    if layer.mask_target.is_none() {
+                        let surface: IDXGISurface = layer.mask_swap_chain.GetBuffer(0)?;
+                        let props = D2D1_BITMAP_PROPERTIES1 {
+                            pixelFormat: D2D1_PIXEL_FORMAT {
+                                format: DXGI_FORMAT_B8G8R8A8_UNORM,
+                                alphaMode: D2D1_ALPHA_MODE_PREMULTIPLIED,
+                            },
+                            dpiX: 96.0,
+                            dpiY: 96.0,
+                            bitmapOptions: D2D1_BITMAP_OPTIONS_TARGET
+                                | D2D1_BITMAP_OPTIONS_CANNOT_DRAW,
+                            colorContext: std::mem::ManuallyDrop::new(None),
+                        };
+                        let bmp: ID2D1Bitmap1 = self
+                            .d2d_context
+                            .CreateBitmapFromDxgiSurface(&surface, Some(&props))?;
+                        layer.mask_target = Some(bmp);
+                    }
+                    if layer.white_brush.is_none() {
+                        let white = D2D1_COLOR_F {
+                            r: 1.0,
+                            g: 1.0,
+                            b: 1.0,
+                            a: 1.0,
+                        };
+                        layer.white_brush =
+                            Some(self.d2d_context.CreateSolidColorBrush(&white, None)?);
+                    }
+                    let mask_bmp = layer.mask_target.as_ref().unwrap();
+                    let white_brush = layer.white_brush.as_ref().unwrap();
                     let primary_h = s.box1_h.unwrap_or(h).clamp(1.0, h);
-                    let path = build_d2d_rounded_path(&self.d2d_factory, 0.0, 0.0, w, primary_h, s.radii)?;
-                    let white = D2D1_COLOR_F {
-                        r: 1.0,
-                        g: 1.0,
-                        b: 1.0,
-                        a: 1.0,
-                    };
-                    let white_brush = self.d2d_context.CreateSolidColorBrush(&white, None)?;
-                    self.d2d_context.SetTarget(&mask_bmp);
+                    // Draw mask in full-canvas coordinates at (s.x, s.y) so `layer.visual`
+                    // keeps a FIXED Size & Offset during expand/close animations — preventing
+                    // dwm.exe from reallocating HostBackdropBrush blur targets every frame!
+                    let path = build_d2d_rounded_path(&self.d2d_factory, s.x, s.y, w, primary_h, s.radii)?;
+                    self.d2d_context.SetTarget(mask_bmp);
                     self.d2d_context.BeginDraw();
                     self.d2d_context.SetTransform(&Matrix3x2::identity());
                     self.d2d_context
@@ -564,19 +608,19 @@ impl DCompHost {
                         b: 0.0,
                         a: 0.0,
                     }));
-                    self.d2d_context.FillGeometry(&path, &white_brush, None);
+                    self.d2d_context.FillGeometry(&path, white_brush, None);
                     if let Some(extras) = s.extra_boxes {
                         for (bx, by, bw, bh, br) in extras {
                             if bw > 0.5 && bh > 0.5 {
                                 let ep = build_d2d_rounded_path(
                                     &self.d2d_factory,
-                                    bx,
-                                    by,
+                                    s.x + bx,
+                                    s.y + by,
                                     bw,
                                     bh,
                                     (br, br, br, br),
                                 )?;
-                                self.d2d_context.FillGeometry(&ep, &white_brush, None);
+                                self.d2d_context.FillGeometry(&ep, white_brush, None);
                             }
                         }
                     }
@@ -600,21 +644,29 @@ impl DCompHost {
                 self.last_blur = None;
                 return false;
             }
+            if visual_resized || prev.is_none() {
+                let _ = layer.visual.SetOffset(Vector3 {
+                    X: 0.0,
+                    Y: 0.0,
+                    Z: 0.0,
+                });
+                let _ = layer.visual.SetSize(Vector2 {
+                    X: layer.mask_w as f32,
+                    Y: layer.mask_h as f32,
+                });
+            }
         }
 
-        if prev.is_none_or(|p| (p.x, p.y) != (s.x, s.y)) {
+        if prev.is_none() {
             let _ = layer.visual.SetOffset(Vector3 {
-                X: s.x,
-                Y: s.y,
+                X: 0.0,
+                Y: 0.0,
                 Z: 0.0,
             });
-        }
-        if prev.is_none_or(|p| (p.w, p.h) != (s.w, s.h)) {
-            let mw = w.ceil().max(1.0) as f32;
-            let mh = h.ceil().max(1.0) as f32;
-            let _ = layer.visual.SetSize(Vector2 { X: mw, Y: mh });
-        }
-        if prev.is_none() {
+            let _ = layer.visual.SetSize(Vector2 {
+                X: layer.mask_w as f32,
+                Y: layer.mask_h as f32,
+            });
             let _ = layer.visual.SetIsVisible(true);
         }
         self.last_blur = Some(s);
@@ -679,7 +731,7 @@ impl DCompHost {
             self.d2d_target = None;
             self.swap_chain
                 .ResizeBuffers(
-                    2,
+                    3,
                     w,
                     h,
                     DXGI_FORMAT_B8G8R8A8_UNORM,
@@ -697,13 +749,6 @@ impl DCompHost {
         };
         self.root_visual.SetSize(sz)?;
         self.content_visual.SetSize(sz)?;
-        let needed = (w as usize) * (h as usize) * 4;
-        if self.bgra_scratch.len() != needed {
-            self.bgra_scratch.resize(needed, 0);
-            if needed < self.bgra_scratch.capacity() {
-                self.bgra_scratch.shrink_to_fit();
-            }
-        }
         self.prev_dirty = None;
         self.bind_d2d_target()?;
         Ok(())
@@ -731,6 +776,9 @@ impl DCompHost {
         let expected = (self.width as usize) * (self.height as usize) * 4;
         if rgba_data.len() < expected {
             return Err(windows::core::Error::from(E_INVALIDARG));
+        }
+        if self.bgra_scratch.len() != expected {
+            self.bgra_scratch.resize(expected, 0);
         }
 
         let clamped_box = dirty.and_then(|(dx, dy, dw, dh)| {
@@ -846,7 +894,7 @@ fn is_device_lost_hresult(hr: windows::core::HRESULT) -> bool {
 
 fn swizzle_rgba_to_bgra(dst: &mut [u8], src: &[u8]) {
     for (d, s) in dst
-        .chunks_exact_mut(4)
+        .as_chunks_mut::<4>().0.iter_mut()
         .zip(src.chunks_exact(4))
     {
         let px = u32::from_le_bytes(s.try_into().unwrap());

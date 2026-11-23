@@ -426,8 +426,8 @@ impl EdgeGlowOverlay {
             self.dcomp = DCompHost::new(self.hwnd, w, h).ok();
         }
         let mut rendered = false;
-        if let Some(ref mut host) = self.dcomp {
-            if host.resize(w, h).is_ok() {
+        if let Some(ref mut host) = self.dcomp
+            && host.resize(w, h).is_ok() {
                 if self.cache.is_none() {
                     self.cache = D2DResourceCache::new(host.d2d_context()).ok();
                 }
@@ -438,7 +438,6 @@ impl EdgeGlowOverlay {
                     rendered = host.end_d2d_draw_and_present().is_ok();
                 }
             }
-        }
         // If rendering failed (e.g. GPU device reset), attempt clean single-pass recreation
         if !rendered {
             self.dcomp = None;

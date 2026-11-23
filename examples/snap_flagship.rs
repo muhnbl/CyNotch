@@ -124,7 +124,7 @@ fn main() -> Result<()> {
     ms.sync_preview_settled();
 
     let (w, h) = (ms.current_width.round() as u32, ms.current_height.round() as u32);
-    let mut r = Renderer::new(w, h);
+    let mut r = Renderer::new(w, h).unwrap();
 
     let p1 = std::path::PathBuf::from(r"C:\Users\muhna\.gemini\antigravity\scratch\CyNotch-v0.3.1\cynotch_flagship_music.png");
     let p2 = std::path::PathBuf::from(r"C:\Users\muhna\.gemini\antigravity\brain\78655c5b-3932-4943-ac62-62da1685b003\cynotch_flagship_music.png");

@@ -15,6 +15,7 @@ use windows::Win32::Graphics::Imaging::{
 };
 use windows::Win32::System::Com::{
     CLSCTX_INPROC_SERVER, COINIT_APARTMENTTHREADED, CoCreateInstance, CoInitializeEx,
+    CoUninitialize,
 };
 use windows::core::{GUID, HSTRING};
 use windows::Win32::UI::WindowsAndMessaging::{
@@ -227,7 +228,7 @@ pub fn save_bgra_png(path: &std::path::Path, w: u32, h: u32, bgra: &[u8]) -> boo
         return false;
     }
     let mut opaque = bgra[..(w as usize) * (h as usize) * 4].to_vec();
-    for px in opaque.chunks_exact_mut(4) {
+    for px in opaque.as_chunks_mut::<4>().0 {
         px[3] = 255;
     }
     save_bgra_png_alpha(path, w, h, &opaque)
@@ -413,37 +414,15 @@ fn render_svg_thumbnail_pbgra(path: &std::path::Path, max_dim: u32) -> Option<(u
     Some((w, h, buf))
 }
 
-/// Decodes any local image file (`png`, `jpg`, `jpeg`, `webp`, `bmp`, `gif`, `ico`, `tif`, `tiff`, `svg`)
-/// into a downscaled premultiplied 32-bit `PBGRA` thumbnail buffer (`(width, height, bytes)`).
-pub fn load_image_thumbnail_pbgra(raw_path: &str, max_dim: u32) -> Option<(u32, u32, Vec<u8>)> {
-    let trimmed = raw_path.trim();
-    if trimmed.is_empty() {
-        return None;
-    }
-    let path = std::path::Path::new(trimmed);
-    if !path.is_file() {
-        return None;
-    }
-    if path
-        .extension()
-        .and_then(|e| e.to_str())
-        .is_some_and(|e| e.eq_ignore_ascii_case("svg"))
-    {
-        return render_svg_thumbnail_pbgra(path, max_dim);
-    }
-
+unsafe fn decode_wic_stream_pbgra(
+    factory: &IWICImagingFactory,
+    stream: &windows::Win32::Graphics::Imaging::IWICStream,
+    max_dim: u32,
+) -> Option<(u32, u32, Vec<u8>)> {
     unsafe {
-        let _ = CoInitializeEx(None, COINIT_APARTMENTTHREADED);
-        let factory: IWICImagingFactory =
-            CoCreateInstance(&CLSID_WICImagingFactory, None, CLSCTX_INPROC_SERVER).ok()?;
-        let stream = factory.CreateStream().ok()?;
-        let wide_path = HSTRING::from(path.as_os_str());
-        stream
-            .InitializeFromFilename(&wide_path, GENERIC_READ.0)
-            .ok()?;
         let decoder = factory
             .CreateDecoderFromStream(
-                &stream,
+                stream,
                 std::ptr::null::<GUID>(),
                 WICDecodeMetadataCacheOnDemand,
             )
@@ -498,6 +477,65 @@ pub fn load_image_thumbnail_pbgra(raw_path: &str, max_dim: u32) -> Option<(u32, 
             .CopyPixels(std::ptr::null(), stride, &mut pbgra)
             .ok()?;
         Some((dst_w, dst_h, pbgra))
+    }
+}
+
+struct ComStaGuard(bool);
+impl Drop for ComStaGuard {
+    fn drop(&mut self) {
+        if self.0 {
+            unsafe {
+                CoUninitialize();
+            }
+        }
+    }
+}
+
+/// Decodes in-memory encoded image bytes (PNG/JPEG/BMP/WebP/etc., e.g. SMTC album cover art)
+/// into a downscaled premultiplied 32-bit `PBGRA` thumbnail buffer (`(width, height, bytes)`).
+pub fn decode_image_bytes_thumbnail_pbgra(bytes: &[u8], max_dim: u32) -> Option<(u32, u32, Vec<u8>)> {
+    if bytes.is_empty() || bytes.len() > 16 * 1024 * 1024 {
+        return None;
+    }
+    unsafe {
+        let _com = ComStaGuard(CoInitializeEx(None, COINIT_APARTMENTTHREADED).is_ok());
+        let factory: IWICImagingFactory =
+            CoCreateInstance(&CLSID_WICImagingFactory, None, CLSCTX_INPROC_SERVER).ok()?;
+        let stream = factory.CreateStream().ok()?;
+        stream.InitializeFromMemory(bytes).ok()?;
+        decode_wic_stream_pbgra(&factory, &stream, max_dim)
+    }
+}
+
+/// Decodes any local image file (`png`, `jpg`, `jpeg`, `webp`, `bmp`, `gif`, `ico`, `tif`, `tiff`, `svg`)
+/// into a downscaled premultiplied 32-bit `PBGRA` thumbnail buffer (`(width, height, bytes)`).
+pub fn load_image_thumbnail_pbgra(raw_path: &str, max_dim: u32) -> Option<(u32, u32, Vec<u8>)> {
+    let trimmed = raw_path.trim();
+    if trimmed.is_empty() {
+        return None;
+    }
+    let path = std::path::Path::new(trimmed);
+    if !path.is_file() {
+        return None;
+    }
+    if path
+        .extension()
+        .and_then(|e| e.to_str())
+        .is_some_and(|e| e.eq_ignore_ascii_case("svg"))
+    {
+        return render_svg_thumbnail_pbgra(path, max_dim);
+    }
+
+    unsafe {
+        let _com = ComStaGuard(CoInitializeEx(None, COINIT_APARTMENTTHREADED).is_ok());
+        let factory: IWICImagingFactory =
+            CoCreateInstance(&CLSID_WICImagingFactory, None, CLSCTX_INPROC_SERVER).ok()?;
+        let stream = factory.CreateStream().ok()?;
+        let wide_path = HSTRING::from(path.as_os_str());
+        stream
+            .InitializeFromFilename(&wide_path, GENERIC_READ.0)
+            .ok()?;
+        decode_wic_stream_pbgra(&factory, &stream, max_dim)
     }
 }
 
@@ -748,7 +786,7 @@ pub fn read_clipboard_dib_to_shelf(owner: HWND) -> Option<(String, String)> {
                                     0usize
                                 };
                                 let pixel_offset = (hdr.biSize as usize).saturating_add(extra_masks);
-                                let src_stride = (((w as usize) * (bpp as usize) + 31) / 32) * 4;
+                                let src_stride = ((w as usize) * (bpp as usize)).div_ceil(32) * 4;
                                 let needed = pixel_offset
                                     .saturating_add(src_stride.saturating_mul(h_abs as usize));
                                 if needed <= byte_size {
@@ -793,6 +831,32 @@ pub fn read_clipboard_dib_to_shelf(owner: HWND) -> Option<(String, String)> {
             }
         }
         let (w, h, bgra) = extracted?;
+        // Deduplicate Windows Snipping Tool double WM_CLIPBOARDUPDATE events
+        // (same DIB pixels emitted ~50–300ms apart with different timestamps).
+        let mut hash: u64 = 0xcbf29ce484222325;
+        hash ^= (w as u64) | ((h as u64) << 32);
+        hash = hash.wrapping_mul(0x100000001b3);
+        let step = (bgra.len() / 4096).max(1);
+        let mut i = 0usize;
+        while i < bgra.len() {
+            hash ^= bgra[i] as u64;
+            hash = hash.wrapping_mul(0x100000001b3);
+            i += step;
+        }
+        static LAST_DIB_SIG: std::sync::Mutex<Option<(u64, usize, std::time::Instant)>> =
+            std::sync::Mutex::new(None);
+        let now = std::time::Instant::now();
+        if let Ok(mut guard) = LAST_DIB_SIG.lock() {
+            if let Some((prev_hash, prev_len, prev_at)) = *guard
+                && prev_hash == hash
+                && prev_len == bgra.len()
+                && now.duration_since(prev_at) < std::time::Duration::from_secs(3)
+            {
+                return None;
+            }
+            *guard = Some((hash, bgra.len(), now));
+        }
+
         let dir = crate::models::appdata_dir().join("shelf-cache");
         let _ = std::fs::create_dir_all(&dir);
         let stamp = format_capture_stamp(local_now());

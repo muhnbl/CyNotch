@@ -1089,7 +1089,7 @@ impl SystemNotificationBridge {
                 app_name.clone()
             };
             let subtitle = if lines.len() > 1 {
-                lines[1..].join(" • ")
+                lines[1..].join("  -  ")
             } else {
                 format!("New notification from {}", app_name)
             };

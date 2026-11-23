@@ -20,8 +20,9 @@ fn hover_dwell_smoothstep_advances_to_one_at_650ms_and_stays_0hz_without_glow() 
     assert!(state.is_hover_pending);
     assert_eq!(state.hover_dwell_t, 0.0);
     assert_eq!(state.anim_edge_glow_t, 0.0);
-    // Hover dwell without edge glow stays 0Hz until expand triggers
-    assert_eq!(state.needs_animation_timer_ms(), None);
+    // Hover dwell must keep the animation timer alive so hover_dwell_t (and
+    // therefore the thermal aura) actually advances before expansion.
+    assert!(state.needs_animation_timer_ms().is_some());
 
     // Halfway (325ms): smoothstep(0.5) == 0.5
     let changed_mid = state.update_hover_dwell(t0 + Duration::from_millis(AppState::HOVER_DWELL_MS / 2));
@@ -56,12 +57,19 @@ fn hover_dwell_smoothstep_advances_to_one_at_650ms_and_stays_0hz_without_glow() 
         state.update_animation(0.016);
     }
     assert_eq!(state.anim_edge_glow_t, 0.0);
+    // Afterglow keeps the ticker alive briefly so the sweep fades out smoothly.
+    assert!(state.needs_animation_timer_ms().is_some());
+    for _ in 0..40 {
+        state.update_animation(0.016);
+    }
+    assert_eq!(state.hover_afterglow, 0.0);
     assert_eq!(state.needs_animation_timer_ms(), None);
 }
 
 #[test]
 fn hover_dwell_resets_when_expanded() {
     let mut state = AppState::new_for_preview();
+    state.windows_animations_enabled = true;
     let t0 = Instant::now();
     state.begin_hover_dwell(t0);
     state.update_hover_dwell(t0 + Duration::from_millis(450));
@@ -70,7 +78,14 @@ fn hover_dwell_resets_when_expanded() {
     state.set_hovered(true);
     assert!(!state.is_hover_pending);
     assert_eq!(state.hover_dwell_t, 0.0);
+    assert_eq!(state.hover_afterglow, 0.0);
+    assert_eq!(state.hover_sweep_x, 0.0);
     assert!(state.hover_dwell_start.is_none());
+    // Expanding must run on the high-res active cadence, never throttled to 25ms.
+    assert_eq!(
+        state.needs_animation_timer_ms(),
+        Some(state.desired_active_interval_ms())
+    );
 }
 
 #[test]

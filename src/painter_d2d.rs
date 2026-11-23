@@ -385,7 +385,7 @@ impl PathBuilder {
     /// `k = 0.55228475 * r` is the control point offset for a circular approximation.
     pub fn from_circle(cx: f32, cy: f32, r: f32) -> Option<Path> {
         if r <= 0.0 { return None; }
-        let k = 0.55228475 * r;
+        let k = 0.5522848 * r;
         let mut b = PathBuilder::new();
         b.move_to(cx, cy - r);
         b.cubic_to(cx + k, cy - r, cx + r, cy - k, cx + r, cy);
@@ -394,6 +394,12 @@ impl PathBuilder {
         b.cubic_to(cx - r, cy - k, cx - k, cy - r, cx, cy - r);
         b.close();
         b.finish()
+    }
+}
+
+impl Default for PathBuilder {
+    fn default() -> Self {
+        Self::new()
     }
 }
 
@@ -688,7 +694,10 @@ fn pack_rgba8(c: D2D1_COLOR_F) -> u32 {
     let r = (c.r.clamp(0.0, 1.0) * 255.0).round() as u32;
     let g = (c.g.clamp(0.0, 1.0) * 255.0).round() as u32;
     let b = (c.b.clamp(0.0, 1.0) * 255.0).round() as u32;
-    let a = (c.a.clamp(0.0, 1.0) * 255.0).round() as u32;
+    // Quantize alpha to 1/16: animated fades would otherwise create a new
+    // gradient brush on every frame (255 distinct keys per fade), thrashing the
+    // 512-entry brush cache. 16 steps is imperceptible on soft glows.
+    let a = ((c.a.clamp(0.0, 1.0) * 16.0).round() as u32 * 17).min(255);
     (r << 24) | (g << 16) | (b << 8) | a
 }
 
@@ -743,6 +752,56 @@ impl D2DResourceCache {
             stroke_style_round: RefCell::new(None),
             d2d_factory: factory,
         })
+    }
+
+    /// Retrieves or uploads a cached `ID2D1Bitmap1` for an in-memory premultiplied PBGRA cover art buffer.
+    pub fn memory_thumbnail(
+        &self,
+        ctx: &ID2D1DeviceContext,
+        cache_key: &str,
+        w: u32,
+        h: u32,
+        pbgra: &[u8],
+    ) -> Option<(windows::Win32::Graphics::Direct2D::ID2D1Bitmap1, u32, u32)> {
+        if w == 0 || h == 0 || pbgra.len() < (w as usize) * (h as usize) * 4 {
+            return None;
+        }
+        let mut map = self.thumb_bitmaps.borrow_mut();
+        if let Some(cached) = map.get(cache_key) {
+            return cached.clone();
+        }
+        if map.len() >= 24 {
+            map.clear();
+        }
+        use windows::Win32::Graphics::Direct2D::Common::{
+            D2D1_ALPHA_MODE_PREMULTIPLIED, D2D1_PIXEL_FORMAT, D2D_SIZE_U,
+        };
+        use windows::Win32::Graphics::Direct2D::{
+            D2D1_BITMAP_OPTIONS_NONE, D2D1_BITMAP_PROPERTIES1,
+        };
+        use windows::Win32::Graphics::Dxgi::Common::DXGI_FORMAT_B8G8R8A8_UNORM;
+        let props = D2D1_BITMAP_PROPERTIES1 {
+            pixelFormat: D2D1_PIXEL_FORMAT {
+                format: DXGI_FORMAT_B8G8R8A8_UNORM,
+                alphaMode: D2D1_ALPHA_MODE_PREMULTIPLIED,
+            },
+            dpiX: 96.0,
+            dpiY: 96.0,
+            bitmapOptions: D2D1_BITMAP_OPTIONS_NONE,
+            colorContext: ManuallyDrop::new(None),
+        };
+        let loaded = unsafe {
+            ctx.CreateBitmap(
+                D2D_SIZE_U { width: w, height: h },
+                Some(pbgra.as_ptr() as *const _),
+                w * 4,
+                &props,
+            )
+            .ok()
+            .map(|bmp| (bmp, w, h))
+        };
+        map.insert(cache_key.to_string(), loaded.clone());
+        loaded
     }
 
     /// Loads or retrieves a cached thumbnail `ID2D1Bitmap1` (and its pixel dimensions) for a shelf image path.
@@ -825,7 +884,7 @@ impl D2DResourceCache {
         if let Some(g) = map.get(&path.hash) {
             return Ok(g.clone());
         }
-        if map.len() >= 512 {
+        if map.len() >= 1024 {
             map.clear();
         }
         let geom = path_to_d2d_geometry(&self.d2d_factory, path)?;
@@ -840,7 +899,7 @@ impl D2DResourceCache {
         if let Some(b) = map.get(&key) {
             return Ok(b.clone());
         }
-        if map.len() >= 512 {
+        if map.len() >= 1024 {
             map.clear();
         }
         let b: ID2D1SolidColorBrush = unsafe { ctx.CreateSolidColorBrush(&col, None)? };
@@ -869,7 +928,7 @@ impl D2DResourceCache {
         if let Some(b) = map.get(&key) {
             return Ok(b.clone());
         }
-        if map.len() >= 512 {
+        if map.len() >= 1024 {
             map.clear();
         }
         let collection = create_stops(ctx, c0, c1)?;
@@ -1284,6 +1343,50 @@ impl<'a> D2DPainter<'a> {
         Ok(())
     }
 
+    /// Fills a rounded rectangle with a 3-stop horizontal linear gradient (left to right).
+    #[allow(clippy::too_many_arguments)]
+    pub fn rrect_horizontal_gradient_3stop(
+        &mut self,
+        x: f32,
+        y: f32,
+        w: f32,
+        h: f32,
+        r: f32,
+        mut c0: D2D1_COLOR_F,
+        mut c_mid: D2D1_COLOR_F,
+        mut c1: D2D1_COLOR_F,
+        mid_pos: f32,
+    ) -> Result<()> {
+        c0.a *= self.global_alpha;
+        c_mid.a *= self.global_alpha;
+        c1.a *= self.global_alpha;
+        let (dx, dy) = self.tf_pt(x, y);
+        let (dw, dh) = (w * self.s, h * self.s);
+        let dr = r * self.s;
+        let max_r = (dw.min(dh) * 0.5).max(0.0);
+        let rr = D2D1_ROUNDED_RECT {
+            rect: D2D_RECT_F {
+                left: dx,
+                top: dy,
+                right: dx + dw,
+                bottom: dy + dh,
+            },
+            radiusX: dr.clamp(0.0, max_r),
+            radiusY: dr.clamp(0.0, max_r),
+        };
+        let brush = self.cache.linear_brush_3stop(
+            self.ctx,
+            c0,
+            c_mid,
+            c1,
+            mid_pos,
+            D2D_POINT_2F { x: dx, y: dy },
+            D2D_POINT_2F { x: dx + dw, y: dy },
+        )?;
+        unsafe { self.ctx.FillRoundedRectangle(&rr, &brush) };
+        Ok(())
+    }
+
     /// Fills a radial gradient glow (circle).
     pub fn radial_glow(
         &mut self,
@@ -1678,10 +1781,10 @@ mod tests {
     #[test]
     fn test_transform_from_rotate() {
         let t = Transform::from_rotate(90.0);
-        assert!((t.sx - 0.0).abs() < 1e-5); // cos(90°) ≈ 0
-        assert!((t.ky - 1.0).abs() < 1e-5); // sin(90°) ≈ 1
-        assert!((t.kx - (-1.0)).abs() < 1e-5); // -sin(90°) ≈ -1
-        assert!((t.sy - 0.0).abs() < 1e-5); // cos(90°) ≈ 0
+        assert!((t.sx - 0.0).abs() < 1e-5); // cos(90deg) ~ 0
+        assert!((t.ky - 1.0).abs() < 1e-5); // sin(90deg) ~ 1
+        assert!((t.kx - (-1.0)).abs() < 1e-5); // -sin(90deg) ~ -1
+        assert!((t.sy - 0.0).abs() < 1e-5); // cos(90deg) ~ 0
         assert_eq!(t.tx, 0.0);
         assert_eq!(t.ty, 0.0);
 
@@ -1863,7 +1966,7 @@ impl<'a> D2DPainter<'a> {
         if measured <= scaled_max {
             return (std::borrow::Cow::Borrowed(text), false);
         }
-        let ellipsis = "…";
+        let ellipsis = "...";
         let ellipsis_w = fonts.measure(ellipsis, scaled_size, weight).0;
         let target = scaled_max - ellipsis_w;
         if target <= 0.0 {
@@ -1872,7 +1975,7 @@ impl<'a> D2DPainter<'a> {
         let mut lo = 0;
         let mut hi = text.chars().count();
         while lo < hi {
-            let mid = (lo + hi + 1) / 2;
+            let mid = (lo + hi).div_ceil(2);
             let substr: String = text.chars().take(mid).collect();
             if fonts.measure(&substr, scaled_size, weight).0 <= target {
                 lo = mid;
@@ -2719,6 +2822,7 @@ pub struct PainterD2D<'a> {
     pub type_scale: crate::models::TypeScale,
     // Clip state
     clip_bounds: Option<(f32, f32, f32, f32)>,
+    base_transform: windows::Foundation::Numerics::Matrix3x2,
 }
 
 impl<'a> PainterD2D<'a> {
@@ -2756,6 +2860,7 @@ impl<'a> PainterD2D<'a> {
             frosted_opacity_pct,
             type_scale,
             clip_bounds: None,
+            base_transform: windows::Foundation::Numerics::Matrix3x2::identity(),
         }
     }
 
@@ -2858,23 +2963,17 @@ impl<'a> PainterD2D<'a> {
         );
     }
 
-    /// Draws a decoded image thumbnail (`object-fit: cover` center-cropped) inside a rounded rectangle `(x, y, w, h, r)`.
-    /// Returns `true` if a real bitmap was drawn from disk, or `false` if the caller should draw a fallback graphic.
-    pub fn draw_shelf_thumbnail(
+    fn draw_bitmap_cover_clipped(
         &mut self,
-        path: &str,
+        bmp: windows::Win32::Graphics::Direct2D::ID2D1Bitmap1,
+        bw: u32,
+        bh: u32,
         x: f32,
         y: f32,
         w: f32,
         h: f32,
         r: f32,
     ) -> bool {
-        if w <= 1.0 || h <= 1.0 {
-            return false;
-        }
-        let Some((bmp, bw, bh)) = self.cache.shelf_thumbnail(self.ctx, path) else {
-            return false;
-        };
         if bw == 0 || bh == 0 {
             return false;
         }
@@ -2930,6 +3029,125 @@ impl<'a> PainterD2D<'a> {
         }
         self.pop_clip();
         true
+    }
+
+    /// Applies a subtle scale transform around logical center `(cx, cy)` for **Blur-Fade Rise**
+    /// (`0.96 -> 1.0`). Always pair with `pop_scale_transform()`.
+    pub fn push_scale_about(&self, cx: f32, cy: f32, scale: f32) {
+        if (scale - 1.0).abs() < 0.0005 {
+            return;
+        }
+        let pcx = self.origin_x + cx * self.s;
+        let pcy = self.origin_y + cy * self.s;
+        let tf = windows::Foundation::Numerics::Matrix3x2 {
+            M11: scale,
+            M12: 0.0,
+            M21: 0.0,
+            M22: scale,
+            M31: pcx * (1.0 - scale),
+            M32: pcy * (1.0 - scale),
+        };
+        let combined = Self::mul_m3x2(tf, self.base_transform);
+        unsafe {
+            self.ctx.SetTransform(&combined);
+        }
+    }
+
+    /// Restores the Direct2D transform to `base_transform` after `push_scale_about`.
+    pub fn pop_scale_transform(&self) {
+        unsafe {
+            self.ctx.SetTransform(&self.base_transform);
+        }
+    }
+
+    /// Sets a GPU base transform (e.g. expand/close scale) that composes with all
+    /// nested `push_scale_about` and path/rotated-text transforms.
+    pub fn set_base_transform(&mut self, tf: windows::Foundation::Numerics::Matrix3x2) {
+        self.base_transform = tf;
+        unsafe {
+            self.ctx.SetTransform(&tf);
+        }
+    }
+
+    #[inline]
+    fn mul_m3x2(
+        a: windows::Foundation::Numerics::Matrix3x2,
+        b: windows::Foundation::Numerics::Matrix3x2,
+    ) -> windows::Foundation::Numerics::Matrix3x2 {
+        windows::Foundation::Numerics::Matrix3x2 {
+            M11: a.M11 * b.M11 + a.M12 * b.M21,
+            M12: a.M11 * b.M12 + a.M12 * b.M22,
+            M21: a.M21 * b.M11 + a.M22 * b.M21,
+            M22: a.M21 * b.M12 + a.M22 * b.M22,
+            M31: a.M31 * b.M11 + a.M32 * b.M21 + b.M31,
+            M32: a.M31 * b.M12 + a.M32 * b.M22 + b.M32,
+        }
+    }
+
+    /// Pushes a zero-allocation GPU axis-aligned scissor clip in logical coordinates.
+    pub fn push_rect_clip(&self, x: f32, y: f32, w: f32, h: f32) {
+        let rc = windows::Win32::Graphics::Direct2D::Common::D2D_RECT_F {
+            left: self.origin_x + x * self.s,
+            top: self.origin_y + y * self.s,
+            right: self.origin_x + (x + w) * self.s,
+            bottom: self.origin_y + (y + h) * self.s,
+        };
+        unsafe {
+            self.ctx.PushAxisAlignedClip(
+                &rc,
+                windows::Win32::Graphics::Direct2D::D2D1_ANTIALIAS_MODE_PER_PRIMITIVE,
+            );
+        }
+    }
+
+    /// Pops a scissor clip pushed by `push_rect_clip`.
+    pub fn pop_rect_clip(&self) {
+        unsafe {
+            self.ctx.PopAxisAlignedClip();
+        }
+    }
+
+    /// Draws an in-memory media album cover (`object-fit: cover` center-cropped) inside `(x, y, w, h, r)`.
+    pub fn draw_media_cover(
+        &mut self,
+        cover: &crate::models::CoverArt,
+        x: f32,
+        y: f32,
+        w: f32,
+        h: f32,
+        r: f32,
+    ) -> bool {
+        if w <= 1.0 || h <= 1.0 {
+            return false;
+        }
+        let cache_key = format!("__media_cover_{}", cover.key);
+        let Some((bmp, bw, bh)) = self
+            .cache
+            .memory_thumbnail(self.ctx, &cache_key, cover.w, cover.h, &cover.pbgra)
+        else {
+            return false;
+        };
+        self.draw_bitmap_cover_clipped(bmp, bw, bh, x, y, w, h, r)
+    }
+
+    /// Draws a decoded image thumbnail (`object-fit: cover` center-cropped) inside a rounded rectangle `(x, y, w, h, r)`.
+    /// Returns `true` if a real bitmap was drawn from disk, or `false` if the caller should draw a fallback graphic.
+    pub fn draw_shelf_thumbnail(
+        &mut self,
+        path: &str,
+        x: f32,
+        y: f32,
+        w: f32,
+        h: f32,
+        r: f32,
+    ) -> bool {
+        if w <= 1.0 || h <= 1.0 {
+            return false;
+        }
+        let Some((bmp, bw, bh)) = self.cache.shelf_thumbnail(self.ctx, path) else {
+            return false;
+        };
+        self.draw_bitmap_cover_clipped(bmp, bw, bh, x, y, w, h, r)
     }
 
     /// Atomic button primitive supporting `PrimaryFill`, `PrimaryOutline`, and `TextOnly`
@@ -3068,12 +3286,18 @@ impl<'a> PainterD2D<'a> {
         w: f32,
         h: f32,
         r: f32,
-        _c_left: Color,
-        _c_mid: Color,
-        _c_right: Color,
+        c_left: Color,
+        c_mid: Color,
+        c_right: Color,
         hover_t: f32,
     ) {
-        self.button_pill_variant(x, y, w, h, r, hover_t, ButtonVariant::PrimaryFill);
+        // Settings-only variant: honour the caller's palette (Apple blue) instead
+        // of the global Obsidian PrimaryFill colours used by the notch itself.
+        let ht = hover_t.clamp(0.0, 1.0);
+        let top = lerp_color(c_left, c_mid, ht);
+        let bot = lerp_color(c_mid, c_right, ht);
+        self.rrect_vertical_gradient(x, y, w, h, r, top, bot);
+        self.rrect_stroke(x, y, w, h, r, 1.0, rgba(255, 255, 255, 42));
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -3153,9 +3377,9 @@ impl<'a> PainterD2D<'a> {
             (rgba(30, 32, 50, 245), rgba(18, 19, 32, 248))
         };
         let (on_top, on_bot) = if self.frosted {
-            (rgba(155, 92, 255, 58), rgba(124, 58, 237, 94))
+            (rgba(155, 92, 255, 70), rgba(124, 58, 237, 130))
         } else {
-            (rgba(104, 52, 200, 240), rgba(74, 34, 158, 248))
+            (rgba(124, 58, 237, 235), rgba(74, 34, 158, 245))
         };
 
         let track_top = lerp_color(off_top, on_top, st);
@@ -3168,7 +3392,7 @@ impl<'a> PainterD2D<'a> {
                 y + h + 1.0,
                 w * 0.55,
                 h * 0.7,
-                rgba(253, 230, 138, (54.0 * ht) as u8),
+                rgba(233, 218, 255, (54.0 * ht) as u8),
                 BlendMode::Plus,
                 true,
             );
@@ -3324,6 +3548,33 @@ impl<'a> PainterD2D<'a> {
     pub fn rrect_horizontal_gradient(&mut self, x: f32, y: f32, w: f32, h: f32, r: f32, c0: Color, c1: Color) {
         let mut p = self.painter();
         let _ = p.rrect_horizontal_gradient(x, y, w, h, r, c0.to_d2d(1.0), c1.to_d2d(1.0));
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub fn rrect_horizontal_gradient_3stop(
+        &mut self,
+        x: f32,
+        y: f32,
+        w: f32,
+        h: f32,
+        r: f32,
+        c0: Color,
+        c_mid: Color,
+        c1: Color,
+        mid_pos: f32,
+    ) {
+        let mut p = self.painter();
+        let _ = p.rrect_horizontal_gradient_3stop(
+            x,
+            y,
+            w,
+            h,
+            r,
+            c0.to_d2d(1.0),
+            c_mid.to_d2d(1.0),
+            c1.to_d2d(1.0),
+            mid_pos,
+        );
     }
 
     pub fn rrect_corners4_vertical_gradient(
@@ -3551,7 +3802,7 @@ impl<'a> PainterD2D<'a> {
 
     /// Draws single-line text clipped strictly to `max_w` with a smooth GPU alpha fade-out
     /// on the right edge whenever the text exceeds `max_w` (prevents long URLs/filenames from
-    /// colliding with adjacent buttons like dismiss `×`).
+    /// colliding with adjacent buttons like dismiss `x`).
     pub fn text_fade_right(
         &mut self,
         t: &str,
@@ -3600,8 +3851,8 @@ impl<'a> PainterD2D<'a> {
             col_clear,
             D2D_POINT_2F { x: fade_start_x, y: dy },
             D2D_POINT_2F { x: max_dx, y: dy },
-        ) {
-            if let Ok(brush_as_brush) = brush.cast::<ID2D1Brush>() {
+        )
+            && let Ok(brush_as_brush) = brush.cast::<ID2D1Brush>() {
                 let _ = self.fonts.draw_text_baseline(
                     self.ctx,
                     &brush_as_brush,
@@ -3613,7 +3864,6 @@ impl<'a> PainterD2D<'a> {
                     None,
                 );
             }
-        }
         unsafe {
             self.ctx.PopAxisAlignedClip();
         }
@@ -3626,8 +3876,8 @@ impl<'a> PainterD2D<'a> {
         let baseline_adj = baseline + (eff - size) * 0.34;
         let (dx, dy) = (self.origin_x + x * s, self.origin_y + baseline_adj * s);
         let col = color_to_d2d(c.r, c.g, c.b, c.a, self.global_alpha);
-        if let Ok(brush) = self.cache.solid(self.ctx, col) {
-            if let Ok(brush_as_brush) = brush.cast::<ID2D1Brush>() {
+        if let Ok(brush) = self.cache.solid(self.ctx, col)
+            && let Ok(brush_as_brush) = brush.cast::<ID2D1Brush>() {
                 let _ = self.fonts.draw_text_baseline(
                     self.ctx,
                     &brush_as_brush,
@@ -3639,7 +3889,6 @@ impl<'a> PainterD2D<'a> {
                     None,
                 );
             }
-        }
         self.fonts.measure(t, eff * s, w).0 / s
     }
 
@@ -3667,10 +3916,13 @@ impl<'a> PainterD2D<'a> {
             .pre_translate(-px, -py)
             .to_d2d_matrix3x2();
         let col = color_to_d2d(c.r, c.g, c.b, c.a, self.global_alpha);
-        if let Ok(brush) = self.cache.solid(self.ctx, col) {
-            if let Ok(brush_as_brush) = brush.cast::<ID2D1Brush>() {
+        if let Ok(brush) = self.cache.solid(self.ctx, col)
+            && let Ok(brush_as_brush) = brush.cast::<ID2D1Brush>() {
                 unsafe {
-                    self.ctx.SetTransform(&tf);
+                    let mut prev = windows::Foundation::Numerics::Matrix3x2::identity();
+                    self.ctx.GetTransform(&mut prev);
+                    let combined = Self::mul_m3x2(tf, prev);
+                    self.ctx.SetTransform(&combined);
                     let _ = self.fonts.draw_text_baseline(
                         self.ctx,
                         &brush_as_brush,
@@ -3681,11 +3933,9 @@ impl<'a> PainterD2D<'a> {
                         w,
                         None,
                     );
-                    self.ctx
-                        .SetTransform(&windows::Foundation::Numerics::Matrix3x2::identity());
+                    self.ctx.SetTransform(&prev);
                 }
             }
-        }
         self.fonts.measure(t, eff * s, w).0 / s
     }
 
@@ -3968,9 +4218,12 @@ impl<'a> PainterD2D<'a> {
             if let Ok(brush) = self.cache.solid(self.ctx, col) {
                 let tf = self.tf().to_d2d_matrix3x2();
                 unsafe {
-                    self.ctx.SetTransform(&tf);
+                    let mut prev = windows::Foundation::Numerics::Matrix3x2::identity();
+                    self.ctx.GetTransform(&mut prev);
+                    let combined = Self::mul_m3x2(tf, prev);
+                    self.ctx.SetTransform(&combined);
                     self.ctx.FillGeometry(&geom, &brush, None);
-                    self.ctx.SetTransform(&windows::Foundation::Numerics::Matrix3x2::identity());
+                    self.ctx.SetTransform(&prev);
                 }
             }
         }
@@ -3984,9 +4237,12 @@ impl<'a> PainterD2D<'a> {
                 let style = self.cache.stroke_style_round();
                 let tf = self.tf().to_d2d_matrix3x2();
                 unsafe {
-                    self.ctx.SetTransform(&tf);
+                    let mut prev = windows::Foundation::Numerics::Matrix3x2::identity();
+                    self.ctx.GetTransform(&mut prev);
+                    let combined = Self::mul_m3x2(tf, prev);
+                    self.ctx.SetTransform(&combined);
                     self.ctx.DrawGeometry(&geom, &brush, width, style.as_ref());
-                    self.ctx.SetTransform(&windows::Foundation::Numerics::Matrix3x2::identity());
+                    self.ctx.SetTransform(&prev);
                 }
             }
         }
@@ -4001,9 +4257,12 @@ impl<'a> PainterD2D<'a> {
                 let combined = self.tf().pre_concat(local_tf);
                 let tf = combined.to_d2d_matrix3x2();
                 unsafe {
-                    self.ctx.SetTransform(&tf);
+                    let mut prev = windows::Foundation::Numerics::Matrix3x2::identity();
+                    self.ctx.GetTransform(&mut prev);
+                    let combined = Self::mul_m3x2(tf, prev);
+                    self.ctx.SetTransform(&combined);
                     self.ctx.DrawGeometry(&geom, &brush, width, style.as_ref());
-                    self.ctx.SetTransform(&windows::Foundation::Numerics::Matrix3x2::identity());
+                    self.ctx.SetTransform(&prev);
                 }
             }
         }
@@ -4016,9 +4275,12 @@ impl<'a> PainterD2D<'a> {
             if let Ok(brush) = self.cache.solid(self.ctx, col) {
                 let tf = self.tf().pre_concat(local_tf).to_d2d_matrix3x2();
                 unsafe {
-                    self.ctx.SetTransform(&tf);
+                    let mut prev = windows::Foundation::Numerics::Matrix3x2::identity();
+                    self.ctx.GetTransform(&mut prev);
+                    let combined = Self::mul_m3x2(tf, prev);
+                    self.ctx.SetTransform(&combined);
                     self.ctx.FillGeometry(&geom, &brush, None);
-                    self.ctx.SetTransform(&windows::Foundation::Numerics::Matrix3x2::identity());
+                    self.ctx.SetTransform(&prev);
                 }
             }
         }
@@ -4035,9 +4297,12 @@ impl<'a> PainterD2D<'a> {
                     if is_add {
                         self.ctx.SetPrimitiveBlend(windows::Win32::Graphics::Direct2D::D2D1_PRIMITIVE_BLEND_ADD);
                     }
-                    self.ctx.SetTransform(&tf);
+                    let mut prev = windows::Foundation::Numerics::Matrix3x2::identity();
+                    self.ctx.GetTransform(&mut prev);
+                    let combined = Self::mul_m3x2(tf, prev);
+                    self.ctx.SetTransform(&combined);
                     self.ctx.FillGeometry(&geom, &brush, None);
-                    self.ctx.SetTransform(&windows::Foundation::Numerics::Matrix3x2::identity());
+                    self.ctx.SetTransform(&prev);
                     if is_add {
                         self.ctx.SetPrimitiveBlend(windows::Win32::Graphics::Direct2D::D2D1_PRIMITIVE_BLEND_SOURCE_OVER);
                     }
@@ -4069,16 +4334,22 @@ impl<'a> PainterD2D<'a> {
                 let d2d_cm = cm.to_d2d(ga);
                 if let Ok(brush) = self.cache.linear_brush_3stop(self.ctx, d2d_c0, d2d_cm, d2d_c1, 0.5, start, end) {
                     unsafe {
-                        self.ctx.SetTransform(&tf);
+                        let mut prev = windows::Foundation::Numerics::Matrix3x2::identity();
+                        self.ctx.GetTransform(&mut prev);
+                        let combined = Self::mul_m3x2(tf, prev);
+                        self.ctx.SetTransform(&combined);
                         self.ctx.FillGeometry(&geom, &brush, None);
-                        self.ctx.SetTransform(&windows::Foundation::Numerics::Matrix3x2::identity());
+                        self.ctx.SetTransform(&prev);
                     }
                 }
             } else if let Ok(brush) = self.cache.linear_brush(self.ctx, d2d_c0, d2d_c1, start, end) {
                 unsafe {
-                    self.ctx.SetTransform(&tf);
+                    let mut prev = windows::Foundation::Numerics::Matrix3x2::identity();
+                    self.ctx.GetTransform(&mut prev);
+                    let combined = Self::mul_m3x2(tf, prev);
+                    self.ctx.SetTransform(&combined);
                     self.ctx.FillGeometry(&geom, &brush, None);
-                    self.ctx.SetTransform(&windows::Foundation::Numerics::Matrix3x2::identity());
+                    self.ctx.SetTransform(&prev);
                 }
             }
         }

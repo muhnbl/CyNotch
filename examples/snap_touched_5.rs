@@ -160,7 +160,7 @@ fn main() -> Result<()> {
         );
         ns.sync_preview_settled();
         let (w, h) = (ns.current_width.round() as u32, ns.current_height.round() as u32);
-        let mut r = Renderer::new(w, h);
+        let mut r = Renderer::new(w, h).unwrap();
         snap_transparent(&ctx, &dir, "1_notif_capsule_touched", w, h, |c| {
             r.render_d2d(c, &ns, None);
 
@@ -241,7 +241,7 @@ fn main() -> Result<()> {
         ms.set_hovered(true);
         ms.sync_preview_settled();
         let (w, h) = (ms.current_width.round() as u32, ms.current_height.round() as u32);
-        let mut r = Renderer::new(w, h);
+        let mut r = Renderer::new(w, h).unwrap();
         snap_transparent(&ctx, &dir, "2_music_touched", w, h, |c| {
             r.render_d2d(c, &ms, None);
 
@@ -420,7 +420,7 @@ fn main() -> Result<()> {
         let py = 60.0 + 29.0 + 8.0;
         let scale = ms.expanded_scale();
         let (w, h) = (ms.current_width.round() as u32, ms.current_height.round() as u32);
-        let mut r = Renderer::new(w, h);
+        let mut r = Renderer::new(w, h).unwrap();
         snap_transparent(&ctx, &dir, "3_memreduct_hover_touched", w, h, |c| {
             r.render_d2d(c, &ms, Some((px * scale, py * scale)));
 
@@ -538,7 +538,7 @@ fn main() -> Result<()> {
         );
         vs.sync_preview_settled();
         let (w, h) = (vs.current_width.round() as u32, vs.current_height.round() as u32);
-        let mut r = Renderer::new(w, h);
+        let mut r = Renderer::new(w, h).unwrap();
         snap_transparent(&ctx, &dir, "4_vertical_shelf_touched", w, h, |c| {
             r.render_d2d(c, &vs, None);
 
@@ -602,7 +602,7 @@ fn main() -> Result<()> {
                         &D2D1_COLOR_F {
                             r: 248.0 / 255.0,
                             g: 247.0 / 255.0,
-                            b: 255.0 / 255.0,
+                            b: 1.0,
                             a: 0.85,
                         },
                         None,
@@ -654,7 +654,7 @@ fn main() -> Result<()> {
                         color: D2D1_COLOR_F {
                             r: 248.0 / 255.0,
                             g: 247.0 / 255.0,
-                            b: 255.0 / 255.0,
+                            b: 1.0,
                             a: 0.45,
                         },
                     },

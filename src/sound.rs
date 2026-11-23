@@ -82,7 +82,7 @@ pub fn scale_wav_volume(source: &[u8], volume: f32) -> Vec<u8> {
         return out;
     }
     if let Some((start, end)) = find_data_chunk(source) {
-        for chunk in out[start..end].chunks_exact_mut(2) {
+        for chunk in out[start..end].as_chunks_mut::<2>().0 {
             let sample = i16::from_le_bytes([chunk[0], chunk[1]]);
             let scaled = ((sample as f32) * vol).round().clamp(-32768.0, 32767.0) as i16;
             let bytes = scaled.to_le_bytes();

@@ -1,12 +1,15 @@
 [package]
 name = "cynotch"
-version = "0.3.1"
+version = "1.0.0"
 edition = "2024"
 
 [profile.release]
 opt-level = 3
 lto = "fat"
 codegen-units = 1
+# Keep unwind: catch_unwind in src/window.rs (wnd_proc) and the audio/media/
+# notification workers is the safety net that stops panics crossing the Win32
+# ABI boundary. Switching to "abort" would silently void that protection.
 panic = "unwind"
 strip = "symbols"
 
@@ -41,7 +44,8 @@ windows = { version = "0.58", features = [
         "Win32_Security",
         "Win32_Networking_WinHttp",
         "Win32_System_Time",
-        "Media_Control",
+    "Media_Control",
+    "Storage_Streams",
     "Foundation",
     "Foundation_Collections",
     "Foundation_Numerics",

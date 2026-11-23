@@ -52,7 +52,7 @@ pub fn blur_px_to_sigma(px: u32) -> f32 {
     1.5 + (p - 4.0) * (22.5 / 36.0)
 }
 
-/// Option B: Optical Luminosity Clamp 5×4 Direct2D color matrix.
+/// Option B: Optical Luminosity Clamp 5x4 Direct2D color matrix.
 ///
 /// Combines Rec.709 saturation boost (`1.50`) with airy optical brightness preservation (`0.68`)
 /// and a subtle smoked-obsidian floor `(0.004, 0.003, 0.010)` so bright backgrounds compress
@@ -81,7 +81,7 @@ pub fn optical_luminosity_clamp_matrix() -> [f32; 20] {
     ]
 }
 
-/// Evaluates a Direct2D 5×4 color matrix with output clamped to `[0.0, 1.0]`.
+/// Evaluates a Direct2D 5x4 color matrix with output clamped to `[0.0, 1.0]`.
 pub fn apply_color_matrix_5x4(rgb: [f32; 3], m: &[f32; 20]) -> [f32; 3] {
     let [r, g, b] = rgb;
     let out_r = (r * m[0] + g * m[4] + b * m[8] + m[16]).clamp(0.0, 1.0);

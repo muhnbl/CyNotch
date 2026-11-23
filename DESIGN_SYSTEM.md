@@ -1,8 +1,8 @@
-# CyNotch v0.3.1 — Obsidian Liquid Glass Design System (Approved)
+# CyNotch v1.0.0 — Obsidian Liquid Glass Design System (Approved)
 
 > **Architecture**: Atomic Design Hierarchy (`Tokens → Atoms → Molecules → Organisms → Templates/Pages`)
 > **Material**: Fixed Calibrated Translucent Obsidian Glass (`CALIBRATED_BLUR_PX = 15`, zero opacity/blur sliders)
-> **Canvas & Placement**: Locked Top-Center (`NotchPlacement::Top`, non-draggable) · Uniform `620 × 234` expanded bounds across all 5 modes (`Home`, `Music`, `Volume`, `MemReduct`, `Shelf`)
+> **Canvas & Placement**: Locked Top-Center (`NotchPlacement::Top`, non-draggable) · `648 × 292` expanded base bounds (`Shelf` Hug Contents auto-height up to 6 rows / 24 items) · 4pt/8pt spatial grid (`24px` outer margins, `16px` card gaps) · Settings `900 × 760` (`20px` card gaps)
 > **Rule of Affordance**: Windows, Cards, and Sections are **borderless** (`0px` outer stroke, separated purely by surface luminance or real transparent gaps). **Bottom-to-top faded outlines (`~50% → 0%`) belong exclusively to interactive buttons & rows.**
 > **Icons**: Clean Tailwind / Heroicons SVG strokes (`1.8–2.0px`), zero raw emojis.
 
@@ -30,13 +30,13 @@
 | **Semantic Status: Alert** | `--status-alert` | `#DC2626` | Crimson Red (error / critical / muted) |
 
 ### 1.2 Fixed Calibrated Glass Recipe (No Sliders · Optical Luminosity Clamp)
-- **Backdrop Blur + Luminosity Clamp**: Fixed `24px` GaussianBlur + **Optical Luminosity Compression** (`brightness(0.46) contrast(1.12) saturate(165%)` in CSS; `GaussianBlurEffect(24px)` → `ColorMatrixEffect` / `BlendEffect::Luminosity` in WinRT Composition `src/dcomp_blur.rs`). Compresses `#FFFFFF` PDF/light-theme documents behind the notch into deep smoked obsidian (`~10.8:1` WCAG AAA contrast) while keeping airy translucency over dark wallpapers — **0% CPU screen-capture**.
+- **Backdrop Blur + Luminosity Clamp**: Fixed `15px` GaussianBlur + **Optical Luminosity Compression** (`brightness(0.46) contrast(1.12) saturate(165%)` in CSS; `GaussianBlurEffect(15px)` → `ColorMatrixEffect` / `BlendEffect::Luminosity` in WinRT Composition `src/dcomp_blur.rs`). Compresses `#FFFFFF` PDF/light-theme documents behind the notch into deep smoked obsidian (`~10.8:1` WCAG AAA contrast) while keeping airy translucency over dark wallpapers — **0% CPU screen-capture**.
 - **Outer Window Shell**: Borderless (`0px` stroke). Translucent smoked obsidian gradient (`rgba(18,17,34,0.56)` → `rgba(11,11,24,0.52)` → `rgba(20,13,38,0.58)`) + subtle `rgba(124, 58, 237, 0.28)` bottom bloom + ambient shadow `0 26px 58px rgba(3, 2, 12, 0.46)`.
 - **Inner Card / Section**: Borderless (`0px` stroke). Translucent glass veil + soft pearlescent bottom-left bloom + luminous violet bottom sweep + soft elevation shadow `0 12px 30px rgba(4, 2, 16, 0.32)`.
 - **Text Legibility Guarantee**: Ultra-subtle button text shadow `0 1px 3px rgba(8, 4, 20, 0.05)` (`5%` opacity).
 - **Button Outline Opacity**: Max `~50%` at bottom edge (`rgba(255,255,255,0.50)` / `rgba(233,213,255,0.48)`), smoothly fading to `0%` at top.
 - **Hover Micro-Interaction (Gentle Amber Liquid Glow)**: Zero outer glow halo, zero hard streak/slash. On hover, a soft diffused warm Amber-Gold liquid bloom rises smoothly inside the glass (`rgba(253,230,138,0.28) → transparent`).
-- **Exclusive Windows Transparency Gate**: When Windows Transparency Effects = ON (`windows_transparency_enabled == true`), **100% of windows, cards, sections, docks, rows, and buttons stay `< 100%` translucent** with live `24px` blur. When OS Transparency = OFF, cleanly falls back to solid Purple Obsidian surfaces (`#161728 → #0e0f1c`).
+- **Exclusive Windows Transparency Gate**: When Windows Transparency Effects = ON (`windows_transparency_enabled == true`), **100% of windows, cards, sections, docks, rows, and buttons stay `< 100%` translucent** with live `15px` blur. When OS Transparency = OFF, cleanly falls back to solid Purple Obsidian surfaces (`#161728 → #0e0f1c`).
 - **Anti-Aliasing Invariant (Zero Pixelation)**: Direct2D `D2D1_ANTIALIAS_MODE_PER_PRIMITIVE` + `D2D1_TEXT_ANTIALIAS_MODE_GRAYSCALE`, subpixel-aligned strokes, never clipping rounded corners with 1-bit GDI `SetWindowRgn`.
 
 ### 1.3 Typography & Radii
@@ -45,6 +45,19 @@
 - **Radii**: Window Shell `28px`, Inner Card `22px`, Shelf Row `12px`, Buttons/Pills `9999px` (full capsule).
 
 ---
+
+## 1.4 Settings Window — Graphite + CyNotch violet (v0.3.1+)
+
+The Preferences window uses a **separate local palette** (`cyno_tk` in `src/settings_window.rs`) that pairs macOS-inspired calm graphite with the signature CyNotch violet accent. The notch itself keeps the calibrated Obsidian Liquid Glass identity above. This is an explicit product decision, not drift:
+
+- Surfaces: neutral graphite (`#28282C` → `#1C1C20`), flat grouped-list cards (`#2C2C30`) with a 1px hairline rim, no aurora bloom or heavy shadow (`apple_section_card`).
+- Accent: CyNotch violet `#7C3AED` (`accent`), deep indigo `#3E188A` (`accent_deep`), orchid `#A855F7` (`accent_hi`), pearlescent `#E9DAFF` (`accent_mist`). Used for selected pills, toggles, active sidebar item, and the settings glow.
+- Text: `#F5F5F7` primary, `#A1A1A6` secondary.
+- Sidebar: flat, no enclosing card, quiet 1px divider; keyboard shortcuts as plain footer text.
+- Copy: plain human language, no engineer jargon (`Not locked`, `Centered`, `Shrink to a slim bar when idle`).
+- The mascot orb in the header keeps its violet/gold identity as the bridge to the notch.
+
+Rendering helpers `luminous_pill_button_t` and `draw_toggle_switch` in `painter_d2d.rs` honour this local palette for settings calls only; the notch draw path is untouched. This accent is applied consistently across every settings state, window and button.
 
 ## 2. Atomic Design Hierarchy
 
@@ -68,12 +81,12 @@
 1. **Borderless Obsidian Card**: Shadow-elevated translucent container (`0px` border) with bottom violet-pearl bloom.
 2. **Command Hub (`Home`)**: Companion Card (`154×154` CPU/RAM + Purge CTA) + 2 full-height (`154px`) side-by-side cards (`Now Playing` + `Quick Shelf`).
 3. **3-Box Floating Music Player (`Music`)**:
-   - **Box 1 (`y = 0..134`)**: Top notch shell with Mode Dock, Centered Large Lyrics (active `17px` Bold `#F8F7FF`, prev/next `40%` opacity), and Full-Width Seek Bar (`y = 118`).
-   - **Gap 1 (`12px` transparent)** → **Box 2 (`y = 146..188`, `0px` border, no drop-shadow)**: Cover tile (`30×30`), Title + Artist, and Timestamp.
-   - **Gap 2 (`6px` transparent)** → **Box 3 (`y = 194..230`, `4px` bottom safety margin)**: 3 separated floating media buttons (`54×36`, `gap = 10px`) using `PrimaryOutline` / `PrimaryFill`.
+   - **Box 1 (`y = 0..164`)**: Top notch shell with Mode Dock, Centered Large Lyrics (`74px` lyrics box, `12–16px` clear gap between active & prev/next lines), and Full-Width Seek Bar (`y = 148`).
+   - **Gap 1 (`12px` transparent)** → **Box 2 (`y = 176..242`, `h = 66px`, `0px` border, no drop-shadow)**: Real SMTC Album Art cover (`50×50px`, Fill Height with `8px` padding + locked `1:1` aspect ratio, Music icon fallback), Title (`14px Bold`), Artist (`11.5px Regular`), and Timestamp (`11px`).
+   - **Gap 2 (`8px` transparent)** → **Box 3 (`y = 250..286`, `6px` bottom safety margin)**: 3 separated floating media buttons (`56×36`, `gap = 12px`) using `PrimaryOutline` / `PrimaryFill`.
    - All 3 boxes share identical `15px` WinRT blur + Optical Luminosity Clamp via `BlurSpec.box1_h` & `BlurSpec.extra_boxes` (`src/composition.rs`).
-4. **Uniform Quick Shelf (`Shelf`)**: 3-column equal-width box grid (`tile_w = (inner_w - gap * 2) / 3`, `88px` height) — never over-extends.
-5. **Settings Window**: Borderless glass window containing shadow-elevated borderless Section Cards — **zero transparency/blur sliders**.
+4. **Vertical Quick Shelf (`Shelf`)**: 3-visible-row vertical stacked list (`Shelf Item Row` with kind icon, ellipsized label, hover highlight, `✕` remove button, and vertical scroll track) with staggered entrance — never over-extends.
+5. **Settings Window**: Borderless glass window with 4 streamlined sections (`General & Notch`, `Motion & Perf`, `Notifications`, `Memory & System`) containing shadow-elevated borderless Section Cards — **zero transparency/blur sliders**.
 
 ---
 
@@ -83,5 +96,5 @@
 - `src/painter_d2d.rs`:
   - `elevated_card`: Remove outer bevel stroke when `frosted == true`; translucent obsidian-to-violet gradient + subtle bottom-left radial bloom (no `rrect_drop_shadow` on separated transparent-gap cards).
   - `tactile_surface_pill_t`: Support `ButtonVariant::{PrimaryFill, PrimaryOutline, TextOnly}`; continuous vertical `ID2D1LinearGradientBrush` rim (`bottom ~0.50 → top 0.0`) for `PrimaryFill` & `PrimaryOutline`; pure bottom-up liquid glow for `TextOnly` hover; 5% opacity text shadow.
-- `src/renderer/views.rs`: 2-card Home Hub, 3-box floating Music UI, 3-column uniform Quick Shelf, Safe Trim MemReduct UI.
-- `src/settings_window.rs`: Fixed calibrated glass constants (`CALIBRATED_BLUR_PX = 15`), Top-Center placement lock, 4 module toggles (`Music`, `Volume`, `MemReduct`, `Shelf`).
+- `src/renderer/views.rs`: 2-card Home Hub, 3-box floating Music UI (no lyric chips), vertical 3-row Quick Shelf, Safe Trim MemReduct UI, `--ray-fast` (`120ms`) staggered mode entrance.
+- `src/settings_window.rs`: Fixed calibrated glass constants (`CALIBRATED_BLUR_PX = 15`), Top-Center placement lock, 4 sections (`General & Notch`, `Motion & Perf`, `Notifications`, `Memory & System`), `Ctrl+Alt+C/M/S` hotkeys sidebar, and category-switch card stagger.

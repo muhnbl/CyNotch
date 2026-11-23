@@ -6,11 +6,11 @@ use crate::dcomp_blur::{BlurSpec, CALIBRATED_BLUR_PX};
 use crate::font_d2d::{DWriteTextCache, Weight};
 use crate::icons::{self, Icon};
 use crate::models::{
-    Action, AppState, ExpandedSizePreset, HoverDwellSpeed, IdleMetric, LyricSize, LyricStyle, NotchMode,
-    NotchPlacement, NotchSizePreset, NotchStyle, SettingsCategory, ToggleId, TypeScale,
+    Action, AppState, ExpandedSizePreset, HoverDwellSpeed, IdleMetric, NotchPlacement,
+    NotchSizePreset, NotchStyle, SettingsCategory, ToggleId, TypeScale,
 };
 use crate::notifications;
-use crate::painter_d2d::{BlendMode, D2DResourceCache, Hit, PainterD2D, Rect, fade, lerp_color, rgba, tok};
+use crate::painter_d2d::{D2DResourceCache, Hit, PainterD2D, Rect, fade, lerp_color, rgba, tok};
 use crate::renderer::Renderer;
 use std::cell::RefCell;
 use std::sync::atomic::{AtomicBool, AtomicIsize, Ordering};
@@ -31,10 +31,37 @@ pub const WM_APP_SETTINGS_REDRAW: u32 = 0x8000 + 21;
 pub const WM_APP_SETTINGS_CLOSE: u32 = 0x8000 + 22;
 pub const WM_APP_SETTINGS_HIGHRES_TICK: u32 = 0x8000 + 24;
 
+/// Settings-only palette: neutral graphite surfaces (macOS-inspired layout)
+/// with the signature CyNotch violet accent. Kept local so the notch keeps its
+/// calibrated Obsidian Liquid Glass identity while Preferences reads calm and native.
+mod cyno_tk {
+    use crate::painter_d2d::rgba;
+    use crate::painter_d2d::Color;
+
+    pub fn accent() -> Color { rgba(124, 58, 237, 255) }        // #7C3AED CyNotch violet
+    pub fn accent_deep() -> Color { rgba(62, 24, 138, 255) }    // #3E188A deep indigo
+    pub fn accent_hi() -> Color { rgba(168, 85, 247, 255) }     // #A855F7 orchid
+    pub fn accent_mist() -> Color { rgba(233, 218, 255, 255) }  // #E9DAFF pearlescent
+    pub fn shell_top() -> Color { rgba(22, 21, 26, 148) }       // Obsidian, clearly translucent
+    pub fn shell_bot() -> Color { rgba(12, 11, 16, 162) }
+    pub fn card() -> Color { rgba(26, 25, 31, 132) }
+    pub fn well() -> Color { rgba(10, 9, 14, 142) }
+    pub fn separator() -> Color { rgba(255, 255, 255, 26) }
+    pub fn title() -> Color { rgba(245, 245, 247, 255) }
+    pub fn subtitle() -> Color { rgba(161, 161, 166, 255) }
+}
+
+/// Flat, quiet grouped-list surface — macOS Settings style. No aurora bloom,
+/// no heavy shadow: one neutral fill plus a hairline rim.
+fn apple_section_card(p: &mut PainterD2D, x: f32, y: f32, w: f32, h: f32, r: f32) {
+    p.rrect(x, y, w, h, r, cyno_tk::card());
+    p.rrect_stroke(x, y, w, h, r, 1.0, cyno_tk::separator());
+}
+
 const PANE_X: f32 = 240.0;
-const PANE_Y: f32 = 78.0;
-const PANE_W: f32 = 600.0;
-const PANE_H: f32 = 620.0;
+const PANE_Y: f32 = 80.0;
+const PANE_W: f32 = 636.0;
+const PANE_H: f32 = 656.0;
 const PANE_BLEED: f32 = 12.0;
 
 pub static SETTINGS_HWND: AtomicIsize = AtomicIsize::new(0);
@@ -193,6 +220,7 @@ pub fn open_or_focus(state: Arc<Mutex<AppState>>) {
                     st.anim_settings_cat_y = AppState::settings_cat_pill_y(st.settings_category);
                     st.anim_settings_cat_vel = 0.0;
                     st.anim_settings_pane_t = 1.0;
+                    st.anim_settings_open_t = 0.0;
                     st.sync_switches_immediate();
                 }
                 redraw_settings_with_cache(hwnd, true);
@@ -206,6 +234,9 @@ pub fn open_or_focus(state: Arc<Mutex<AppState>>) {
                     SWP_NOMOVE | SWP_NOSIZE | SWP_SHOWWINDOW,
                 );
                 let _ = SetForegroundWindow(hwnd);
+                if let Ok(st) = state.lock() {
+                    sync_settings_timer(hwnd, st.needs_settings_timer_ms());
+                }
                 return;
             }
             SETTINGS_HWND.store(0, Ordering::Release);
@@ -221,6 +252,7 @@ pub fn open_or_focus(state: Arc<Mutex<AppState>>) {
             st.anim_settings_cat_y = AppState::settings_cat_pill_y(st.settings_category);
             st.anim_settings_cat_vel = 0.0;
             st.anim_settings_pane_t = 1.0;
+            st.anim_settings_open_t = 0.0;
             st.sync_switches_immediate();
             (st.type_scale.ui_scale(), st.settings_category)
         } else {
@@ -277,6 +309,10 @@ pub fn open_or_focus(state: Arc<Mutex<AppState>>) {
             );
             crate::borders::set_window_borderless(hwnd);
             redraw_settings(hwnd);
+            // Kick off the gear-open choreography timer.
+            if let Ok(st) = state.lock() {
+                sync_settings_timer(hwnd, st.needs_settings_timer_ms());
+            }
             let _ = SetWindowPos(
                 hwnd,
                 HWND_TOPMOST,
@@ -378,7 +414,9 @@ unsafe fn redraw_settings_with_cache(hwnd: HWND, _allow_pane_cache: bool) {
     let full_pane_h = (pane_content_height(snapshot.settings_category) + 10.0).max(PANE_H);
     let pane_h_px = (full_pane_h * s).round().max(1.0) as u32;
 
-    let blur_spec = if snapshot.is_frosted_active() && backdrop::blur_available() {
+    // Preferences always asks for the acrylic backdrop. Transparency is a
+    // Windows system preference; the old in-app Frosted toggle was removed.
+    let blur_spec = if backdrop::blur_available() {
         backdrop::set_blur_px(CALIBRATED_BLUR_PX);
         let r = 22.0 * s;
         Some(BlurSpec {
@@ -453,11 +491,11 @@ unsafe fn redraw_settings_with_cache(hwnd: HWND, _allow_pane_cache: bool) {
             let resize_ok = host.resize(int_w as u32, int_h as u32).is_ok();
             if resize_ok && let Ok(ctx) = host.begin_d2d_draw() {
                 if d2d_cache.is_none() {
-                    *d2d_cache = D2DResourceCache::new(&ctx).ok();
+                    *d2d_cache = D2DResourceCache::new(ctx).ok();
                 }
                 if let Some(cache) = d2d_cache.as_mut() {
                     let (new_hits, new_slots, max_scroll) = render_settings_d2d(
-                        &ctx,
+                        ctx,
                         cache,
                         fonts,
                         int_w as u32,
@@ -484,10 +522,10 @@ unsafe fn redraw_settings_with_cache(hwnd: HWND, _allow_pane_cache: bool) {
             *dcomp = None;
             if let Ok(mut new_host) = DCompHost::new(hwnd, int_w as u32, int_h as u32) {
                 if let Ok(ctx) = new_host.begin_d2d_draw() {
-                    *d2d_cache = D2DResourceCache::new(&ctx).ok();
+                    *d2d_cache = D2DResourceCache::new(ctx).ok();
                     if let Some(cache) = d2d_cache.as_mut() {
                         let (new_hits, new_slots, max_scroll) = render_settings_d2d(
-                            &ctx,
+                            ctx,
                             cache,
                             fonts,
                             int_w as u32,
@@ -1090,18 +1128,28 @@ unsafe fn settings_wnd_proc_inner(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: 
 }
 
 const PAD: f32 = 24.0;
-const CARD_GAP: f32 = 16.0;
+const CARD_GAP: f32 = 20.0;
 const SEG_PITCH: f32 = 42.0;
 const TOGGLE_PITCH: f32 = 48.0;
-const CTRL_X_OFF: f32 = 188.0;
+const CTRL_X_OFF: f32 = 196.0;
+
+/// Unified **Blur-Fade Rise** staggered card offset for Settings category switch (`~45ms` stagger, `+12px -> 0`).
+fn card_stagger_offset(pane_t: f32, _dir: f32, card_idx: usize) -> f32 {
+    if pane_t >= 0.999 || card_idx == 0 {
+        return 0.0;
+    }
+    let delay = (card_idx as f32 * 0.095).min(0.38);
+    let local_t = ((pane_t - delay) / (1.0 - delay)).clamp(0.0, 1.0);
+    let e = 1.0 - (1.0 - local_t).powi(4);
+    (1.0 - e) * 12.0
+}
 
 fn pane_content_height(cat: SettingsCategory) -> f32 {
     match cat {
-        SettingsCategory::General => 262.0 + CARD_GAP + 484.0,
+        SettingsCategory::General => 222.0 + CARD_GAP + 436.0 + CARD_GAP + 196.0,
         SettingsCategory::Motion => 208.0 + CARD_GAP + 172.0,
-        SettingsCategory::Modules => 244.0 + 14.0 + 138.0 + 14.0 + 196.0,
-        SettingsCategory::Notifications => 208.0 + 14.0 + 236.0 + 14.0 + 134.0,
-        SettingsCategory::System => 428.0 + 14.0 + 162.0,
+        SettingsCategory::Notifications => 208.0 + CARD_GAP + 236.0 + CARD_GAP + 134.0,
+        SettingsCategory::System => 268.0 + CARD_GAP + 162.0,
     }
 }
 
@@ -1129,6 +1177,15 @@ pub fn render_settings_d2d(
     let h = AppState::SETTINGS_HEIGHT;
     let r = 22.0;
     let frosted = state.is_frosted_active();
+    // Gear-open choreography: 0 -> 1 over 420ms (fade + 0.96 -> 1.0 rise).
+    let open_t = if state.are_animations_active() {
+        state.anim_settings_open_t.clamp(0.0, 1.0)
+    } else {
+        1.0
+    };
+    let open_ease = 1.0 - (1.0 - open_t).powi(3);
+    let open_alpha = open_ease;
+    let open_slide_px = (1.0 - open_ease) * 8.0 * s;
 
     let pane_top_pad = 4.0;
     let pane_bot_pad = 6.0;
@@ -1148,11 +1205,11 @@ pub fn render_settings_d2d(
             fonts,
             s,
             0.0,
-            0.0,
+            open_slide_px,
             pointer,
             &mut hits,
             true,
-            1.0,
+            open_alpha,
             state.settings_hover_slots,
             state.micro_interactions,
             frosted,
@@ -1160,131 +1217,83 @@ pub fn render_settings_d2d(
             state.type_scale,
         );
 
-        let well_col = if frosted {
-            tok::surface_well_frosted()
-        } else {
-            tok::surface_well()
-        };
-        let sb_x = 20.0;
-        let sb_y = 78.0;
-        let sb_w = 204.0;
-        let sb_h = 620.0;
+        let sb_x = 24.0;
+        let sb_y = 80.0;
+        let sb_w = 196.0;
+        let sb_h = 656.0;
 
-        // 1. Borderless Volumetric Obsidian Outer Shell (Option B calibrated glass)
+        // 1. Borderless Graphite Obsidian Outer Shell (flat macOS-style surface, no aurora bloom
+        // and zero per-frame offscreen PushLayer overhead).
         {
-            let (shell_top, shell_bot) = if frosted {
-                (tok::obsidian_shell_frosted(), tok::obsidian_deep_frosted())
-            } else {
-                (tok::obsidian_shell(), tok::obsidian_deep())
-            };
-            p.rrect_vertical_gradient(0.0, 0.0, w, h, r, shell_top, shell_bot);
-            let glow_scale = if frosted { 0.38 } else { 1.0 };
-            if p.prepare_rrect_clip(0.0, 0.0, w, h, r) {
-                p.radial_glow(
-                    92.0,
-                    40.0,
-                    184.0,
-                    fade(rgba(124, 58, 237, 46), glow_scale),
-                    BlendMode::SourceOver,
-                    true,
-                );
-                p.radial_glow(
-                    w - 72.0,
-                    h - 32.0,
-                    168.0,
-                    fade(rgba(124, 58, 237, 48), glow_scale),
-                    BlendMode::SourceOver,
-                    true,
-                );
-                p.elliptical_glow(
-                    w * 0.5,
-                    h + 12.0,
-                    w * 0.58,
-                    132.0,
-                    fade(rgba(168, 85, 247, 36), glow_scale),
-                    BlendMode::Plus,
-                    true,
-                );
-                p.radial_glow(
-                    w * 0.5,
-                    -14.0,
-                    w * 0.45,
-                    fade(rgba(235, 230, 255, 20), glow_scale),
-                    BlendMode::Plus,
-                    true,
-                );
-                p.pop_clip();
-            }
+            p.rrect_vertical_gradient(0.0, 0.0, w, h, r, cyno_tk::shell_top(), cyno_tk::shell_bot());
             p.text(
                 "CyNotch Preferences",
                 62.0,
                 28.0,
                 15.2,
                 Weight::Bold,
-                tok::text1(),
+                cyno_tk::title(),
             );
             p.text(
-                "Mahamatra Command Center · v0.3.1",
+                "Mahamatra Command Center - v1.0.0",
                 62.0,
                 45.5,
                 10.2,
                 Weight::Regular,
-                tok::text2(),
+                cyno_tk::subtitle(),
             );
             p.rrect(20.0, 64.0, w - 40.0, 1.0, 0.0, rgba(255, 255, 255, 18));
 
-            // Static Left Category Sidebar Card Shell + Sections Header + Global Hotkeys Footer
-            p.elevated_card(
-                sb_x,
-                sb_y,
-                sb_w,
-                sb_h,
-                20.0,
-                None,
-            );
-            p.text(
-                "SECTIONS",
-                sb_x + 18.0,
-                sb_y + 28.0,
-                9.5,
-                Weight::Bold,
-                tok::text3(),
+            // macOS-style flat sidebar: no nested card, just a quiet divider.
+            p.rrect(
+                sb_x + sb_w + 4.0,
+                sb_y + 8.0,
+                1.0,
+                sb_h - 16.0,
+                0.0,
+                rgba(255, 255, 255, 16),
             );
 
             let foot_y = sb_y + sb_h - 122.0;
-            let foot_h = 108.0;
-            p.rrect(sb_x + 12.0, foot_y, sb_w - 24.0, foot_h, 14.0, well_col);
+            p.rrect(
+                sb_x + 14.0,
+                foot_y - 14.0,
+                sb_w - 28.0,
+                1.0,
+                0.0,
+                rgba(255, 255, 255, 18),
+            );
             p.text(
-                "Global Hotkeys",
+                "Keyboard Shortcuts",
                 sb_x + 22.0,
                 foot_y + 23.0,
                 10.5,
                 Weight::Bold,
-                tok::cyno_mist(),
+                cyno_tk::accent_mist(),
             );
             p.text(
-                "Ctrl+Shift+C · Toggle",
+                "Ctrl+Alt+C  -  Toggle",
                 sb_x + 22.0,
                 foot_y + 46.0,
                 9.8,
                 Weight::Regular,
-                tok::text2(),
+                cyno_tk::subtitle(),
             );
             p.text(
-                "Ctrl+Shift+M · Purge",
+                "Ctrl+Alt+M  -  Purge",
                 sb_x + 22.0,
                 foot_y + 66.0,
                 9.8,
                 Weight::Regular,
-                tok::text2(),
+                cyno_tk::subtitle(),
             );
             p.text(
-                "Ctrl+Shift+S · Capture",
+                "Ctrl+Alt+S  -  Capture",
                 sb_x + 22.0,
                 foot_y + 86.0,
                 9.8,
                 Weight::Regular,
-                tok::text2(),
+                cyno_tk::subtitle(),
             );
 
             // Sidebar Pills with Framer-Motion spring-gliding active indicator
@@ -1302,9 +1311,9 @@ pub fn render_settings_d2d(
                 pill_w,
                 pill_h,
                 11.0,
-                tok::cyno_indigo(),
-                tok::cyno_violet(),
-                tok::cyno_orchid(),
+                cyno_tk::accent_deep(),
+                cyno_tk::accent(),
+                cyno_tk::accent_hi(),
                 0.0,
             );
             for (idx, cat) in SettingsCategory::ALL.into_iter().enumerate() {
@@ -1335,12 +1344,11 @@ pub fn render_settings_d2d(
                 let ic = match cat {
                     SettingsCategory::General => Icon::Display,
                     SettingsCategory::Motion => Icon::Activity,
-                    SettingsCategory::Modules => Icon::List,
                     SettingsCategory::Notifications => Icon::Bell,
                     SettingsCategory::System => Icon::Settings,
                 };
-                let rest_col = lerp_color(tok::text2(), tok::text1(), ht);
-                let col = lerp_color(rest_col, tok::text1(), under_pill);
+                let rest_col = lerp_color(cyno_tk::subtitle(), cyno_tk::title(), ht);
+                let col = lerp_color(rest_col, cyno_tk::title(), under_pill);
                 icons::draw(&mut p, ic, pill_x + 12.0, iy + 15.0, 14.0, col);
                 p.text(
                     cat.label(),
@@ -1383,7 +1391,7 @@ pub fn render_settings_d2d(
             close_x + 8.0,
             close_y + 8.0 - 0.55 * close_ht,
             12.0,
-            lerp_color(tok::text2(), tok::text1(), close_ht),
+            lerp_color(cyno_tk::subtitle(), cyno_tk::title(), close_ht),
         );
         p.hit(close_x, close_y, close_sz, close_sz, Action::CloseSettings);
 
@@ -1417,16 +1425,17 @@ pub fn render_settings_d2d(
 
     let mut pane_hits = Vec::new();
     let pane_anim_e = if state.are_animations_active() {
-        crate::models::ease_out_cubic(state.anim_settings_pane_t)
+        let u = state.anim_settings_pane_t.clamp(0.0, 1.0);
+        1.0 - (1.0 - u).powi(4)
     } else {
         1.0
     };
     let pane_slide_px = if pane_anim_e < 0.999 {
-        (1.0 - pane_anim_e) * 14.0 * state.anim_settings_pane_dir * s
+        (1.0 - pane_anim_e) * 12.0 * s
     } else {
         0.0
     };
-    let pane_alpha = (0.15 + 0.85 * pane_anim_e).clamp(0.0, 1.0);
+    let pane_alpha = pane_anim_e.clamp(0.0, 1.0) * open_alpha;
     {
         let mut pp = PainterD2D::new(
             ctx,
@@ -1434,7 +1443,7 @@ pub fn render_settings_d2d(
             fonts,
             s,
             pane_x_px,
-            pane_y_px + pane_top_pad * s - scroll_px + pane_slide_px,
+            pane_y_px + pane_top_pad * s - scroll_px + pane_slide_px + open_slide_px,
             pointer,
             &mut pane_hits,
             true,
@@ -1456,14 +1465,25 @@ pub fn render_settings_d2d(
                 windows::Win32::Graphics::Direct2D::D2D1_ANTIALIAS_MODE_PER_PRIMITIVE,
             );
         }
+        let pane_t = if state.are_animations_active() {
+            state.anim_settings_pane_t
+        } else {
+            1.0
+        };
+        let pane_dir = state.anim_settings_pane_dir;
         match state.settings_category {
-            SettingsCategory::General => draw_general_pane(&mut pp, state, 0.0, 0.0, PANE_W),
-            SettingsCategory::Motion => draw_motion_pane(&mut pp, state, 0.0, 0.0, PANE_W),
-            SettingsCategory::Modules => draw_modules_pane(&mut pp, state, 0.0, 0.0, PANE_W),
-            SettingsCategory::Notifications => {
-                draw_notifications_pane(&mut pp, state, 0.0, 0.0, PANE_W)
+            SettingsCategory::General => {
+                draw_general_pane(&mut pp, state, 0.0, 0.0, PANE_W, pane_t, pane_dir)
             }
-            SettingsCategory::System => draw_system_pane(&mut pp, state, 0.0, 0.0, PANE_W),
+            SettingsCategory::Motion => {
+                draw_motion_pane(&mut pp, state, 0.0, 0.0, PANE_W, pane_t, pane_dir)
+            }
+            SettingsCategory::Notifications => {
+                draw_notifications_pane(&mut pp, state, 0.0, 0.0, PANE_W, pane_t, pane_dir)
+            }
+            SettingsCategory::System => {
+                draw_system_pane(&mut pp, state, 0.0, 0.0, PANE_W, pane_t, pane_dir)
+            }
         }
         unsafe {
             ctx.PopAxisAlignedClip();
@@ -1497,7 +1517,7 @@ pub fn render_settings_d2d(
             None,
             &mut sb_hits,
             false,
-            1.0,
+            open_alpha,
             [0.0; 48],
             false,
             frosted,
@@ -1534,6 +1554,25 @@ fn switch_val(state: &AppState, id: ToggleId) -> f32 {
     }
 }
 
+/// Linear-style row affordances shared by settings controls: a quiet leading
+/// glyph and a always-visible status badge. Both are derived from the row's own
+/// label/state, so no call site needs to pass extra data.
+fn row_icon(label: &str) -> Icon {
+    let l = label.to_ascii_lowercase();
+    if l.contains("style") || l.contains("shape") { Icon::Display }
+    else if l.contains("edge") || l.contains("dock") { Icon::Grip }
+    else if l.contains("size") || l.contains("scale") { Icon::Droplet }
+    else if l.contains("lock") || l.contains("pin") { Icon::Lock }
+    else if l.contains("sound") || l.contains("audio") || l.contains("volume") { Icon::Volume }
+    else if l.contains("music") { Icon::Music }
+    else if l.contains("notif") || l.contains("alert") { Icon::Bell }
+    else if l.contains("speed") || l.contains("motion") || l.contains("anim") { Icon::Activity }
+    else if l.contains("memory") || l.contains("ram") || l.contains("purge") { Icon::Zap }
+    else if l.contains("full") || l.contains("screen") { Icon::Video }
+    else if l.contains("time") || l.contains("clock") || l.contains("dwell") { Icon::Timer }
+    else { Icon::Settings }
+}
+
 fn draw_segmented_row<T: Copy + PartialEq>(
     p: &mut PainterD2D,
     label: &str,
@@ -1544,14 +1583,21 @@ fn draw_segmented_row<T: Copy + PartialEq>(
     current: T,
     items: &[(&str, T, Action)],
 ) {
+    // Linear-style leading glyph: quiet at rest, lifts on hover.
+    let row_ht = p.hot_t(row_x - 4.0, row_y, ctrl_w + (ctrl_x - row_x) + 8.0, 36.0);
+    let ic_col = lerp_color(cyno_tk::subtitle(), cyno_tk::accent_hi(), row_ht);
+    icons::draw(p, row_icon(label), row_x - 2.0, row_y + 7.0, 14.0, ic_col);
     p.text(
         label,
-        row_x,
+        row_x + 20.0,
         row_y + 18.5,
         11.5,
         Weight::Semibold,
-        tok::text1(),
+        cyno_tk::title(),
     );
+    // The active segment is already violet-filled, so it is self-evident.
+    // A separate badge here used to overlap the first chip; removed for a calm,
+    // centered segmented row.
     let gap = 7.0;
     let btn_w =
         (ctrl_w - gap * (items.len().saturating_sub(1) as f32)) / (items.len().max(1) as f32);
@@ -1568,9 +1614,9 @@ fn draw_segmented_row<T: Copy + PartialEq>(
                 btn_w,
                 btn_h,
                 8.5,
-                tok::cyno_indigo(),
-                tok::cyno_violet(),
-                tok::cyno_orchid(),
+                cyno_tk::accent_deep(),
+                cyno_tk::accent(),
+                cyno_tk::accent_hi(),
                 ht,
             );
             p.text_center_shadow_fit(
@@ -1579,7 +1625,7 @@ fn draw_segmented_row<T: Copy + PartialEq>(
                 row_y + 18.0 - 0.7 * ht,
                 font_sz,
                 Weight::Bold,
-                tok::text1(),
+                cyno_tk::title(),
                 btn_w - 8.0,
             );
         } else {
@@ -1590,7 +1636,7 @@ fn draw_segmented_row<T: Copy + PartialEq>(
                 row_y + 18.0 - 0.55 * ht,
                 font_sz,
                 Weight::Semibold,
-                lerp_color(tok::text_soft(), tok::text1(), ht),
+                lerp_color(tok::text_soft(), cyno_tk::title(), ht),
                 btn_w - 8.0,
             );
         }
@@ -1623,17 +1669,23 @@ fn draw_toggle_row(
     }
     // 2026 Linear/macOS 1px inset hairline separator below row
     p.rrect(x, y + 43.5, w, 1.0, 0.0, rgba(255, 255, 255, 12));
-    let max_text_w = (w - 64.0).max(80.0);
+    // Leading glyph + status badge: the row's state is readable at a glance.
+    let ic_col = lerp_color(cyno_tk::subtitle(), cyno_tk::accent_hi(), ht);
+    icons::draw(p, row_icon(title), x + 2.0, y + 10.0, 14.0, ic_col);
+    // No On/Off text badge: the switch's knob position and fill already state
+    // the value, and a separate pill used to read as misaligned clutter.
+    let tx = x + 24.0;
+    let max_text_w = (w - 94.0).max(80.0);
     let t_ell = p.ellipsize(title, 12.0, Weight::Semibold, max_text_w);
     let s_ell = p.ellipsize(sub, 9.8, Weight::Regular, max_text_w);
-    p.text(&t_ell, x, y + 14.5 + dy, 12.0, Weight::Semibold, tok::text1());
+    p.text(&t_ell, tx, y + 14.5 + dy, 12.0, Weight::Semibold, cyno_tk::title());
     p.text(
         &s_ell,
-        x,
+        tx,
         y + 32.0 + dy,
         9.8,
         Weight::Regular,
-        lerp_color(tok::text2(), tok::text_soft(), ht * 0.5),
+        lerp_color(cyno_tk::subtitle(), tok::text_soft(), ht * 0.5),
     );
     let sw_w = 46.0;
     let sw_h = 22.0;
@@ -1644,22 +1696,29 @@ fn draw_toggle_row(
     p.hit(x - 6.0, y, w + 12.0, 40.0, action);
 }
 
-fn draw_general_pane(p: &mut PainterD2D, state: &AppState, px: f32, py: f32, pw: f32) {
+fn draw_general_pane(
+    p: &mut PainterD2D,
+    state: &AppState,
+    px: f32,
+    py: f32,
+    pw: f32,
+    pane_t: f32,
+    pane_dir: f32,
+) {
     let ix = px + PAD;
     let inner_w = pw - PAD * 2.0;
     let ctrl_x = px + CTRL_X_OFF;
     let ctrl_w = pw - CTRL_X_OFF - PAD;
 
     // Card 1: Notch Shell & Placement (h = 262)
-    let c1_h = 262.0;
+    let c1_h = 222.0;
     let c1_pitch = 40.0;
-    p.elevated_card(
+    apple_section_card(p, 
         px,
         py,
         pw,
         c1_h,
         16.0,
-        None,
     );
     p.text(
         "Notch Shell & Placement",
@@ -1667,15 +1726,15 @@ fn draw_general_pane(p: &mut PainterD2D, state: &AppState, px: f32, py: f32, pw:
         py + 25.0,
         13.5,
         Weight::Bold,
-        tok::text1(),
+        cyno_tk::title(),
     );
     p.text(
-        "Shape, edge dock, size presets & window lock",
+        "Shape, edge dock & size presets",
         ix,
         py + 41.0,
         10.0,
         Weight::Regular,
-        tok::text2(),
+        cyno_tk::subtitle(),
     );
 
     draw_segmented_row(
@@ -1766,92 +1825,18 @@ fn draw_general_pane(p: &mut PainterD2D, state: &AppState, px: f32, py: f32, pw:
         ],
     );
 
-    let row5_y = py + 56.0 + c1_pitch * 4.0;
-    p.text(
-        "Position & Lock",
-        ix,
-        row5_y + 18.5,
-        11.5,
-        Weight::Semibold,
-        tok::text1(),
-    );
-    let btn_w = (ctrl_w - 8.0) / 2.0;
-    let pin_ht = p.hot_t(ctrl_x, row5_y, btn_w, 28.0);
-    p.tactile_surface_pill_t(
-        ctrl_x,
-        row5_y,
-        btn_w,
-        28.0,
-        8.5,
-        pin_ht,
-        if state.is_pinned {
-            Some(tok::cyno_violet())
-        } else {
-            None
-        },
-    );
-    let pin_lbl = if state.is_pinned {
-        "Pinned Open: ON"
-    } else {
-        "Pin Open: OFF"
-    };
-    p.text_center(
-        pin_lbl,
-        ctrl_x + btn_w / 2.0,
-        row5_y + 18.0 - 0.55 * pin_ht,
-        10.4,
-        Weight::Bold,
-        tok::text1(),
-    );
-    p.hit(ctrl_x, row5_y, btn_w, 28.0, Action::TogglePin);
-
-    let moved = state.x_offset != 0 || state.y_offset != 0;
-    let ctr_x = ctrl_x + btn_w + 8.0;
-    let ctr_ht = p.hot_t(ctr_x, row5_y, btn_w, 28.0);
-    p.tactile_surface_pill_t(
-        ctr_x,
-        row5_y,
-        btn_w,
-        28.0,
-        8.5,
-        ctr_ht,
-        if moved {
-            Some(tok::cyno_violet())
-        } else {
-            None
-        },
-    );
-    let ctr_lbl = if !moved {
-        "Centered (0px)".to_string()
-    } else if state.placement.is_vertical() {
-        format!("Center ({:+}px)", state.y_offset)
-    } else {
-        format!("Center ({:+}px)", state.x_offset)
-    };
-    p.text_center(
-        &ctr_lbl,
-        ctr_x + btn_w / 2.0,
-        row5_y + 18.0 - 0.55 * ctr_ht,
-        10.4,
-        Weight::Semibold,
-        if moved {
-            tok::text1()
-        } else {
-            tok::text_soft()
-        },
-    );
-    p.hit(ctr_x, row5_y, btn_w, 28.0, Action::ResetPosition);
+    // Position & Lock controls removed from Preferences. Locking stays on the
+    // notch itself via the padlock icon; centering is handled by dragging.
 
     // Card 2: Interaction, Type Scale & Idle Visuals (h = 484; fixed calibrated 15px glass, zero sliders)
-    let c2_y = py + c1_h + CARD_GAP;
-    let c2_h = 484.0;
-    p.elevated_card(
+    let c2_y = py + c1_h + CARD_GAP + card_stagger_offset(pane_t, pane_dir, 1);
+    let c2_h = 436.0;
+    apple_section_card(p, 
         px,
         c2_y,
         pw,
         c2_h,
         16.0,
-        None,
     );
     p.text(
         "Interaction & Idle Visuals",
@@ -1859,15 +1844,15 @@ fn draw_general_pane(p: &mut PainterD2D, state: &AppState, px: f32, py: f32, pw:
         c2_y + 25.0,
         13.5,
         Weight::Bold,
-        tok::text1(),
+        cyno_tk::title(),
     );
     p.text(
-        "Desktop font scaling, idle readout, stealth pill & live progress arc",
+        "Font size, idle readout, slim bar & live progress ring",
         ix,
         c2_y + 41.0,
         10.0,
         Weight::Regular,
-        tok::text2(),
+        cyno_tk::subtitle(),
     );
 
     draw_segmented_row(
@@ -1946,7 +1931,7 @@ fn draw_general_pane(p: &mut PainterD2D, state: &AppState, px: f32, py: f32, pw:
         t_base,
         inner_w,
         "Minimize Idle Island",
-        "Ultra-compact 86×18px stealth capsule when collapsed",
+        "Shrink to a slim bar when idle",
         ToggleId::MinimizedIsland,
         Action::ToggleMinimizedIsland,
     );
@@ -1957,7 +1942,7 @@ fn draw_general_pane(p: &mut PainterD2D, state: &AppState, px: f32, py: f32, pw:
         t_base + TOGGLE_PITCH,
         inner_w,
         "Expand on Click Only",
-        "Require click instead of cursor hover to open notch",
+        "Open with a click instead of hovering",
         ToggleId::ClickToOpen,
         Action::ToggleClickToOpen,
     );
@@ -1968,7 +1953,7 @@ fn draw_general_pane(p: &mut PainterD2D, state: &AppState, px: f32, py: f32, pw:
         t_base + TOGGLE_PITCH * 2.0,
         inner_w,
         "Hide in Fullscreen Apps",
-        "Conceal idle notch automatically over fullscreen games or video",
+        "Hide the notch automatically in fullscreen apps and videos",
         ToggleId::HideFullscreen,
         Action::ToggleHideFullscreen,
     );
@@ -1979,7 +1964,7 @@ fn draw_general_pane(p: &mut PainterD2D, state: &AppState, px: f32, py: f32, pw:
         t_base + TOGGLE_PITCH * 3.0,
         inner_w,
         "Show Liquid Glass Spirit",
-        "Display animated Liquid Glass Spirit mascot across notch states",
+        "Show the animated Spirit mascot",
         ToggleId::ShowMascot,
         Action::ToggleShowMascot,
     );
@@ -1990,7 +1975,7 @@ fn draw_general_pane(p: &mut PainterD2D, state: &AppState, px: f32, py: f32, pw:
         t_base + TOGGLE_PITCH * 4.0,
         inner_w,
         "Live Progress Arc",
-        "Wrap idle badge in live progress ring (RAM, track)",
+        "Show a live progress ring around the idle badge",
         ToggleId::ProgressArc,
         Action::ToggleProgressArc,
     );
@@ -2005,77 +1990,95 @@ fn draw_general_pane(p: &mut PainterD2D, state: &AppState, px: f32, py: f32, pw:
         ToggleId::RemoveWindowsBorders,
         Action::ToggleRemoveWindowsBorders,
     );
-    let frost_y = t_base + TOGGLE_PITCH * 6.0;
-    let frost_sub = if state.windows_transparency_enabled {
-        "Calibrated 15px airy obsidian liquid glass with optical luminosity clamp"
-    } else {
-        "Requires Windows Transparency Effects (currently Off in Windows)"
-    };
+    // Frosted/transparency toggle removed: Preferences now always requests the
+    // acrylic backdrop, and transparency is governed by Windows itself.
+
+    // Card 3: Background Listeners (h = 196)
+    let c3_y = py + c1_h + CARD_GAP + c2_h + CARD_GAP + card_stagger_offset(pane_t, pane_dir, 2);
+    let c3_h = 196.0;
+    let mod_tog_pitch = 44.0;
+    apple_section_card(p, 
+        px,
+        c3_y,
+        pw,
+        c3_h,
+        16.0,
+    );
+    p.text(
+        "Background Listeners",
+        ix,
+        c3_y + 25.0,
+        13.5,
+        Weight::Bold,
+        cyno_tk::title(),
+    );
+    p.text(
+        "Clipboard history, lyrics lookup & snapshot output rules",
+        ix,
+        c3_y + 41.0,
+        10.0,
+        Weight::Regular,
+        cyno_tk::subtitle(),
+    );
+
     draw_toggle_row(
         p,
         state,
         ix,
-        frost_y,
+        c3_y + 54.0,
         inner_w,
-        "Obsidian Liquid Glass",
-        frost_sub,
-        ToggleId::FrostedGlass,
-        Action::ToggleFrostedGlass,
+        "Watch Clipboard History",
+        "Auto-save copied text into Quick Shelf (Local-only, skips password managers)",
+        ToggleId::ClipboardWatch,
+        Action::ToggleClipboardWatch,
     );
-    if !state.windows_transparency_enabled {
-        let win_btn_w = 96.0;
-        let win_btn_h = 22.0;
-        let win_btn_x = ix + inner_w - 46.0 - 10.0 - win_btn_w;
-        let win_btn_y = frost_y + 8.0;
-        let wb_ht = p.hot_t(win_btn_x, win_btn_y, win_btn_w, win_btn_h);
-        p.tactile_surface_pill_t(
-            win_btn_x,
-            win_btn_y,
-            win_btn_w,
-            win_btn_h,
-            11.0,
-            wb_ht,
-            Some(tok::cyno_violet()),
-        );
-        p.text_center_fit(
-            "Enable in Win",
-            win_btn_x + win_btn_w * 0.5,
-            win_btn_y + 14.5,
-            9.0,
-            Weight::Bold,
-            tok::text1(),
-            win_btn_w - 8.0,
-        );
-        p.hit(
-            win_btn_x,
-            win_btn_y,
-            win_btn_w,
-            win_btn_h,
-            Action::OpenWinPersonalizeColors,
-        );
-    }
+    draw_toggle_row(
+        p,
+        state,
+        ix,
+        c3_y + 54.0 + mod_tog_pitch,
+        inner_w,
+        "Fetch Synced Track Lyrics",
+        "Lookup live timestamped lyrics when songs change (uses LRCLIB)",
+        ToggleId::LyricsMonitor,
+        Action::ToggleLyricsMonitor,
+    );
+    draw_toggle_row(
+        p,
+        state,
+        ix,
+        c3_y + 54.0 + mod_tog_pitch * 2.0,
+        inner_w,
+        "Copy Captures to Clipboard",
+        "Copy screenshot image alongside saving PNG to disk",
+        ToggleId::CaptureClipboard,
+        Action::ToggleCaptureClipboard,
+    );
 }
 
-fn draw_motion_pane(p: &mut PainterD2D, state: &AppState, px: f32, py: f32, pw: f32) {
+fn draw_motion_pane(
+    p: &mut PainterD2D,
+    state: &AppState,
+    px: f32,
+    py: f32,
+    pw: f32,
+    pane_t: f32,
+    pane_dir: f32,
+) {
     let ix = px + PAD;
     let inner_w = pw - PAD * 2.0;
     let ctrl_x = px + CTRL_X_OFF;
     let ctrl_w = pw - CTRL_X_OFF - PAD;
-    let well_col = if state.is_frosted_active() {
-        tok::surface_well_frosted()
-    } else {
-        tok::surface_well()
-    };
+    let well_col = cyno_tk::well();
 
     // Card 1: Zero-Bounce Motion Engine (h = 208)
     let c1_h = 208.0;
-    p.elevated_card(
+    apple_section_card(p, 
         px,
         py,
         pw,
         c1_h,
         16.0,
-        None,
     );
     p.text(
         "Fluid Motion Engine",
@@ -2083,13 +2086,13 @@ fn draw_motion_pane(p: &mut PainterD2D, state: &AppState, px: f32, py: f32, pw: 
         py + 26.0,
         13.5,
         Weight::Bold,
-        tok::text1(),
+        cyno_tk::title(),
     );
     let hz_sub = format!(
-        "Monitor refresh: {} Hz · Adaptive pacing drops to 0% CPU when idle",
+        "Monitor refresh: {} Hz  -  Adaptive pacing drops to 0% CPU when idle",
         state.detected_hz.max(60)
     );
-    p.text(&hz_sub, ix, py + 43.0, 10.0, Weight::Regular, tok::text2());
+    p.text(&hz_sub, ix, py + 43.0, 10.0, Weight::Regular, cyno_tk::subtitle());
 
     draw_segmented_row(
         p,
@@ -2143,9 +2146,9 @@ fn draw_motion_pane(p: &mut PainterD2D, state: &AppState, px: f32, py: f32, pw: 
     };
     p.circle(ix + 16.0, info_y + 17.0, 3.6, dot_col);
     let anim_banner = if state.windows_animations_enabled {
-        "Windows Animation Effects: ON · Fluid spring choreography & portal motion active"
+        "Windows Animation Effects: ON  -  Fluid spring choreography & portal motion active"
     } else {
-        "Windows Animation Effects: OFF · Motion paused — enable in Windows Accessibility"
+        "Windows Animation Effects: OFF  -  Motion paused — enable in Windows Accessibility"
     };
     p.text(
         anim_banner,
@@ -2154,22 +2157,21 @@ fn draw_motion_pane(p: &mut PainterD2D, state: &AppState, px: f32, py: f32, pw: 
         9.8,
         Weight::Semibold,
         if state.windows_animations_enabled {
-            tok::cyno_violet_hi()
+            cyno_tk::accent_hi()
         } else {
             rgba(252, 211, 77, 235)
         },
     );
 
     // Card 2: Micro-Interactions & Audio Spectrum (h = 172)
-    let c2_y = py + c1_h + CARD_GAP;
+    let c2_y = py + c1_h + CARD_GAP + card_stagger_offset(pane_t, pane_dir, 1);
     let c2_h = 172.0;
-    p.elevated_card(
+    apple_section_card(p, 
         px,
         c2_y,
         pw,
         c2_h,
         16.0,
-        None,
     );
     p.text(
         "Micro-Interactions & Audio Spectrum",
@@ -2177,7 +2179,7 @@ fn draw_motion_pane(p: &mut PainterD2D, state: &AppState, px: f32, py: f32, pw: 
         c2_y + 26.0,
         13.5,
         Weight::Bold,
-        tok::text1(),
+        cyno_tk::title(),
     );
     p.text(
         "Hover glow glides, micro-lift physics & live media spectrum bars",
@@ -2185,7 +2187,7 @@ fn draw_motion_pane(p: &mut PainterD2D, state: &AppState, px: f32, py: f32, pw: 
         c2_y + 43.0,
         10.0,
         Weight::Regular,
-        tok::text2(),
+        cyno_tk::subtitle(),
     );
 
     draw_toggle_row(
@@ -2212,28 +2214,31 @@ fn draw_motion_pane(p: &mut PainterD2D, state: &AppState, px: f32, py: f32, pw: 
     );
 }
 
-fn draw_notifications_pane(p: &mut PainterD2D, state: &AppState, px: f32, py: f32, pw: f32) {
+fn draw_notifications_pane(
+    p: &mut PainterD2D,
+    state: &AppState,
+    px: f32,
+    py: f32,
+    pw: f32,
+    pane_t: f32,
+    pane_dir: f32,
+) {
     let ix = px + PAD;
     let inner_w = pw - PAD * 2.0;
     let ctrl_x = px + CTRL_X_OFF;
     let ctrl_w = pw - CTRL_X_OFF - PAD;
-    let well_col = if state.is_frosted_active() {
-        tok::surface_well_frosted()
-    } else {
-        tok::surface_well()
-    };
-    let card_gap = 14.0;
+    let well_col = cyno_tk::well();
+    let card_gap = CARD_GAP;
     let tog_pitch = 45.0;
 
     // Card 1: Notch Banner & Fullscreen Rules (h = 208)
     let c1_h = 208.0;
-    p.elevated_card(
+    apple_section_card(p, 
         px,
         py,
         pw,
         c1_h,
         16.0,
-        None,
     );
     p.text(
         "Notch Banner & Fullscreen Rules",
@@ -2241,7 +2246,7 @@ fn draw_notifications_pane(p: &mut PainterD2D, state: &AppState, px: f32, py: f3
         py + 25.0,
         13.5,
         Weight::Bold,
-        tok::text1(),
+        cyno_tk::title(),
     );
     p.text(
         "Popup alerts, display duration & fullscreen/borderless game overlay behavior",
@@ -2249,7 +2254,7 @@ fn draw_notifications_pane(p: &mut PainterD2D, state: &AppState, px: f32, py: f3
         py + 41.0,
         10.0,
         Weight::Regular,
-        tok::text2(),
+        cyno_tk::subtitle(),
     );
 
     draw_toggle_row(
@@ -2291,15 +2296,14 @@ fn draw_notifications_pane(p: &mut PainterD2D, state: &AppState, px: f32, py: f3
     );
 
     // Card 2: Windows Notifications Bridge (h = 236)
-    let c2_y = py + c1_h + card_gap;
+    let c2_y = py + c1_h + card_gap + card_stagger_offset(pane_t, pane_dir, 1);
     let c2_h = 236.0;
-    p.elevated_card(
+    apple_section_card(p, 
         px,
         c2_y,
         pw,
         c2_h,
         16.0,
-        None,
     );
     p.text(
         "Windows Notifications Bridge",
@@ -2307,7 +2311,7 @@ fn draw_notifications_pane(p: &mut PainterD2D, state: &AppState, px: f32, py: f3
         c2_y + 25.0,
         13.5,
         Weight::Bold,
-        tok::text1(),
+        cyno_tk::title(),
     );
 
     let st_w =
@@ -2344,7 +2348,7 @@ fn draw_notifications_pane(p: &mut PainterD2D, state: &AppState, px: f32, py: f3
         if is_listening {
             tok::cyan_hi()
         } else {
-            tok::text2()
+            cyno_tk::subtitle()
         },
     );
 
@@ -2417,7 +2421,7 @@ fn draw_notifications_pane(p: &mut PainterD2D, state: &AppState, px: f32, py: f3
         if state.notif_listener_status == "Permission needed" {
             rgba(251, 191, 36, 235)
         } else {
-            tok::text2()
+            cyno_tk::subtitle()
         },
     );
     let tb_ht = p.hot_t(tb_x, bot2_y, tb_w, 28.0);
@@ -2436,7 +2440,7 @@ fn draw_notifications_pane(p: &mut PainterD2D, state: &AppState, px: f32, py: f3
         bot2_y + 18.0 - 0.55 * tb_ht,
         9.6,
         Weight::Bold,
-        tok::text1(),
+        cyno_tk::title(),
         tb_w - 8.0,
     );
     p.hit(tb_x, bot2_y, tb_w, 28.0, Action::SendTestNotification);
@@ -2449,7 +2453,7 @@ fn draw_notifications_pane(p: &mut PainterD2D, state: &AppState, px: f32, py: f3
         28.0,
         8.5,
         wn_ht,
-        Some(tok::cyno_violet()),
+        Some(cyno_tk::accent()),
     );
     p.text_center_shadow_fit(
         "Win Notif Settings",
@@ -2457,21 +2461,20 @@ fn draw_notifications_pane(p: &mut PainterD2D, state: &AppState, px: f32, py: f3
         bot2_y + 18.0 - 0.55 * wn_ht,
         9.8,
         Weight::Bold,
-        tok::text1(),
+        cyno_tk::title(),
         wn_w - 8.0,
     );
     p.hit(wn_x, bot2_y, wn_w, 28.0, Action::OpenWinNotifSettings);
 
     // Card 3: Notification Chime & Audio (h = 134)
-    let c3_y = c2_y + c2_h + card_gap;
+    let c3_y = py + c1_h + card_gap + c2_h + card_gap + card_stagger_offset(pane_t, pane_dir, 2);
     let c3_h = 134.0;
-    p.elevated_card(
+    apple_section_card(p, 
         px,
         c3_y,
         pw,
         c3_h,
         16.0,
-        None,
     );
     p.text(
         "Notification Chime & Audio",
@@ -2479,15 +2482,15 @@ fn draw_notifications_pane(p: &mut PainterD2D, state: &AppState, px: f32, py: f3
         c3_y + 25.0,
         13.5,
         Weight::Bold,
-        tok::text1(),
+        cyno_tk::title(),
     );
     p.text(
-        "Snapchat pop chime (fixed gentle 25% volume · plays once per burst)",
+        "Snapchat pop chime (fixed gentle 25% volume  -  plays once per burst)",
         ix,
         c3_y + 41.0,
         10.0,
         Weight::Regular,
-        tok::text2(),
+        cyno_tk::subtitle(),
     );
 
     let active_sound = state.notification_sound;
@@ -2522,9 +2525,9 @@ fn draw_notifications_pane(p: &mut PainterD2D, state: &AppState, px: f32, py: f3
         9.2,
         Weight::Bold,
         if is_muted {
-            tok::text2()
+            cyno_tk::subtitle()
         } else {
-            tok::cyno_violet_hi()
+            cyno_tk::accent_hi()
         },
         badge_w - 12.0,
     );
@@ -2552,9 +2555,9 @@ fn draw_notifications_pane(p: &mut PainterD2D, state: &AppState, px: f32, py: f3
                 pill_w,
                 pill_h,
                 7.0,
-                tok::cyno_indigo(),
-                tok::cyno_violet(),
-                tok::cyno_orchid(),
+                cyno_tk::accent_deep(),
+                cyno_tk::accent(),
+                cyno_tk::accent_hi(),
                 ht,
             );
         } else if ht > 0.01 {
@@ -2582,9 +2585,9 @@ fn draw_notifications_pane(p: &mut PainterD2D, state: &AppState, px: f32, py: f3
                 Weight::Semibold
             },
             if selected {
-                tok::text1()
+                cyno_tk::title()
             } else {
-                tok::text2()
+                cyno_tk::subtitle()
             },
             pill_w - 6.0,
         );
@@ -2611,7 +2614,7 @@ fn draw_notifications_pane(p: &mut PainterD2D, state: &AppState, px: f32, py: f3
         bot3_y + 17.5,
         9.4,
         Weight::Regular,
-        tok::text2(),
+        cyno_tk::subtitle(),
     );
 
     let ts_ht = p.hot_t(ts_x, bot3_y, ts_w, 28.0);
@@ -2625,7 +2628,7 @@ fn draw_notifications_pane(p: &mut PainterD2D, state: &AppState, px: f32, py: f3
         Some(if is_muted {
             rgba(255, 255, 255, 50)
         } else {
-            tok::cyno_violet()
+            cyno_tk::accent()
         }),
     );
     p.text_center_shadow_fit(
@@ -2635,308 +2638,37 @@ fn draw_notifications_pane(p: &mut PainterD2D, state: &AppState, px: f32, py: f3
         9.8,
         Weight::Bold,
         if is_muted {
-            tok::text2()
+            cyno_tk::subtitle()
         } else {
-            tok::text1()
+            cyno_tk::title()
         },
         ts_w - 8.0,
     );
     p.hit(ts_x, bot3_y, ts_w, 28.0, Action::TestNotificationSound);
 }
 
-fn draw_modules_pane(p: &mut PainterD2D, state: &AppState, px: f32, py: f32, pw: f32) {
+fn draw_system_pane(
+    p: &mut PainterD2D,
+    state: &AppState,
+    px: f32,
+    py: f32,
+    pw: f32,
+    pane_t: f32,
+    pane_dir: f32,
+) {
     let ix = px + PAD;
     let inner_w = pw - PAD * 2.0;
-    let ctrl_x = px + CTRL_X_OFF;
-    let ctrl_w = pw - CTRL_X_OFF - PAD;
-    let card_gap = 14.0;
+    let well_col = cyno_tk::well();
+    let card_gap = CARD_GAP;
 
-    // Card 1: Dock Modules (h = 244)
-    let c1_h = 244.0;
-    p.elevated_card(
+    // Card 1: Mem Reduct Engine (h = 268, Safe Trim profile)
+    let c1_h = 268.0;
+    apple_section_card(p, 
         px,
         py,
         pw,
         c1_h,
         16.0,
-        None,
-    );
-    p.text(
-        "Dock Modules",
-        ix,
-        py + 25.0,
-        13.5,
-        Weight::Bold,
-        tok::text1(),
-    );
-    p.text(
-        "Show or hide tabs in the notch dock (Command Hub stays pinned)",
-        ix,
-        py + 41.0,
-        10.0,
-        Weight::Regular,
-        tok::text2(),
-    );
-
-    let tiles = [
-        (
-            Icon::Music,
-            "Music Player",
-            ToggleId::ModMusic,
-            NotchMode::Music,
-        ),
-        (
-            Icon::Volume,
-            "Volume Master",
-            ToggleId::ModVolume,
-            NotchMode::Volume,
-        ),
-        (
-            Icon::Wave,
-            "Memory Reduct",
-            ToggleId::ModMemReduct,
-            NotchMode::MemReduct,
-        ),
-        (
-            Icon::Clipboard,
-            "File Shelf",
-            ToggleId::ModShelf,
-            NotchMode::Shelf,
-        ),
-    ];
-
-    let col_gap = 18.0;
-    let row_gap = 9.0;
-    let tile_w = (inner_w - col_gap) / 2.0;
-    let tile_h = 36.0;
-    let grid_y = py + 56.0;
-
-    for (idx, (ic, name, tid, mode)) in tiles.iter().enumerate() {
-        let col = idx % 2;
-        let row = idx / 2;
-        let tx = ix + (col as f32) * (tile_w + col_gap);
-        let ty = grid_y + (row as f32) * (tile_h + row_gap);
-        let active = state.toggle_target(*tid);
-        let ht = p.hot_t(tx, ty, tile_w, tile_h);
-        let dy = -0.8 * ht;
-
-        // 2026 Borderless List Paradigm: zero box border at rest, soft glass hover highlight + 1px hairline
-        if ht > 0.02 {
-            p.rrect(
-                tx - 4.0,
-                ty + dy,
-                tile_w + 8.0,
-                tile_h,
-                9.0,
-                fade(rgba(255, 255, 255, 16), ht),
-            );
-        }
-        p.rrect(
-            tx + 4.0,
-            ty + tile_h + 2.0,
-            tile_w - 8.0,
-            1.0,
-            0.0,
-            rgba(255, 255, 255, 11),
-        );
-        icons::draw(
-            p,
-            *ic,
-            tx + 8.0,
-            ty + 11.0 + dy,
-            14.0,
-            if active {
-                tok::cyno_violet_hi()
-            } else {
-                tok::text3()
-            },
-        );
-        p.text(
-            name,
-            tx + 30.0,
-            ty + 22.0 + dy,
-            11.4,
-            Weight::Semibold,
-            if active {
-                tok::text1()
-            } else {
-                tok::text2()
-            },
-        );
-        let st = switch_val(state, *tid);
-        p.draw_toggle_switch(tx + tile_w - 44.0, ty + 9.0 + dy * 0.5, 38.0, 18.0, st, ht);
-        p.hit(tx, ty, tile_w, tile_h, Action::ToggleModule(*mode));
-    }
-
-    // Card 2: Music Lyrics Display (h = 138)
-    let c2_y = py + c1_h + card_gap;
-    let c2_h = 138.0;
-    p.elevated_card(
-        px,
-        c2_y,
-        pw,
-        c2_h,
-        16.0,
-        None,
-    );
-    p.text(
-        "Music Lyrics Display",
-        ix,
-        c2_y + 25.0,
-        13.5,
-        Weight::Bold,
-        tok::text1(),
-    );
-    p.text(
-        "Customize synced lyrics font scale and presentation layout in Music mode",
-        ix,
-        c2_y + 41.0,
-        10.0,
-        Weight::Regular,
-        tok::text2(),
-    );
-
-    draw_segmented_row(
-        p,
-        "Lyric Size",
-        ix,
-        c2_y + 56.0,
-        ctrl_x,
-        ctrl_w,
-        state.lyric_size,
-        &[
-            (
-                "Compact",
-                LyricSize::Compact,
-                Action::SetLyricSize(LyricSize::Compact),
-            ),
-            (
-                "Standard",
-                LyricSize::Standard,
-                Action::SetLyricSize(LyricSize::Standard),
-            ),
-            (
-                "Large",
-                LyricSize::Large,
-                Action::SetLyricSize(LyricSize::Large),
-            ),
-        ],
-    );
-    draw_segmented_row(
-        p,
-        "Lyric Style",
-        ix,
-        c2_y + 94.0,
-        ctrl_x,
-        ctrl_w,
-        state.lyric_style,
-        &[
-            (
-                "Classic",
-                LyricStyle::ClassicList,
-                Action::SetLyricStyle(LyricStyle::ClassicList),
-            ),
-            (
-                "Karaoke",
-                LyricStyle::KaraokeGlow,
-                Action::SetLyricStyle(LyricStyle::KaraokeGlow),
-            ),
-            (
-                "Minimal",
-                LyricStyle::MinimalSingle,
-                Action::SetLyricStyle(LyricStyle::MinimalSingle),
-            ),
-            (
-                "Stream",
-                LyricStyle::CompactStream,
-                Action::SetLyricStyle(LyricStyle::CompactStream),
-            ),
-        ],
-    );
-
-    // Card 3: Background Listeners (h = 196)
-    let c3_y = c2_y + c2_h + card_gap;
-    let c3_h = 196.0;
-    let mod_tog_pitch = 44.0;
-    p.elevated_card(
-        px,
-        c3_y,
-        pw,
-        c3_h,
-        16.0,
-        None,
-    );
-    p.text(
-        "Background Listeners",
-        ix,
-        c3_y + 25.0,
-        13.5,
-        Weight::Bold,
-        tok::text1(),
-    );
-    p.text(
-        "Clipboard history, lyrics lookup & snapshot output rules",
-        ix,
-        c3_y + 41.0,
-        10.0,
-        Weight::Regular,
-        tok::text2(),
-    );
-
-    draw_toggle_row(
-        p,
-        state,
-        ix,
-        c3_y + 54.0,
-        inner_w,
-        "Watch Clipboard History",
-        "Auto-save copied text snippets into Quick Shelf",
-        ToggleId::ClipboardWatch,
-        Action::ToggleClipboardWatch,
-    );
-    draw_toggle_row(
-        p,
-        state,
-        ix,
-        c3_y + 54.0 + mod_tog_pitch,
-        inner_w,
-        "Fetch Synced Track Lyrics",
-        "Lookup live timestamped lyrics when songs change",
-        ToggleId::LyricsMonitor,
-        Action::ToggleLyricsMonitor,
-    );
-    draw_toggle_row(
-        p,
-        state,
-        ix,
-        c3_y + 54.0 + mod_tog_pitch * 2.0,
-        inner_w,
-        "Copy Captures to Clipboard",
-        "Copy screenshot image alongside saving PNG to disk",
-        ToggleId::CaptureClipboard,
-        Action::ToggleCaptureClipboard,
-    );
-}
-
-fn draw_system_pane(p: &mut PainterD2D, state: &AppState, px: f32, py: f32, pw: f32) {
-    let ix = px + PAD;
-    let inner_w = pw - PAD * 2.0;
-    let well_col = if state.is_frosted_active() {
-        tok::surface_well_frosted()
-    } else {
-        tok::surface_well()
-    };
-    let card_gap = 14.0;
-
-    // Card 1: Mem Reduct Engine (h = 428, fits full System tab in 620px pane without clipping)
-    let c1_h = 428.0;
-    p.elevated_card(
-        px,
-        py,
-        pw,
-        c1_h,
-        16.0,
-        None,
     );
     p.text(
         "Mem Reduct Engine",
@@ -2944,7 +2676,7 @@ fn draw_system_pane(p: &mut PainterD2D, state: &AppState, px: f32, py: f32, pw: 
         py + 24.5,
         13.5,
         Weight::Bold,
-        tok::text1(),
+        cyno_tk::title(),
     );
 
     let is_admin = state.telemetry.has_admin_privileges;
@@ -2959,7 +2691,7 @@ fn draw_system_pane(p: &mut PainterD2D, state: &AppState, px: f32, py: f32, pw: 
         priv_h,
         11.0,
         if is_admin {
-            rgba(124, 58, 237, 55)
+            rgba(124, 58, 237, 50)
         } else {
             well_col
         },
@@ -2989,9 +2721,9 @@ fn draw_system_pane(p: &mut PainterD2D, state: &AppState, px: f32, py: f32, pw: 
         9.4,
         Weight::Bold,
         if is_admin {
-            tok::cyno_mist()
+            cyno_tk::accent_mist()
         } else {
-            tok::text2()
+            cyno_tk::subtitle()
         },
     );
 
@@ -3022,7 +2754,7 @@ fn draw_system_pane(p: &mut PainterD2D, state: &AppState, px: f32, py: f32, pw: 
         well_y + 19.0,
         9.8,
         Weight::Semibold,
-        tok::text1(),
+        cyno_tk::title(),
     );
     p.rrect(
         ix + pool_cw,
@@ -3038,7 +2770,7 @@ fn draw_system_pane(p: &mut PainterD2D, state: &AppState, px: f32, py: f32, pw: 
         well_y + 19.0,
         9.8,
         Weight::Semibold,
-        tok::cyno_violet_hi(),
+        cyno_tk::accent_hi(),
     );
     p.rrect(
         ix + pool_cw * 2.0,
@@ -3054,212 +2786,21 @@ fn draw_system_pane(p: &mut PainterD2D, state: &AppState, px: f32, py: f32, pw: 
         well_y + 19.0,
         9.8,
         Weight::Semibold,
-        tok::cyno_mist(),
+        cyno_tk::accent_mist(),
     );
 
-    // Section Header + Compact Toggle Switch Pills (Auto Clean & Show Results)
-    let hdr_y = py + 80.0;
-    p.text(
-        "CLEANING AREAS",
+    // Auto Clean toggle with de-jargonized Safe Trim description
+    draw_toggle_row(
+        p,
+        state,
         ix,
-        hdr_y + 17.5,
-        9.8,
-        Weight::Bold,
-        tok::text3(),
-    );
-
-    let sr_w = 136.0;
-    let sr_h = 26.0;
-    let sr_x = ix + inner_w - sr_w;
-    let sr_ht = p.hot_t(sr_x, hdr_y, sr_w, sr_h);
-    p.tactile_surface_pill_t(sr_x, hdr_y, sr_w, sr_h, 8.5, sr_ht, None);
-    if state.mem_reduct.show_clean_results {
-        p.rrect(
-            sr_x,
-            hdr_y - 0.5 * sr_ht,
-            sr_w,
-            sr_h,
-            8.5,
-            fade(rgba(124, 58, 237, 26), 0.7 + 0.3 * sr_ht),
-        );
-    }
-    let sr_dy = -0.5 * sr_ht;
-    p.text(
-        "Show Results",
-        sr_x + 11.0,
-        hdr_y + 16.5 + sr_dy,
-        9.8,
-        Weight::Semibold,
-        if state.mem_reduct.show_clean_results {
-            tok::text1()
-        } else {
-            tok::text_soft()
-        },
-    );
-    let sr_st = switch_val(state, ToggleId::ShowCleanResults);
-    p.draw_toggle_switch(
-        sr_x + sr_w - 40.0,
-        hdr_y + 5.0 + sr_dy,
-        32.0,
-        16.0,
-        sr_st,
-        sr_ht,
-    );
-    p.hit(sr_x, hdr_y, sr_w, sr_h, Action::ToggleShowCleanResults);
-
-    let ac_w = 124.0;
-    let ac_x = sr_x - ac_w - 10.0;
-    let ac_ht = p.hot_t(ac_x, hdr_y, ac_w, sr_h);
-    p.tactile_surface_pill_t(ac_x, hdr_y, ac_w, sr_h, 8.5, ac_ht, None);
-    if state.mem_reduct.auto_clean_enabled {
-        p.rrect(
-            ac_x,
-            hdr_y - 0.5 * ac_ht,
-            ac_w,
-            sr_h,
-            8.5,
-            fade(rgba(124, 58, 237, 26), 0.7 + 0.3 * ac_ht),
-        );
-    }
-    let ac_dy = -0.5 * ac_ht;
-    p.text(
+        py + 80.0,
+        inner_w,
         "Auto Clean",
-        ac_x + 11.0,
-        hdr_y + 16.5 + ac_dy,
-        9.8,
-        Weight::Semibold,
-        if state.mem_reduct.auto_clean_enabled {
-            tok::text1()
-        } else {
-            tok::text_soft()
-        },
+        "Safe Trim: frees unused RAM safely  -  keeps apps & tabs intact",
+        ToggleId::AutoClean,
+        Action::ToggleAutoClean,
     );
-    let ac_st = switch_val(state, ToggleId::AutoClean);
-    p.draw_toggle_switch(
-        ac_x + ac_w - 40.0,
-        hdr_y + 5.0 + ac_dy,
-        32.0,
-        16.0,
-        ac_st,
-        ac_ht,
-    );
-    p.hit(ac_x, hdr_y, ac_w, sr_h, Action::ToggleAutoClean);
-
-    // 8 Mem Reduct Areas — 2 × 4 Dock-Modules Toggle Cards
-    let areas = [
-        (
-            Icon::Zap,
-            "Working Sets",
-            ToggleId::AreaWs,
-            Action::ToggleArea(0),
-        ),
-        (
-            Icon::Wave,
-            "Sys File Cache",
-            ToggleId::AreaSys,
-            Action::ToggleArea(1),
-        ),
-        (
-            Icon::Activity,
-            "Standby List",
-            ToggleId::AreaStandby,
-            Action::ToggleArea(2),
-        ),
-        (
-            Icon::List,
-            "Mod Page List",
-            ToggleId::AreaModPage,
-            Action::ToggleArea(3),
-        ),
-        (
-            Icon::Droplet,
-            "Standby Low",
-            ToggleId::AreaStandbyLow,
-            Action::ToggleArea(4),
-        ),
-        (
-            Icon::Folder,
-            "Mod File Cache",
-            ToggleId::AreaModFile,
-            Action::ToggleArea(5),
-        ),
-        (
-            Icon::Settings,
-            "Registry Cache",
-            ToggleId::AreaRegistry,
-            Action::ToggleArea(6),
-        ),
-        (
-            Icon::Display,
-            "Combine Lists",
-            ToggleId::AreaCombine,
-            Action::ToggleArea(7),
-        ),
-    ];
-    let col_gap = 18.0;
-    let row_gap = 7.0;
-    let tile_w = (inner_w - col_gap) / 2.0;
-    let tile_h = 34.0;
-    let grid_y = py + 114.0;
-
-    for (idx, &(ic, name, tid, act)) in areas.iter().enumerate() {
-        let col = idx % 2;
-        let row = idx / 2;
-        let tx = ix + (col as f32) * (tile_w + col_gap);
-        let ty = grid_y + (row as f32) * (tile_h + row_gap);
-        let active = state.toggle_target(tid);
-        let ht = p.hot_t(tx, ty, tile_w, tile_h);
-        let dy = -0.8 * ht;
-
-        // 2026 Borderless List Paradigm: zero box border at rest, soft glass hover highlight + 1px hairline
-        if ht > 0.02 {
-            p.rrect(
-                tx - 4.0,
-                ty + dy,
-                tile_w + 8.0,
-                tile_h,
-                9.0,
-                fade(rgba(255, 255, 255, 16), ht),
-            );
-        }
-        p.rrect(
-            tx + 4.0,
-            ty + tile_h + 1.5,
-            tile_w - 8.0,
-            1.0,
-            0.0,
-            rgba(255, 255, 255, 11),
-        );
-        icons::draw(
-            p,
-            ic,
-            tx + 8.0,
-            ty + 10.0 + dy,
-            14.0,
-            if active {
-                tok::cyno_violet_hi()
-            } else {
-                tok::text3()
-            },
-        );
-        p.text(
-            name,
-            tx + 30.0,
-            ty + 21.0 + dy,
-            11.4,
-            Weight::Semibold,
-            if active {
-                tok::text1()
-            } else {
-                tok::text2()
-            },
-        );
-        let st = switch_val(state, tid);
-        p.draw_toggle_switch(tx + tile_w - 44.0, ty + 8.0 + dy * 0.5, 38.0, 18.0, st, ht);
-        p.hit(tx, ty, tile_w, tile_h, act);
-    }
-
-    p.rrect(ix, py + 281.0, inner_w, 1.0, 0.0, rgba(255, 255, 255, 16));
 
     let ctrl_x = px + 154.0;
     let ctrl_w = pw - 154.0 - PAD;
@@ -3267,7 +2808,7 @@ fn draw_system_pane(p: &mut PainterD2D, state: &AppState, px: f32, py: f32, pw: 
         p,
         "Clean Above",
         ix,
-        py + 292.0,
+        py + 132.0,
         ctrl_x,
         ctrl_w,
         state.mem_reduct.when_above_pct,
@@ -3284,7 +2825,7 @@ fn draw_system_pane(p: &mut PainterD2D, state: &AppState, px: f32, py: f32, pw: 
         p,
         "Clean Every",
         ix,
-        py + 328.0,
+        py + 168.0,
         ctrl_x,
         ctrl_w,
         state.mem_reduct.every_mins,
@@ -3299,7 +2840,7 @@ fn draw_system_pane(p: &mut PainterD2D, state: &AppState, px: f32, py: f32, pw: 
     );
 
     // Bottom Status + Clean Memory CTA + Progress Bar
-    let act_row_y = py + 368.0;
+    let act_row_y = py + 208.0;
     let cta_w = 136.0;
     let cta_h = 28.0;
     let cta_x = ix + inner_w - cta_w;
@@ -3315,7 +2856,7 @@ fn draw_system_pane(p: &mut PainterD2D, state: &AppState, px: f32, py: f32, pw: 
         act_row_y + 18.0,
         10.2,
         Weight::Regular,
-        tok::text2(),
+        cyno_tk::subtitle(),
     );
 
     let cta_ht = p.hot_t(cta_x, act_row_y, cta_w, cta_h);
@@ -3325,9 +2866,9 @@ fn draw_system_pane(p: &mut PainterD2D, state: &AppState, px: f32, py: f32, pw: 
         cta_w,
         cta_h,
         9.0,
-        tok::cyno_indigo(),
-        tok::cyno_violet(),
-        tok::cyno_orchid(),
+        cyno_tk::accent_deep(),
+        cyno_tk::accent(),
+        cyno_tk::accent_hi(),
         cta_ht,
     );
     let cta_lbl = if state.mem_reduct.is_purging {
@@ -3341,31 +2882,30 @@ fn draw_system_pane(p: &mut PainterD2D, state: &AppState, px: f32, py: f32, pw: 
         act_row_y + 18.0 - 0.7 * cta_ht,
         10.6,
         Weight::Bold,
-        tok::text1(),
+        cyno_tk::title(),
     );
     p.hit(cta_x, act_row_y, cta_w, cta_h, Action::PurgeRam);
 
     let bar_pct = (state.telemetry.memory_percent / 100.0).clamp(0.0, 1.0);
     p.glowing_striped_bar(
         ix,
-        py + 406.0,
+        py + 246.0,
         inner_w,
         6.0,
         bar_pct,
-        tok::gold_deep(),
-        tok::gold_champagne(),
+        cyno_tk::accent_deep(),
+        cyno_tk::accent_mist(),
     );
 
     // Card 2: OS Integration & Maintenance (h = 162)
-    let c2_y = py + c1_h + card_gap;
+    let c2_y = py + c1_h + card_gap + card_stagger_offset(pane_t, pane_dir, 1);
     let c2_h = 162.0;
-    p.elevated_card(
+    apple_section_card(p, 
         px,
         c2_y,
         pw,
         c2_h,
         16.0,
-        None,
     );
     p.text(
         "OS Integration & Maintenance",
@@ -3373,13 +2913,13 @@ fn draw_system_pane(p: &mut PainterD2D, state: &AppState, px: f32, py: f32, pw: 
         c2_y + 24.5,
         13.5,
         Weight::Bold,
-        tok::text1(),
+        cyno_tk::title(),
     );
 
     let tile_y = c2_y + 40.0;
     let tile_h = 56.0;
     let t_gap = 12.0;
-    let tile_w = (inner_w - t_gap * 2.0) / 3.0;
+    let tile_w = (inner_w - t_gap) / 2.0;
     let os_tiles = [
         (
             "Autostart",
@@ -3392,12 +2932,6 @@ fn draw_system_pane(p: &mut PainterD2D, state: &AppState, px: f32, py: f32, pw: 
             "Purge & capture cues",
             ToggleId::Chime,
             Action::ToggleChime,
-        ),
-        (
-            "Screen Time",
-            "App tracking",
-            ToggleId::ScreenTime,
-            Action::ToggleScreenTime,
         ),
     ];
 
@@ -3429,7 +2963,7 @@ fn draw_system_pane(p: &mut PainterD2D, state: &AppState, px: f32, py: f32, pw: 
             tile_y + 21.5 + dy,
             11.2,
             Weight::Bold,
-            tok::text1(),
+            cyno_tk::title(),
         );
         let st = switch_val(state, tid);
         p.draw_toggle_switch(tx + tile_w - 46.0, tile_y + 9.0 + dy * 0.5, 38.0, 18.0, st, ht);
@@ -3439,7 +2973,7 @@ fn draw_system_pane(p: &mut PainterD2D, state: &AppState, px: f32, py: f32, pw: 
             tile_y + 41.5 + dy,
             9.6,
             Weight::Regular,
-            tok::text2(),
+            cyno_tk::subtitle(),
         );
         p.hit(tx, tile_y, tile_w, tile_h, act);
     }
@@ -3447,20 +2981,7 @@ fn draw_system_pane(p: &mut PainterD2D, state: &AppState, px: f32, py: f32, pw: 
     let act_y = c2_y + 108.0;
     let b_h = 34.0;
 
-    let rs_x = ix;
-    let rs_ht = p.hot_t(rs_x, act_y, tile_w, b_h);
-    p.tactile_surface_pill_t(rs_x, act_y, tile_w, b_h, 9.5, rs_ht, None);
-    p.text_center(
-        "Reset Today's Stats",
-        rs_x + tile_w / 2.0,
-        act_y + 21.0 - 0.55 * rs_ht,
-        10.4,
-        Weight::Semibold,
-        lerp_color(tok::text_soft(), tok::text1(), rs_ht),
-    );
-    p.hit(rs_x, act_y, tile_w, b_h, Action::ResetScreenTimeToday);
-
-    let rd_x = rs_x + tile_w + t_gap;
+    let rd_x = ix;
     let rd_ht = p.hot_t(rd_x, act_y, tile_w, b_h);
     p.tactile_surface_pill_t(rd_x, act_y, tile_w, b_h, 9.5, rd_ht, None);
     p.text_center(
@@ -3469,7 +2990,7 @@ fn draw_system_pane(p: &mut PainterD2D, state: &AppState, px: f32, py: f32, pw: 
         act_y + 21.0 - 0.55 * rd_ht,
         10.4,
         Weight::Semibold,
-        lerp_color(tok::text_soft(), tok::text1(), rd_ht),
+        lerp_color(tok::text_soft(), cyno_tk::title(), rd_ht),
     );
     p.hit(rd_x, act_y, tile_w, b_h, Action::ResetAllSettings);
 
@@ -3490,7 +3011,7 @@ fn draw_system_pane(p: &mut PainterD2D, state: &AppState, px: f32, py: f32, pw: 
         act_y + 21.0 - 0.55 * q_ht,
         10.6,
         Weight::Bold,
-        tok::text1(),
+        cyno_tk::title(),
     );
     p.hit(q_x, act_y, tile_w, b_h, Action::Quit);
 }

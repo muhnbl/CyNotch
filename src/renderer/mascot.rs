@@ -30,7 +30,7 @@ fn build_ellipse_path(rx: f32, ry: f32) -> Path {
     pb.cubic_to(-kx, ry, -rx, ky, -rx, 0.0);
     pb.cubic_to(-rx, -ky, -kx, -ry, 0.0, -ry);
     pb.close();
-    pb.finish().unwrap()
+    pb.finish().unwrap_or_default()
 }
 
 fn spirit_paths() -> &'static SpiritPaths {
@@ -87,16 +87,16 @@ fn spirit_paths() -> &'static SpiritPaths {
         pb_int_r.close();
 
         SpiritPaths {
-            body: pb_body.finish().unwrap(),
-            left_spec: pb_lspec.finish().unwrap(),
-            right_spec: pb_rspec.finish().unwrap(),
+            body: pb_body.finish().unwrap_or_else(|| build_ellipse_path(1.0, 1.0)),
+            left_spec: pb_lspec.finish().unwrap_or_else(|| build_ellipse_path(1.0, 1.0)),
+            right_spec: pb_rspec.finish().unwrap_or_else(|| build_ellipse_path(1.0, 1.0)),
             crown_ring,
             halo_outer,
-            halo_glint: pb_hglint.finish().unwrap(),
+            halo_glint: pb_hglint.finish().unwrap_or_else(|| build_ellipse_path(1.0, 1.0)),
             eye_oval,
-            eye_happy: pb_happy.finish().unwrap(),
-            eye_intense_l: pb_int_l.finish().unwrap(),
-            eye_intense_r: pb_int_r.finish().unwrap(),
+            eye_happy: pb_happy.finish().unwrap_or_else(|| build_ellipse_path(1.0, 1.0)),
+            eye_intense_l: pb_int_l.finish().unwrap_or_else(|| build_ellipse_path(1.0, 1.0)),
+            eye_intense_r: pb_int_r.finish().unwrap_or_else(|| build_ellipse_path(1.0, 1.0)),
         }
     })
 }
@@ -356,7 +356,7 @@ impl Renderer {
     /// - `open_t` (`0.0..=1.0`): controls smooth eyelid opening/closing and glow fade during state transitions.
     /// - `pulse_i` (`0.0..=1.0`): Opsi A micro-reaction on Copy/Paste & Snipping Tool (predator squint + violet flash).
     /// - `gaze_dir` (`-1.0..=1.0`): directional gaze (`0.0` Top center).
-    /// - `rot_deg`: `0.0` (Top), `-90.0` (Left edge 270°), `+90.0` (Right edge 90°).
+    /// - `rot_deg`: `0.0` (Top), `-90.0` (Left edge 270deg), `+90.0` (Right edge 90deg).
     #[allow(clippy::too_many_arguments)]
     pub(crate) fn draw_wolf_eyes(
         p: &mut PainterD2D,

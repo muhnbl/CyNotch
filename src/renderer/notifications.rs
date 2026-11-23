@@ -255,11 +255,16 @@ impl Renderer {
         h: f32,
         card_y: f32,
     ) {
-        let mx = 16.0;
+        let (dy0, a0, sc0) = Self::mode_stagger(state, 0);
+        let prev_alpha = p.global_alpha;
+        p.global_alpha = prev_alpha * a0;
+        let card_y = card_y + dy0;
+        let mx = 24.0;
         let cw = (w - mx * 2.0).max(160.0);
 
         if state.notif_history.is_empty() {
-            let empty_h = (h - card_y - 16.0).clamp(110.0, 220.0);
+            let empty_h = (h - card_y - 24.0).clamp(110.0, 220.0);
+            p.push_scale_about(mx + cw * 0.5, card_y + empty_h * 0.5, sc0);
             p.elevated_card(mx, card_y, cw, empty_h, 20.0, None);
             let cx = mx + cw * 0.5;
             let cy = card_y + empty_h * 0.5 - 10.0;
@@ -273,6 +278,8 @@ impl Renderer {
                 Weight::Bold,
                 tok::text2(),
             );
+            p.pop_scale_transform();
+            p.global_alpha = prev_alpha;
             return;
         }
 
@@ -310,10 +317,14 @@ impl Renderer {
         let max_rows = ((avail_h + gap) / (row_h + gap)).floor().max(1.0) as usize;
 
         for (idx, entry) in state.notif_history.iter().take(max_rows).enumerate() {
-            let ry = list_y + (idx as f32) * (row_h + gap);
-            if ry + row_h > h - 6.0 {
+            let (dy_r, a_r, sc_r) = Self::mode_stagger(state, (1 + idx).min(5));
+            let base_ry = list_y + (idx as f32) * (row_h + gap);
+            if base_ry + row_h > h - 6.0 {
                 break;
             }
+            let ry = base_ry + dy_r;
+            p.global_alpha = prev_alpha * a_r;
+            p.push_scale_about(mx + cw * 0.5, ry + row_h * 0.5, sc_r);
             let row_ht = p.hot_t(mx, ry, cw, row_h);
             p.button_pill_variant(mx, ry, cw, row_h, 12.0, row_ht, ButtonVariant::PrimaryOutline);
 
@@ -368,7 +379,7 @@ impl Renderer {
             let hdr = if entry.app_name.trim().is_empty() {
                 entry.title.clone()
             } else {
-                format!("{} • {}", entry.app_name.trim(), entry.title.trim())
+                format!("{}  -  {}", entry.app_name.trim(), entry.title.trim())
             };
             let hdr_fit = p.ellipsize_cow(&hdr, 11.4, Weight::Bold, title_max_w);
             p.text(&hdr_fit, tx, ry + 20.5, 11.4, Weight::Bold, tok::text1());
@@ -378,10 +389,12 @@ impl Renderer {
             p.text(&sub_fit, tx, ry + 37.5, 10.6, Weight::Regular, tok::text2());
 
             p.hit(mx, ry, cw, row_h, Action::ActivateHistoryItem(idx));
+            p.pop_scale_transform();
         }
+        p.global_alpha = prev_alpha;
     }
 
     // ─────────────────────────────────────────────────────────────────────────────
-    // ULTRA-COMPACT MINIMIZED STEALTH PILL (86×18 Horizontal, 18×86 Vertical)
+    // ULTRA-COMPACT MINIMIZED STEALTH PILL (86x18 Horizontal, 18x86 Vertical)
     // ─────────────────────────────────────────────────────────────────────────────
 }

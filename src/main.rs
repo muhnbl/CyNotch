@@ -31,7 +31,66 @@ macro_rules! log_err {
     };
 }
 
+#[repr(C)]
+struct RawExceptionRecord {
+    exception_code: u32,
+    exception_flags: u32,
+    exception_record: *const RawExceptionRecord,
+    exception_address: *const core::ffi::c_void,
+    number_parameters: u32,
+    exception_information: [usize; 15],
+}
+
+#[repr(C)]
+struct RawExceptionPointers {
+    exception_record: *const RawExceptionRecord,
+    context_record: *const core::ffi::c_void,
+}
+
+#[link(name = "kernel32")]
+unsafe extern "system" {
+    fn SetUnhandledExceptionFilter(
+        filter: Option<unsafe extern "system" fn(*const RawExceptionPointers) -> i32>,
+    ) -> *const core::ffi::c_void;
+}
+
+unsafe extern "system" fn unhandled_seh_filter(ptrs: *const RawExceptionPointers) -> i32 {
+    if !ptrs.is_null() {
+        let rec = unsafe { (*ptrs).exception_record };
+        if !rec.is_null() {
+            let code = unsafe { (*rec).exception_code };
+            let addr = unsafe { (*rec).exception_address as usize };
+            let nparams = unsafe { ((*rec).number_parameters as usize).min(4) };
+            let p0 = if nparams > 0 { unsafe { (*rec).exception_information[0] } } else { 0 };
+            let p1 = if nparams > 1 { unsafe { (*rec).exception_information[1] } } else { 0 };
+            let path = cynotch::models::crash_log_path("crash.txt");
+            if let Some(dir) = path.parent() {
+                let _ = std::fs::create_dir_all(dir);
+            }
+            if let Ok(mut f) = std::fs::OpenOptions::new()
+                .create(true)
+                .append(true)
+                .open(&path)
+            {
+                let _ = writeln!(
+                    f,
+                    "--- {} ---\nSEH CRASH: code=0x{:08X} addr=0x{:016X} p0=0x{:X} p1=0x{:X}",
+                    format_rfc3339(local_now()),
+                    code,
+                    addr,
+                    p0,
+                    p1
+                );
+            }
+        }
+    }
+    0 // EXCEPTION_CONTINUE_SEARCH
+}
+
 fn main() {
+    unsafe {
+        SetUnhandledExceptionFilter(Some(unhandled_seh_filter));
+    }
     std::panic::set_hook(Box::new(|info| {
         use std::io::Write;
         let bt = std::backtrace::Backtrace::capture();
@@ -89,8 +148,8 @@ fn main() {
     cynotch::shelf_dnd::wipe_shelf_cache();
 
     log_info!("============================================================");
-    log_info!("  ⚡ CyNotch (General Mahamatra Dynamic Island for Windows)");
-    log_info!("  Hotkeys: Ctrl+Shift+C (Toggle), M (Purge RAM), S (Capture)");
+    log_info!("   CyNotch (General Mahamatra Dynamic Island for Windows)");
+    log_info!("  Hotkeys: Ctrl+Alt+C (Toggle), M (Purge RAM), S (Capture)");
     log_info!("============================================================");
 
     let is_smoke = std::env::var_os("CYNOTCH_SMOKE_EXIT_MS").is_some();
@@ -146,10 +205,16 @@ fn main() {
                 None
             };
 
-            let (notif_enabled, notif_auto_clear) = poll_state
+            let (notif_enabled, notif_auto_clear, need_net) = poll_state
                 .lock()
-                .map(|s| (s.notif_listener_enabled, s.notif_auto_clear_action_center))
-                .unwrap_or((false, false));
+                .map(|s| {
+                    (
+                        s.notif_listener_enabled,
+                        s.notif_auto_clear_action_center,
+                        s.is_hovered || s.idle_metric == IdleMetric::NetSpeed,
+                    )
+                })
+                .unwrap_or((false, false, false));
 
             if cynotch::window::NOTIF_SYNC_REQUESTED.swap(false, Ordering::AcqRel) && notif_enabled
             {
@@ -227,7 +292,7 @@ fn main() {
 
             let telem_opt = if last_sec_tick.elapsed() >= Duration::from_millis(950) {
                 last_sec_tick = Instant::now();
-                Some(collector.poll())
+                Some(collector.poll_with_network(need_net))
             } else {
                 None
             };
@@ -338,7 +403,7 @@ fn main() {
                         last_gsmtc_pos_ms = m.position_ms;
                         s.lyrics.clear();
                         s.current_lyric_index = None;
-                        s.current_lyric_text = format!("Playing • {}", m.title);
+                        s.current_lyric_text = format!("Playing  -  {}", m.title);
                         s.lyrics_offset = 0;
                         if s.lyrics_enabled && !m.title.is_empty() {
                             song_to_fetch = Some((m.title.clone(), m.artist.clone()));
@@ -444,7 +509,7 @@ fn main() {
                             s.apply_clean_result(clean_res);
                         } else {
                             s.mem_reduct.last_cleaned_status =
-                                "Ready • Auto clean done".to_string();
+                                "Ready  -  Auto clean done".to_string();
                         }
                     }
                     cynotch::window::PURGE_IN_PROGRESS.store(false, Ordering::Release);
