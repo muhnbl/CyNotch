@@ -245,29 +245,58 @@ pub fn render_edge_glow_d2d(
         bottom: h,
     };
 
-    // Single unified 32-stop C^2-continuous sextic/Gaussian falloff:
-    // - Zero secondary inner ellipse -> zero inner concentric ring!
-    // - Keeps RGB in clean luminous orchid-violet (`rgb(220, 172, 255)` -> `rgb(168, 92, 247)`)
-    //   all the way to `r = 1.0` so white backgrounds never get a muddy grey/brown outer ring.
-    // - Smooth analytic curve `f(r) = (1.0 - r.powf(1.45)).powi(4)` gives inflections-free
-    //   decay with 32 densely sampled stops in 16bpc float precision.
+    // Opsi C (2026 Hybrid):
+    // 1. Slimmer, refined obsidian-violet atmospheric spill (58% depth so it never feels like a muddy 160px blob)
+    let (spill_rx, spill_ry) = match anchor {
+        EdgeGlowAnchor::Top => (o_rx * 0.88, o_ry * 0.58),
+        EdgeGlowAnchor::Left | EdgeGlowAnchor::Right => (o_rx * 0.58, o_ry * 0.88),
+        EdgeGlowAnchor::TopLeft | EdgeGlowAnchor::TopRight => (o_rx * 0.68, o_ry * 0.68),
+    };
     let mut stops = [D2D1_GRADIENT_STOP::default(); 32];
     for (i, stop) in stops.iter_mut().enumerate() {
         let r = i as f32 / 31.0;
         let bell = (1.0 - r.powf(1.42)).max(0.0).powi(4);
         let core_mix = (1.0 - r * 1.6).clamp(0.0, 1.0).powi(2);
-        let red = (168.0 + 54.0 * core_mix).round() as u8;
-        let grn = (92.0 + 84.0 * core_mix).round() as u8;
+        let red = (152.0 + 76.0 * core_mix).round() as u8;
+        let grn = (82.0 + 114.0 * core_mix).round() as u8;
         let blu = (247.0 + 8.0 * core_mix).round() as u8;
         *stop = D2D1_GRADIENT_STOP {
             position: r,
-            color: d2d_rgba(red, grn, blu, bell * alpha_t),
+            color: d2d_rgba(red, grn, blu, bell * alpha_t * 0.78),
         };
     }
 
     unsafe {
-        if let Ok(brush) = create_radial_brush(ctx, center, o_rx, o_ry, &stops) {
+        if let Ok(brush) = create_radial_brush(ctx, center, spill_rx, spill_ry, &stops) {
             ctx.FillRectangle(&bounds, &brush);
+        }
+
+        // 2. Razor-Sharp Specular Bezel Rim Light (Silver #FFFCE0 -> Brushed Metallic Gold #FFE248 -> Lavender)
+        let (rim_rx, rim_ry) = match anchor {
+            EdgeGlowAnchor::Top => (o_rx * 0.62, 6.5_f32.min(h * 0.12)),
+            EdgeGlowAnchor::Left | EdgeGlowAnchor::Right => (6.5_f32.min(w * 0.12), o_ry * 0.62),
+            EdgeGlowAnchor::TopLeft | EdgeGlowAnchor::TopRight => (o_rx * 0.36, o_ry * 0.36),
+        };
+        let rim_stops = [
+            D2D1_GRADIENT_STOP {
+                position: 0.0,
+                color: d2d_rgba(255, 252, 224, (e * 0.92).clamp(0.0, 1.0)),
+            },
+            D2D1_GRADIENT_STOP {
+                position: 0.28,
+                color: d2d_rgba(255, 226, 72, (e * 0.68).clamp(0.0, 1.0)),
+            },
+            D2D1_GRADIENT_STOP {
+                position: 0.62,
+                color: d2d_rgba(216, 180, 254, (e * 0.28).clamp(0.0, 1.0)),
+            },
+            D2D1_GRADIENT_STOP {
+                position: 1.0,
+                color: d2d_rgba(168, 85, 247, 0.0),
+            },
+        ];
+        if let Ok(rim_brush) = create_radial_brush(ctx, center, rim_rx, rim_ry, &rim_stops) {
+            ctx.FillRectangle(&bounds, &rim_brush);
         }
     }
 }
@@ -397,8 +426,8 @@ impl EdgeGlowOverlay {
             self.dcomp = DCompHost::new(self.hwnd, w, h).ok();
         }
         let mut rendered = false;
-        if let Some(ref mut host) = self.dcomp {
-            if host.resize(w, h).is_ok() {
+        if let Some(ref mut host) = self.dcomp
+            && host.resize(w, h).is_ok() {
                 if self.cache.is_none() {
                     self.cache = D2DResourceCache::new(host.d2d_context()).ok();
                 }
@@ -409,7 +438,6 @@ impl EdgeGlowOverlay {
                     rendered = host.end_d2d_draw_and_present().is_ok();
                 }
             }
-        }
         // If rendering failed (e.g. GPU device reset), attempt clean single-pass recreation
         if !rendered {
             self.dcomp = None;

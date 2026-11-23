@@ -136,10 +136,9 @@ fn qa_iss04_iss05_settings_categories_fit_unclipped_and_have_full_row_hitboxes()
     let (sw, sh, _) = settings_dims_for_state(&s);
     let target = make_target(&ctx, sw, sh)?;
 
-    // Motion, Modules, Notifications, and System must fit 100% at scroll=0 (max_scroll == 0.0)
+    // Motion, Notifications, and System must fit 100% at scroll=0 (max_scroll == 0.0)
     for cat in [
         SettingsCategory::Motion,
-        SettingsCategory::Modules,
         SettingsCategory::Notifications,
         SettingsCategory::System,
     ] {
@@ -167,20 +166,20 @@ fn qa_iss04_iss05_settings_categories_fit_unclipped_and_have_full_row_hitboxes()
         }
     }
 
-    // Verify full-row toggle hit boxes across General, Notifications, and Modules (width >= 500px, height >= 38px)
-    for (cat, expected_action) in [
-        (SettingsCategory::General, Action::ToggleMinimizedIsland),
-        (SettingsCategory::General, Action::ToggleClickToOpen),
-        (SettingsCategory::General, Action::ToggleHideFullscreen),
-        (SettingsCategory::General, Action::ToggleShowMascot),
-        (SettingsCategory::Notifications, Action::ToggleNotifications),
-        (SettingsCategory::Notifications, Action::ToggleNotifListener),
-        (SettingsCategory::Modules, Action::ToggleClipboardWatch),
-        (SettingsCategory::Modules, Action::ToggleLyricsMonitor),
-        (SettingsCategory::Modules, Action::ToggleCaptureClipboard),
+    // Verify full-row toggle hit boxes across General and Notifications (width >= 500px, height >= 38px)
+    for (cat, scroll, expected_action) in [
+        (SettingsCategory::General, 0.0f32, Action::ToggleMinimizedIsland),
+        (SettingsCategory::General, 0.0, Action::ToggleClickToOpen),
+        (SettingsCategory::General, 0.0, Action::ToggleHideFullscreen),
+        (SettingsCategory::General, 0.0, Action::ToggleShowMascot),
+        (SettingsCategory::Notifications, 0.0, Action::ToggleNotifications),
+        (SettingsCategory::Notifications, 0.0, Action::ToggleNotifListener),
+        (SettingsCategory::General, 450.0, Action::ToggleClipboardWatch),
+        (SettingsCategory::General, 450.0, Action::ToggleLyricsMonitor),
+        (SettingsCategory::General, 450.0, Action::ToggleCaptureClipboard),
     ] {
         s.set_settings_category(cat);
-        s.set_settings_scroll_immediate(cat, 0.0);
+        s.set_settings_scroll_immediate(cat, scroll);
         s.sync_preview_settled();
 
         unsafe {
@@ -195,8 +194,8 @@ fn qa_iss04_iss05_settings_categories_fit_unclipped_and_have_full_row_hitboxes()
                 .find(|h| h.action == expected_action)
                 .unwrap_or_else(|| {
                     panic!(
-                        "Expected hit box {:?} in category {:?} at scroll=0",
-                        expected_action, cat
+                        "Expected hit box {:?} in category {:?} at scroll={}",
+                        expected_action, cat, scroll
                     )
                 });
             let w = hb.rect.width();
@@ -211,7 +210,9 @@ fn qa_iss04_iss05_settings_categories_fit_unclipped_and_have_full_row_hitboxes()
         }
     }
 
-    // Verify "Enable in Win" button appears in General when windows_transparency_enabled == false
+    // The in-app Frosted/transparency toggle and its "Enable in Win" button were
+    // removed: Preferences now always requests the acrylic backdrop and
+    // transparency is governed by Windows itself.
     s.set_settings_category(SettingsCategory::General);
     s.set_settings_scroll_immediate(SettingsCategory::General, 240.0);
     s.windows_transparency_enabled = false;
@@ -223,9 +224,9 @@ fn qa_iss04_iss05_settings_categories_fit_unclipped_and_have_full_row_hitboxes()
             render_settings_d2d(&ctx, &mut cache, &mut fonts, sw, sh, &s, None);
         ctx.EndDraw(None, None)?;
         assert!(
-            hits.iter()
+            !hits.iter()
                 .any(|h| h.action == Action::OpenWinPersonalizeColors),
-            "Expected Action::OpenWinPersonalizeColors hit box when windows_transparency_enabled is false"
+            "OpenWinPersonalizeColors hit box should be gone with the Frosted toggle"
         );
     }
 
@@ -248,7 +249,7 @@ fn qa_iss03_iss10_iss12_iss15_notch_renderer_hitboxes_and_overlays() -> Result<(
             s.current_width.round().max(1.0) as u32,
             s.current_height.round().max(1.0) as u32,
         );
-        let mut r = Renderer::new(w, h);
+        let mut r = Renderer::new(w, h).unwrap();
 
         unsafe {
             ctx.SetTarget(&target);
@@ -291,7 +292,7 @@ fn qa_iss03_iss10_iss12_iss15_notch_renderer_hitboxes_and_overlays() -> Result<(
             s.current_width.round().max(1.0) as u32,
             s.current_height.round().max(1.0) as u32,
         );
-        let mut r = Renderer::new(w, h);
+        let mut r = Renderer::new(w, h).unwrap();
 
         unsafe {
             ctx.SetTarget(&target);
@@ -324,7 +325,8 @@ fn qa_iss03_iss10_iss12_iss15_notch_renderer_hitboxes_and_overlays() -> Result<(
         }
     }
 
-    // 3. ISS-12: Vertical expanded view with active toast still renders module dock hit boxes
+    // 3. ISS-12 (updated for v0.3.1 Auto-Stash): Vertical expanded view with active notification
+    // auto-stashes into the header Bell icon (zero floating overlay collision) and keeps dock tabs clickable.
     {
         let mut s = AppState::new_for_preview();
         s.placement = NotchPlacement::Left;
@@ -332,11 +334,15 @@ fn qa_iss03_iss10_iss12_iss15_notch_renderer_hitboxes_and_overlays() -> Result<(
         let _ = s.apply_setting_action(Action::SendTestNotification);
         s.set_hovered(true);
         s.sync_preview_settled();
+        assert!(
+            s.is_notification_stashed(),
+            "Active notification must Auto-Stash into header Bell when vertical notch expands"
+        );
         let (w, h) = (
             s.current_width.round().max(1.0) as u32,
             s.current_height.round().max(1.0) as u32,
         );
-        let mut r = Renderer::new(w, h);
+        let mut r = Renderer::new(w, h).unwrap();
 
         unsafe {
             ctx.SetTarget(&target);
@@ -348,13 +354,19 @@ fn qa_iss03_iss10_iss12_iss15_notch_renderer_hitboxes_and_overlays() -> Result<(
                 r.hits
                     .iter()
                     .any(|hb| hb.action == Action::SetMode(NotchMode::Music)),
-                "Vertical expanded view with active toast overlay must keep module dock tabs clickable"
+                "Vertical expanded view with stashed notification must keep module dock tabs clickable"
             );
             assert!(
                 r.hits
                     .iter()
-                    .any(|hb| hb.action == Action::DismissNotification),
-                "Vertical expanded view with active toast overlay must have DismissNotification hit box"
+                    .any(|hb| hb.action == Action::ToggleNotifHistory),
+                "Vertical expanded view with stashed notification must expose header Bell peek hit box"
+            );
+            assert!(
+                r.hits
+                    .iter()
+                    .all(|hb| hb.action != Action::DismissNotification),
+                "Vertical expanded view must not render legacy floating toast overlay"
             );
         }
     }
@@ -391,7 +403,7 @@ fn qa_iss03_iss10_iss12_iss15_notch_renderer_hitboxes_and_overlays() -> Result<(
             s.current_width.round().max(1.0) as u32,
             s.current_height.round().max(1.0) as u32,
         );
-        let mut r = Renderer::new(w, h);
+        let mut r = Renderer::new(w, h).unwrap();
 
         unsafe {
             ctx.SetTarget(&target);
@@ -422,10 +434,7 @@ fn qa_rapid_interaction_and_multi_scale_stability_stress() -> Result<()> {
         NotchMode::Music,
         NotchMode::Volume,
         NotchMode::MemReduct,
-        NotchMode::Tasks,
         NotchMode::Shelf,
-        NotchMode::Capture,
-        NotchMode::Telemetry,
         NotchMode::Settings,
     ];
     let scales = [
@@ -454,7 +463,7 @@ fn qa_rapid_interaction_and_multi_scale_stability_stress() -> Result<()> {
             s.current_height.round().max(1.0) as u32,
         );
         assert!(w > 0 && h > 0 && w <= 1600 && h <= 1200);
-        let mut r = Renderer::new(w, h);
+        let mut r = Renderer::new(w, h).unwrap();
 
         unsafe {
             ctx.SetTarget(&target);

@@ -184,10 +184,10 @@ impl DWriteTextCache {
         let mut low = 0;
         let mut high = char_indices.len();
         while low < high {
-            let mid = (low + high + 1) / 2;
+            let mid = (low + high).div_ceil(2);
             let end_idx = if mid < char_indices.len() { char_indices[mid] } else { text.len() };
             let prefix = &text[..end_idx];
-            let candidate = format!("{}…", prefix);
+            let candidate = format!("{}...", prefix);
             if self.measure(&candidate, px, w).0 <= max_w {
                 low = mid;
             } else {
@@ -196,7 +196,7 @@ impl DWriteTextCache {
         }
         let end_idx = if low < char_indices.len() { char_indices[low] } else { text.len() };
         let prefix = &text[..end_idx];
-        let result = format!("{}…", prefix);
+        let result = format!("{}...", prefix);
         std::borrow::Cow::Owned(result)
     }
 
@@ -322,7 +322,7 @@ mod tests {
         let text = "CyNotch is a cool framework";
         let (w, _) = cache.measure("CyNotch...", 16.0, Weight::Regular);
         let result = cache.ellipsize_cow(text, 16.0, Weight::Regular, w);
-        assert!(result.ends_with('…'));
+        assert!(result.ends_with("..."));
         assert!(cache.measure(&result, 16.0, Weight::Regular).0 <= w);
     }
 

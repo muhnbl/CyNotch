@@ -194,7 +194,7 @@ fn notch_ptr(
         s.current_width.round().max(1.0) as u32,
         s.current_height.round().max(1.0) as u32,
     );
-    let mut r = Renderer::new(w, h);
+    let mut r = Renderer::new(w, h).unwrap();
     snap(ctx, dir, name, w, h, |c| r.render_d2d(c, s, pointer))
 }
 
@@ -225,7 +225,7 @@ fn main() -> Result<()> {
         ("home", true, NotchMode::Home, false),
         ("music", true, NotchMode::Music, false),
         ("memreduct", true, NotchMode::MemReduct, false),
-        ("stats", true, NotchMode::Telemetry, false),
+        ("shelf", true, NotchMode::Shelf, false),
     ];
     for (name, hovered, mode, lyrics) in shots {
         s.mode = mode;
@@ -317,7 +317,6 @@ fn main() -> Result<()> {
         ("settings_general", models::SettingsCategory::General, 0.0f32),
         ("settings_general_sliders", models::SettingsCategory::General, 260.0f32),
         ("settings_motion", models::SettingsCategory::Motion, 0.0f32),
-        ("settings_modules", models::SettingsCategory::Modules, 0.0f32),
         ("settings_notifications", models::SettingsCategory::Notifications, 0.0f32),
         ("settings_system", models::SettingsCategory::System, 0.0f32),
         ("settings_system_bottom", models::SettingsCategory::System, 160.0f32),
@@ -340,9 +339,7 @@ fn main() -> Result<()> {
     if std::env::args().any(|a| a == "--all") {
         let extra_modes = [
             ("volume", NotchMode::Volume, false),
-            ("tasks", NotchMode::Tasks, false),
             ("shelf", NotchMode::Shelf, false),
-            ("capture", NotchMode::Capture, false),
             ("inline_settings", NotchMode::Settings, false),
             ("music_lyrics", NotchMode::Music, true),
         ];
@@ -409,7 +406,6 @@ fn main() -> Result<()> {
             ("cynotch-music", NotchMode::Music, true),
             ("cynotch-memreduct", NotchMode::MemReduct, false),
             ("cynotch-shelf", NotchMode::Shelf, false),
-            ("cynotch-capture", NotchMode::Capture, false),
             ("cynotch-volume", NotchMode::Volume, false),
         ];
         for (name, mode, lyrics) in web_modes {
@@ -430,7 +426,7 @@ fn main() -> Result<()> {
                 ws.current_width.round().max(1.0) as u32,
                 ws.current_height.round().max(1.0) as u32,
             );
-            let mut r = Renderer::new(w, h);
+            let mut r = Renderer::new(w, h).unwrap();
             snap_transparent(&ctx, &dir, name, w, h, 20, |c| r.render_d2d(c, &ws, None))?;
         }
         // Also export a transparent Preferences screenshot for the v0.3.0 web comparison
@@ -444,6 +440,115 @@ fn main() -> Result<()> {
             snap_transparent(&ctx, &dir, "cynotch-settings-motion", sw, sh, 16, |c| {
                 let _ = cynotch::settings_window::render_settings_d2d(
                     c, &mut cache, &mut fonts, sw, sh, &ps, None,
+                );
+            })?;
+        }
+    }
+
+    if std::env::args().any(|a| a == "--v031") {
+        let dark_bg = [26u8, 12, 16, 255]; // Deep Cyno dark BGRA (#100C1A)
+        let white_clamped_bg = [122u8, 119, 119, 255]; // Simulated Option B clamped #FFFFFF BGRA
+
+        let mut base = AppState::new_for_preview();
+        base.frosted_glass_enabled = true;
+        base.windows_transparency_enabled = true;
+        base.push_shelf_item(
+            models::ShelfKind::Text,
+            "cargo build --release".into(),
+            "cargo build --release".into(),
+        );
+        base.push_shelf_item(
+            models::ShelfKind::Image,
+            "Image_20261121_2030.png".into(),
+            "C:\\tmp\\Image_20261121_2030.png".into(),
+        );
+        base.push_shelf_item(
+            models::ShelfKind::File,
+            "CyNotch_Design_Spec.pdf".into(),
+            "C:\\tmp\\CyNotch_Design_Spec.pdf".into(),
+        );
+
+        // 1. Vertical Quick Shelf (Frosted + Auto-Stash Amber Bell Pip)
+        {
+            let mut vs = base.clone();
+            vs.placement = models::NotchPlacement::Left;
+            vs.mode = NotchMode::Shelf;
+            vs.set_hovered(true);
+            vs.push_system_toast(
+                "Discord".into(),
+                "Cyno".into(),
+                "Sent a screenshot to #design-review".into(),
+                None,
+            );
+            vs.sync_preview_settled();
+            let (w, h) = (vs.current_width.round() as u32, vs.current_height.round() as u32);
+            let mut r = Renderer::new(w, h).unwrap();
+            snap_bg(&ctx, &dir, "v031_vert_shelf_frosted", w, h, dark_bg, |c| {
+                r.render_d2d(c, &vs, None)
+            })?;
+            let mut r2 = Renderer::new(w, h).unwrap();
+            snap_bg(&ctx, &dir, "v031_vert_shelf_white_clamped", w, h, white_clamped_bg, |c| {
+                r2.render_d2d(c, &vs, None)
+            })?;
+
+            // Solid obsidian fallback (Windows Transparency OFF)
+            vs.windows_transparency_enabled = false;
+            let mut r3 = Renderer::new(w, h).unwrap();
+            snap_bg(&ctx, &dir, "v031_vert_shelf_solid", w, h, dark_bg, |c| {
+                r3.render_d2d(c, &vs, None)
+            })?;
+        }
+
+        // 2. Horizontal Quick Shelf (Frosted + Auto-Stash Amber Bell Pip)
+        {
+            let mut hs = base.clone();
+            hs.placement = models::NotchPlacement::Top;
+            hs.mode = NotchMode::Shelf;
+            hs.set_hovered(true);
+            hs.push_system_toast(
+                "Discord".into(),
+                "Cyno".into(),
+                "Sent a screenshot to #design-review".into(),
+                None,
+            );
+            hs.sync_preview_settled();
+            let (w, h) = (hs.current_width.round() as u32, hs.current_height.round() as u32);
+            let mut r = Renderer::new(w, h).unwrap();
+            snap_bg(&ctx, &dir, "v031_horiz_shelf_frosted", w, h, dark_bg, |c| {
+                r.render_d2d(c, &hs, None)
+            })?;
+        }
+
+        // 3. Dynamic Island Notification Capsule (Collapsed + Countdown Ring)
+        {
+            let mut ns = base.clone();
+            ns.placement = models::NotchPlacement::Top;
+            ns.set_hovered(false);
+            ns.push_system_toast(
+                "Discord".into(),
+                "now".into(),
+                "Cyno sent a screenshot to #design-review".into(),
+                None,
+            );
+            ns.sync_preview_settled();
+            let (w, h) = (ns.current_width.round() as u32, ns.current_height.round() as u32);
+            let mut r = Renderer::new(w, h).unwrap();
+            snap_bg(&ctx, &dir, "v031_notif_capsule", w, h, dark_bg, |c| {
+                r.render_d2d(c, &ns, None)
+            })?;
+        }
+
+        // 4. Settings General (Borderless Glass + Zero Sliders)
+        {
+            let mut ss = base.clone();
+            ss.settings_open = true;
+            ss.set_settings_category(models::SettingsCategory::General);
+            ss.set_settings_scroll_immediate(models::SettingsCategory::General, 220.0);
+            ss.sync_preview_settled();
+            let (sw, sh, _) = cynotch::settings_window::settings_dims_for_state(&ss);
+            snap_bg(&ctx, &dir, "v031_settings_general_frosted", sw, sh, dark_bg, |c| {
+                let _ = cynotch::settings_window::render_settings_d2d(
+                    c, &mut cache, &mut fonts, sw, sh, &ss, None,
                 );
             })?;
         }

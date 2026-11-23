@@ -151,15 +151,15 @@ fn test_notification_sound_action_emits_effect() {
 fn setting_hover_dwell_speed_updates_state_and_dwell_ms() {
     let mut state = AppState::new_for_preview();
     assert_eq!(state.hover_dwell_speed, HoverDwellSpeed::Normal);
-    assert_eq!(state.hover_dwell_ms(), 400);
+    assert_eq!(state.hover_dwell_ms(), 650);
 
     state.apply_setting_action(Action::SetHoverDwellSpeed(HoverDwellSpeed::Quick));
     assert_eq!(state.hover_dwell_speed, HoverDwellSpeed::Quick);
-    assert_eq!(state.hover_dwell_ms(), 120);
+    assert_eq!(state.hover_dwell_ms(), 300);
 
     state.apply_setting_action(Action::SetHoverDwellSpeed(HoverDwellSpeed::Slow));
     assert_eq!(state.hover_dwell_speed, HoverDwellSpeed::Slow);
-    assert_eq!(state.hover_dwell_ms(), 700);
+    assert_eq!(state.hover_dwell_ms(), 1000);
 }
 
 #[test]

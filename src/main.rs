@@ -2,7 +2,6 @@
 
 use cynotch::localtime::{format_rfc3339, local_now};
 use cynotch::models::{self, AppState, IdleMetric, NotchMode};
-use cynotch::screentime::ScreenTimeTracker;
 use cynotch::telemetry::TelemetryCollector;
 use cynotch::window::NotchWindow;
 use cynotch::*;
@@ -12,7 +11,8 @@ use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::{Duration, Instant};
 use windows::Win32::Foundation::*;
-use windows::Win32::System::Com::{COINIT_APARTMENTTHREADED, COINIT_MULTITHREADED, CoInitializeEx};
+use windows::Win32::System::Com::{COINIT_MULTITHREADED, CoInitializeEx};
+use windows::Win32::System::Ole::{OleInitialize, OleUninitialize};
 use windows::Win32::System::Threading::CreateMutexW;
 use windows::Win32::UI::HiDpi::{
     DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2, SetProcessDpiAwarenessContext,
@@ -31,7 +31,66 @@ macro_rules! log_err {
     };
 }
 
+#[repr(C)]
+struct RawExceptionRecord {
+    exception_code: u32,
+    exception_flags: u32,
+    exception_record: *const RawExceptionRecord,
+    exception_address: *const core::ffi::c_void,
+    number_parameters: u32,
+    exception_information: [usize; 15],
+}
+
+#[repr(C)]
+struct RawExceptionPointers {
+    exception_record: *const RawExceptionRecord,
+    context_record: *const core::ffi::c_void,
+}
+
+#[link(name = "kernel32")]
+unsafe extern "system" {
+    fn SetUnhandledExceptionFilter(
+        filter: Option<unsafe extern "system" fn(*const RawExceptionPointers) -> i32>,
+    ) -> *const core::ffi::c_void;
+}
+
+unsafe extern "system" fn unhandled_seh_filter(ptrs: *const RawExceptionPointers) -> i32 {
+    if !ptrs.is_null() {
+        let rec = unsafe { (*ptrs).exception_record };
+        if !rec.is_null() {
+            let code = unsafe { (*rec).exception_code };
+            let addr = unsafe { (*rec).exception_address as usize };
+            let nparams = unsafe { ((*rec).number_parameters as usize).min(4) };
+            let p0 = if nparams > 0 { unsafe { (*rec).exception_information[0] } } else { 0 };
+            let p1 = if nparams > 1 { unsafe { (*rec).exception_information[1] } } else { 0 };
+            let path = cynotch::models::crash_log_path("crash.txt");
+            if let Some(dir) = path.parent() {
+                let _ = std::fs::create_dir_all(dir);
+            }
+            if let Ok(mut f) = std::fs::OpenOptions::new()
+                .create(true)
+                .append(true)
+                .open(&path)
+            {
+                let _ = writeln!(
+                    f,
+                    "--- {} ---\nSEH CRASH: code=0x{:08X} addr=0x{:016X} p0=0x{:X} p1=0x{:X}",
+                    format_rfc3339(local_now()),
+                    code,
+                    addr,
+                    p0,
+                    p1
+                );
+            }
+        }
+    }
+    0 // EXCEPTION_CONTINUE_SEARCH
+}
+
 fn main() {
+    unsafe {
+        SetUnhandledExceptionFilter(Some(unhandled_seh_filter));
+    }
     std::panic::set_hook(Box::new(|info| {
         use std::io::Write;
         let bt = std::backtrace::Backtrace::capture();
@@ -81,12 +140,16 @@ fn main() {
         }
 
         let _ = SetProcessDpiAwarenessContext(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2);
-        let _ = CoInitializeEx(None, COINIT_APARTMENTTHREADED);
+        // OLE STA required for RegisterDragDrop / DoDragDrop on the main UI thread.
+        let _ = OleInitialize(None);
     }
 
+    // Safe to wipe ephemeral shelf-cache only AFTER single-instance mutex succeeds.
+    cynotch::shelf_dnd::wipe_shelf_cache();
+
     log_info!("============================================================");
-    log_info!("  ⚡ CyNotch (General Mahamatra Dynamic Island for Windows)");
-    log_info!("  Hotkeys: Ctrl+Shift+C (Toggle), M (Purge RAM), S (Capture)");
+    log_info!("   CyNotch (General Mahamatra Dynamic Island for Windows)");
+    log_info!("  Hotkeys: Ctrl+Alt+C (Toggle), M (Purge RAM), S (Capture)");
     log_info!("============================================================");
 
     let is_smoke = std::env::var_os("CYNOTCH_SMOKE_EXIT_MS").is_some();
@@ -106,7 +169,6 @@ fn main() {
         }
         cynotch::memreduct::enable_memory_privileges();
         let mut collector = TelemetryCollector::new();
-        let mut tracker = ScreenTimeTracker::new();
         let mut media_poller = media::MediaPoller::new();
         let mut audio_mon = audio::AudioMonitor::new();
         let mut notif_bridge = notifications::SystemNotificationBridge::new();
@@ -126,22 +188,12 @@ fn main() {
                 loop {
                     if first_pass {
                         first_pass = false;
-                        let init_hour = (local_now().hour as usize).min(23);
-                let init_stats = tracker.stats(init_hour);
-                if let Ok(mut s) = poll_state.lock() {
-                    s.screen_time = init_stats;
-                }
-            } else {
-                thread::sleep(Duration::from_millis(500));
-            }
+                    } else {
+                        thread::sleep(Duration::from_millis(500));
+                    }
 
             if cynotch::window::SHUTDOWN_REQUESTED.load(Ordering::Acquire) {
-                tracker.save();
                 break;
-            }
-
-            if cynotch::screentime::RESET_SCREENTIME_REQUESTED.swap(false, Ordering::AcqRel) {
-                tracker.reset_today();
             }
 
             let media_opt = { media_poller.poll() };
@@ -153,16 +205,16 @@ fn main() {
                 None
             };
 
-            let (screentime_enabled, notif_enabled, notif_auto_clear) = poll_state
+            let (notif_enabled, notif_auto_clear, need_net) = poll_state
                 .lock()
                 .map(|s| {
                     (
-                        s.screentime_enabled,
                         s.notif_listener_enabled,
                         s.notif_auto_clear_action_center,
+                        s.is_hovered || s.idle_metric == IdleMetric::NetSpeed,
                     )
                 })
-                .unwrap_or((true, false, false));
+                .unwrap_or((false, false, false));
 
             if cynotch::window::NOTIF_SYNC_REQUESTED.swap(false, Ordering::AcqRel) && notif_enabled
             {
@@ -238,21 +290,11 @@ fn main() {
                 }
             }
 
-            let (telem_opt, screen_stats) = if last_sec_tick.elapsed() >= Duration::from_millis(950)
-                        {
-                            last_sec_tick = Instant::now();
-                            let st_opt = {
-                                if screentime_enabled {
-                                    Some(tracker.tick())
-                                } else {
-                                    let hour = (local_now().hour as usize).min(23);
-                                    Some(tracker.stats(hour))
-                                }
-                            };
-                let telem = { collector.poll() };
-                (Some(telem), st_opt)
+            let telem_opt = if last_sec_tick.elapsed() >= Duration::from_millis(950) {
+                last_sec_tick = Instant::now();
+                Some(collector.poll_with_network(need_net))
             } else {
-                (None, None)
+                None
             };
 
             let mut auto_clean_params: Option<cynotch::memreduct::CleanAreas> = None;
@@ -307,10 +349,7 @@ fn main() {
                     if telem_changed {
                         settings_changed = true;
                         if s.is_hovered
-                            && matches!(
-                                s.mode,
-                                NotchMode::Home | NotchMode::MemReduct | NotchMode::Telemetry
-                            )
+                            && matches!(s.mode, NotchMode::Home | NotchMode::MemReduct)
                         {
                             ui_changed = true;
                         } else if !s.is_hovered
@@ -345,15 +384,6 @@ fn main() {
                     }
                 }
 
-                if let Some(stats) = screen_stats {
-                    let st_changed = stats.today_secs != s.screen_time.today_secs
-                        || stats.top_app_name != s.screen_time.top_app_name;
-                    s.screen_time = stats;
-                    if st_changed && s.is_hovered && s.mode == NotchMode::Telemetry {
-                        ui_changed = true;
-                    }
-                }
-
                 if let Some(v) = vol_opt
                     && (s.volume_pct - v).abs() > 0.015
                 {
@@ -373,7 +403,7 @@ fn main() {
                         last_gsmtc_pos_ms = m.position_ms;
                         s.lyrics.clear();
                         s.current_lyric_index = None;
-                        s.current_lyric_text = format!("Playing • {}", m.title);
+                        s.current_lyric_text = format!("Playing  -  {}", m.title);
                         s.lyrics_offset = 0;
                         if s.lyrics_enabled && !m.title.is_empty() {
                             song_to_fetch = Some((m.title.clone(), m.artist.clone()));
@@ -386,13 +416,23 @@ fn main() {
                         if m.position_ms == last_gsmtc_pos_ms {
                             m.position_ms = s.media.position_ms;
                         } else {
-                            last_gsmtc_pos_ms = m.position_ms;
-                            if s.is_hovered && s.mode == NotchMode::Music {
-                                ui_changed = true;
+                            // Prevent SMTC LastUpdatedTime clock skew from jumping the progress bar backward while playing.
+                            if s.media.is_playing
+                                && m.is_playing
+                                && m.position_ms < s.media.position_ms
+                                && s.media.position_ms - m.position_ms < 2500
+                            {
+                                m.position_ms = s.media.position_ms;
+                            } else {
+                                last_gsmtc_pos_ms = m.position_ms;
+                                if s.is_hovered && s.mode == NotchMode::Music {
+                                    ui_changed = true;
+                                }
                             }
                         }
                     }
                     s.media = m;
+                    s.sync_capsule_state_transition();
                 } else if !s.media.is_idle() {
                     s.media = models::MediaTrack::idle();
                     s.lyrics.clear();
@@ -401,6 +441,7 @@ fn main() {
                     s.lyrics_offset = 0;
                     last_song_title.clear();
                     last_gsmtc_pos_ms = 0;
+                    s.sync_capsule_state_transition();
                     ui_changed = true;
                 }
 
@@ -468,7 +509,7 @@ fn main() {
                             s.apply_clean_result(clean_res);
                         } else {
                             s.mem_reduct.last_cleaned_status =
-                                "Ready • Auto clean done".to_string();
+                                "Ready  -  Auto clean done".to_string();
                         }
                     }
                     cynotch::window::PURGE_IN_PROGRESS.store(false, Ordering::Release);
@@ -515,6 +556,10 @@ fn main() {
 
     if !is_smoke {
         notifications::sync_windows_notification_sound_mute(false);
+    }
+    cynotch::shelf_dnd::wipe_shelf_cache();
+    unsafe {
+        OleUninitialize();
     }
 }
 

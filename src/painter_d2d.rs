@@ -385,7 +385,7 @@ impl PathBuilder {
     /// `k = 0.55228475 * r` is the control point offset for a circular approximation.
     pub fn from_circle(cx: f32, cy: f32, r: f32) -> Option<Path> {
         if r <= 0.0 { return None; }
-        let k = 0.55228475 * r;
+        let k = 0.5522848 * r;
         let mut b = PathBuilder::new();
         b.move_to(cx, cy - r);
         b.cubic_to(cx + k, cy - r, cx + r, cy - k, cx + r, cy);
@@ -394,6 +394,12 @@ impl PathBuilder {
         b.cubic_to(cx - r, cy - k, cx - k, cy - r, cx, cy - r);
         b.close();
         b.finish()
+    }
+}
+
+impl Default for PathBuilder {
+    fn default() -> Self {
+        Self::new()
     }
 }
 
@@ -580,23 +586,34 @@ pub fn lerp_color(c0: Color, c1: Color, t: f32) -> Color {
     ).unwrap_or(c1)
 }
 
-/// Calibrated Design Tokens (Indigo-Obsidian Glass + Luminous Violet)
+/// Semantic button surface variants (`DESIGN_SYSTEM.md` §2 Atoms).
+#[derive(Copy, Clone, Debug, PartialEq, Eq)]
+pub enum ButtonVariant {
+    /// Airy translucent crystal violet glass + bottom-to-top faded outline (~50% -> 0%).
+    PrimaryFill,
+    /// Ultra-clear obsidian glass + bottom-to-top faded outline (~48% -> 0%).
+    PrimaryOutline,
+    /// Ghost text button: zero fill, zero outline, pure bottom-up gentle amber liquid hover bloom.
+    TextOnly,
+}
+
+/// Calibrated Design Tokens (Purple Obsidian Liquid Glass + Luminous Violet + Support Amber)
 pub mod tok {
     use super::{rgba, Color};
 
-    // Cool Indigo-Obsidian Glass Surfaces (Never pure #000000)
-    pub fn obsidian_shell() -> Color { rgba(14, 16, 26, 250) }
-    pub fn obsidian_deep() -> Color { rgba(9, 10, 18, 254) }
-    pub fn surface_top() -> Color { rgba(28, 30, 46, 255) }
-    pub fn surface_base() -> Color { rgba(16, 17, 28, 255) }
-    pub fn surface_well() -> Color { rgba(10, 11, 19, 240) }
+    // Solid Purple Obsidian Fallback Surfaces (Windows Transparency Effects = OFF)
+    pub fn obsidian_shell() -> Color { rgba(22, 23, 40, 255) }   // #161728
+    pub fn obsidian_deep() -> Color { rgba(14, 15, 28, 255) }    // #0E0F1C
+    pub fn surface_top() -> Color { rgba(28, 29, 50, 255) }
+    pub fn surface_base() -> Color { rgba(18, 17, 34, 255) }
+    pub fn surface_well() -> Color { rgba(12, 11, 24, 240) }
 
-    // Frosted Indigo-Obsidian Palette (Used under GPU WinRT Composition HostBackdrop + GaussianBlur)
-    pub fn obsidian_shell_frosted() -> Color { rgba(14, 16, 27, 108) }
-    pub fn obsidian_deep_frosted() -> Color { rgba(9, 10, 19, 122) }
-    pub fn surface_top_frosted() -> Color { rgba(28, 30, 47, 62) }
-    pub fn surface_base_frosted() -> Color { rgba(16, 17, 29, 48) }
-    pub fn surface_well_frosted() -> Color { rgba(10, 11, 20, 64) }
+    // Fixed Calibrated Option B Liquid Frosted Obsidian Palette (true airy liquid translucency under 15px Blur + Luminosity Clamp)
+    pub fn obsidian_shell_frosted() -> Color { rgba(18, 15, 34, 46) }  // ~18% true airy liquid obsidian
+    pub fn obsidian_deep_frosted() -> Color { rgba(16, 12, 32, 54) }   // ~21% airy deep obsidian
+    pub fn surface_top_frosted() -> Color { rgba(24, 22, 44, 15) }     // ~6% pure crystal glass card
+    pub fn surface_base_frosted() -> Color { rgba(34, 20, 68, 20) }    // ~8% pure crystal card base
+    pub fn surface_well_frosted() -> Color { rgba(12, 10, 26, 14) }    // ~5.5% recessed liquid well
 
     pub fn scale_frosted(c: Color, opacity_pct: u32) -> Color {
         let pct = opacity_pct.clamp(25, 130);
@@ -610,27 +627,41 @@ pub mod tok {
         )
     }
 
-    pub fn text1() -> Color { rgba(247, 245, 255, 255) } // #F7F5FF crisp lavender-tinted white
-    pub fn text2() -> Color { rgba(176, 172, 206, 255) } // #B0ACCE crisp cool slate-lavender (high WCAG AA contrast)
-    pub fn text3() -> Color { rgba(148, 144, 182, 255) } // #9490B6 readable muted slate-lavender (WCAG AA >= 4.5:1)
+    pub fn text1() -> Color { rgba(248, 247, 255, 255) } // #F8F7FF crisp silver-white
+    pub fn text2() -> Color { rgba(199, 194, 223, 255) } // #C7C2DF secondary silver-lavender
+    pub fn text3() -> Color { rgba(158, 152, 189, 255) } // #9E98BD muted metadata ink
     pub fn surface() -> Color { rgba(235, 230, 255, 15) }
     pub fn surface_hi() -> Color { rgba(235, 230, 255, 30) }
     pub fn hairline() -> Color { rgba(235, 230, 255, 26) }
 
-    // Photo-Matched Luminous Violet & Pearlescent Lavender Palette
+    // Luminous Violet & Pearlescent Lavender Palette
     pub fn cyno_indigo() -> Color { rgba(62, 24, 138, 255) }    // #3E188A deep royal indigo-violet
     pub fn cyno_deep() -> Color { rgba(93, 41, 196, 255) }       // #5D29C4 rich royal purple
     pub fn cyno_violet() -> Color { rgba(124, 58, 237, 255) }    // #7C3AED vivid iris violet
-    pub fn cyno_orchid() -> Color { rgba(155, 89, 252, 255) }    // #9B59FC bright orchid bloom
+    pub fn cyno_orchid() -> Color { rgba(168, 85, 247, 255) }    // #A855F7 orchid bloom
     pub fn cyno_violet_hi() -> Color { rgba(196, 148, 255, 255) } // #C494FF luminous lavender-orchid accent
     pub fn cyno_mist() -> Color { rgba(233, 218, 255, 255) }     // #E9DAFF pearlescent lavender highlight
     pub fn cyno_lavender_white() -> Color { rgba(245, 240, 255, 255) } // #F5F0FF bright lavender-white accent
-    pub fn cyno_amber_deep() -> Color { rgba(161, 98, 7, 255) }  // legacy/contrast token
-    pub fn cyno_gold() -> Color { rgba(245, 158, 11, 255) }      // semantic warning/gold token
-    pub fn cyno_gold_hi() -> Color { rgba(253, 230, 138, 255) }  // semantic warning highlight
+    // Tri-Color Support Palette: High-Saturation Brushed Metallic Champagne Gold (~5% Accent)
+    pub fn gold_deep() -> Color { rgba(148, 86, 4, 255) }         // #945604 deep burnished 24k shadow
+    pub fn gold_bronze() -> Color { rgba(214, 134, 8, 255) }      // #D68608 rich saturated burnished gold
+    pub fn gold_mid() -> Color { rgba(248, 182, 16, 255) }        // #F8B610 high-saturation metallic gold
+    pub fn gold_champagne() -> Color { rgba(255, 226, 72, 255) }  // #FFE248 electric luminous gold highlight
+    pub fn gold_shimmer() -> Color { rgba(255, 252, 224, 255) }   // #FFFCE0 incandescent metallic specular glint
+    pub fn amber_glow() -> Color { rgba(248, 182, 16, 255) }      // #F8B610 Brushed Metallic Gold support pip & focus
+    pub fn amber_light() -> Color { rgba(255, 226, 72, 255) }     // #FFE248 vivid metallic gold liquid hover bloom
+    pub fn cyno_amber_deep() -> Color { rgba(148, 86, 4, 255) }   // #945604 deep burnished gold base
+    pub fn cyno_gold() -> Color { rgba(248, 182, 16, 255) }       // #F8B610 radiant metallic gold token
+    pub fn cyno_gold_hi() -> Color { rgba(255, 226, 72, 255) }    // #FFE248 metallic gold highlight
+
+    // Semantic Status Exceptions (Correct / Warning / Alert)
+    pub fn status_correct() -> Color { rgba(16, 185, 129, 255) }  // #10B981 Emerald Green (correct/success)
+    pub fn status_warning() -> Color { rgba(248, 182, 16, 255) }  // #F8B610 Metallic Gold (warning)
+    pub fn status_alert() -> Color { rgba(220, 38, 38, 255) }     // #DC2626 Crimson Red (alert/error/muted)
+
     pub fn cyno_peach_gold() -> Color { rgba(233, 218, 255, 255) } // lavender-white pill end
-    pub fn text_soft() -> Color { rgba(224, 217, 252, 255) }     // #E0D9FC crisp secondary lavender ink
-    pub fn cyan_hi() -> Color { rgba(125, 211, 252, 255) }       // #7DD3FC crisp hydration sky accent
+    pub fn text_soft() -> Color { rgba(224, 217, 252, 255) }      // #E0D9FC crisp secondary lavender ink
+    pub fn cyan_hi() -> Color { rgba(255, 226, 72, 255) }         // Unified to Metallic Gold (no rogue sky-blue)
     pub fn cyno_badge_bg() -> Color { rgba(109, 40, 217, 78) }
     pub fn cyno_badge_ring() -> Color { rgba(168, 85, 247, 195) }
 }
@@ -663,7 +694,10 @@ fn pack_rgba8(c: D2D1_COLOR_F) -> u32 {
     let r = (c.r.clamp(0.0, 1.0) * 255.0).round() as u32;
     let g = (c.g.clamp(0.0, 1.0) * 255.0).round() as u32;
     let b = (c.b.clamp(0.0, 1.0) * 255.0).round() as u32;
-    let a = (c.a.clamp(0.0, 1.0) * 255.0).round() as u32;
+    // Quantize alpha to 1/16: animated fades would otherwise create a new
+    // gradient brush on every frame (255 distinct keys per fade), thrashing the
+    // 512-entry brush cache. 16 steps is imperceptible on soft glows.
+    let a = ((c.a.clamp(0.0, 1.0) * 16.0).round() as u32 * 17).min(255);
     (r << 24) | (g << 16) | (b << 8) | a
 }
 
@@ -699,6 +733,7 @@ pub struct D2DResourceCache {
     linear3_brushes: RefCell<HashMap<(u32, u32, u32, i32, i32, i32, i32, i32), ID2D1LinearGradientBrush>>,
     radial_brushes: RefCell<HashMap<(u32, u32, i32, i32, i32, i32), ID2D1RadialGradientBrush>>,
     path_geoms: RefCell<HashMap<u64, ID2D1PathGeometry>>,
+    thumb_bitmaps: RefCell<HashMap<String, Option<(windows::Win32::Graphics::Direct2D::ID2D1Bitmap1, u32, u32)>>>,
     stroke_style_round: RefCell<Option<windows::Win32::Graphics::Direct2D::ID2D1StrokeStyle>>,
     d2d_factory: ID2D1Factory1,
 }
@@ -713,9 +748,106 @@ impl D2DResourceCache {
             linear3_brushes: RefCell::new(HashMap::with_capacity(64)),
             radial_brushes: RefCell::new(HashMap::with_capacity(128)),
             path_geoms: RefCell::new(HashMap::with_capacity(128)),
+            thumb_bitmaps: RefCell::new(HashMap::with_capacity(24)),
             stroke_style_round: RefCell::new(None),
             d2d_factory: factory,
         })
+    }
+
+    /// Retrieves or uploads a cached `ID2D1Bitmap1` for an in-memory premultiplied PBGRA cover art buffer.
+    pub fn memory_thumbnail(
+        &self,
+        ctx: &ID2D1DeviceContext,
+        cache_key: &str,
+        w: u32,
+        h: u32,
+        pbgra: &[u8],
+    ) -> Option<(windows::Win32::Graphics::Direct2D::ID2D1Bitmap1, u32, u32)> {
+        if w == 0 || h == 0 || pbgra.len() < (w as usize) * (h as usize) * 4 {
+            return None;
+        }
+        let mut map = self.thumb_bitmaps.borrow_mut();
+        if let Some(cached) = map.get(cache_key) {
+            return cached.clone();
+        }
+        if map.len() >= 24 {
+            map.clear();
+        }
+        use windows::Win32::Graphics::Direct2D::Common::{
+            D2D1_ALPHA_MODE_PREMULTIPLIED, D2D1_PIXEL_FORMAT, D2D_SIZE_U,
+        };
+        use windows::Win32::Graphics::Direct2D::{
+            D2D1_BITMAP_OPTIONS_NONE, D2D1_BITMAP_PROPERTIES1,
+        };
+        use windows::Win32::Graphics::Dxgi::Common::DXGI_FORMAT_B8G8R8A8_UNORM;
+        let props = D2D1_BITMAP_PROPERTIES1 {
+            pixelFormat: D2D1_PIXEL_FORMAT {
+                format: DXGI_FORMAT_B8G8R8A8_UNORM,
+                alphaMode: D2D1_ALPHA_MODE_PREMULTIPLIED,
+            },
+            dpiX: 96.0,
+            dpiY: 96.0,
+            bitmapOptions: D2D1_BITMAP_OPTIONS_NONE,
+            colorContext: ManuallyDrop::new(None),
+        };
+        let loaded = unsafe {
+            ctx.CreateBitmap(
+                D2D_SIZE_U { width: w, height: h },
+                Some(pbgra.as_ptr() as *const _),
+                w * 4,
+                &props,
+            )
+            .ok()
+            .map(|bmp| (bmp, w, h))
+        };
+        map.insert(cache_key.to_string(), loaded.clone());
+        loaded
+    }
+
+    /// Loads or retrieves a cached thumbnail `ID2D1Bitmap1` (and its pixel dimensions) for a shelf image path.
+    pub fn shelf_thumbnail(
+        &self,
+        ctx: &ID2D1DeviceContext,
+        path: &str,
+    ) -> Option<(windows::Win32::Graphics::Direct2D::ID2D1Bitmap1, u32, u32)> {
+        let mut map = self.thumb_bitmaps.borrow_mut();
+        if let Some(cached) = map.get(path) {
+            return cached.clone();
+        }
+        if map.len() >= 24 {
+            map.clear();
+        }
+        let loaded = crate::capture::load_image_thumbnail_pbgra(path, 260).and_then(|(w, h, pbgra)| {
+            use windows::Win32::Graphics::Direct2D::Common::{
+                D2D1_ALPHA_MODE_PREMULTIPLIED, D2D1_PIXEL_FORMAT, D2D_SIZE_U,
+            };
+            use windows::Win32::Graphics::Direct2D::{
+                D2D1_BITMAP_OPTIONS_NONE, D2D1_BITMAP_PROPERTIES1,
+            };
+            use windows::Win32::Graphics::Dxgi::Common::DXGI_FORMAT_B8G8R8A8_UNORM;
+            let props = D2D1_BITMAP_PROPERTIES1 {
+                pixelFormat: D2D1_PIXEL_FORMAT {
+                    format: DXGI_FORMAT_B8G8R8A8_UNORM,
+                    alphaMode: D2D1_ALPHA_MODE_PREMULTIPLIED,
+                },
+                dpiX: 96.0,
+                dpiY: 96.0,
+                bitmapOptions: D2D1_BITMAP_OPTIONS_NONE,
+                colorContext: ManuallyDrop::new(None),
+            };
+            let bmp = unsafe {
+                ctx.CreateBitmap(
+                    D2D_SIZE_U { width: w, height: h },
+                    Some(pbgra.as_ptr() as *const _),
+                    w * 4,
+                    &props,
+                )
+                .ok()?
+            };
+            Some((bmp, w, h))
+        });
+        map.insert(path.to_string(), loaded.clone());
+        loaded
     }
 
     /// Returns the cached D2D factory.
@@ -752,7 +884,7 @@ impl D2DResourceCache {
         if let Some(g) = map.get(&path.hash) {
             return Ok(g.clone());
         }
-        if map.len() >= 512 {
+        if map.len() >= 1024 {
             map.clear();
         }
         let geom = path_to_d2d_geometry(&self.d2d_factory, path)?;
@@ -767,7 +899,7 @@ impl D2DResourceCache {
         if let Some(b) = map.get(&key) {
             return Ok(b.clone());
         }
-        if map.len() >= 512 {
+        if map.len() >= 1024 {
             map.clear();
         }
         let b: ID2D1SolidColorBrush = unsafe { ctx.CreateSolidColorBrush(&col, None)? };
@@ -796,7 +928,7 @@ impl D2DResourceCache {
         if let Some(b) = map.get(&key) {
             return Ok(b.clone());
         }
-        if map.len() >= 512 {
+        if map.len() >= 1024 {
             map.clear();
         }
         let collection = create_stops(ctx, c0, c1)?;
@@ -1168,6 +1300,88 @@ impl<'a> D2DPainter<'a> {
             c1,
             D2D_POINT_2F { x: dx, y: dy },
             D2D_POINT_2F { x: dx, y: dy + dh },
+        )?;
+        unsafe { self.ctx.FillRoundedRectangle(&rr, &brush) };
+        Ok(())
+    }
+
+    /// Fills a rounded rectangle with a horizontal linear gradient (left to right).
+    pub fn rrect_horizontal_gradient(
+        &mut self,
+        x: f32,
+        y: f32,
+        w: f32,
+        h: f32,
+        r: f32,
+        mut c0: D2D1_COLOR_F,
+        mut c1: D2D1_COLOR_F,
+    ) -> Result<()> {
+        c0.a *= self.global_alpha;
+        c1.a *= self.global_alpha;
+        let (dx, dy) = self.tf_pt(x, y);
+        let (dw, dh) = (w * self.s, h * self.s);
+        let dr = r * self.s;
+        let max_r = (dw.min(dh) * 0.5).max(0.0);
+        let rr = D2D1_ROUNDED_RECT {
+            rect: D2D_RECT_F {
+                left: dx,
+                top: dy,
+                right: dx + dw,
+                bottom: dy + dh,
+            },
+            radiusX: dr.clamp(0.0, max_r),
+            radiusY: dr.clamp(0.0, max_r),
+        };
+        let brush = self.cache.linear_brush(
+            self.ctx,
+            c0,
+            c1,
+            D2D_POINT_2F { x: dx, y: dy },
+            D2D_POINT_2F { x: dx + dw, y: dy },
+        )?;
+        unsafe { self.ctx.FillRoundedRectangle(&rr, &brush) };
+        Ok(())
+    }
+
+    /// Fills a rounded rectangle with a 3-stop horizontal linear gradient (left to right).
+    #[allow(clippy::too_many_arguments)]
+    pub fn rrect_horizontal_gradient_3stop(
+        &mut self,
+        x: f32,
+        y: f32,
+        w: f32,
+        h: f32,
+        r: f32,
+        mut c0: D2D1_COLOR_F,
+        mut c_mid: D2D1_COLOR_F,
+        mut c1: D2D1_COLOR_F,
+        mid_pos: f32,
+    ) -> Result<()> {
+        c0.a *= self.global_alpha;
+        c_mid.a *= self.global_alpha;
+        c1.a *= self.global_alpha;
+        let (dx, dy) = self.tf_pt(x, y);
+        let (dw, dh) = (w * self.s, h * self.s);
+        let dr = r * self.s;
+        let max_r = (dw.min(dh) * 0.5).max(0.0);
+        let rr = D2D1_ROUNDED_RECT {
+            rect: D2D_RECT_F {
+                left: dx,
+                top: dy,
+                right: dx + dw,
+                bottom: dy + dh,
+            },
+            radiusX: dr.clamp(0.0, max_r),
+            radiusY: dr.clamp(0.0, max_r),
+        };
+        let brush = self.cache.linear_brush_3stop(
+            self.ctx,
+            c0,
+            c_mid,
+            c1,
+            mid_pos,
+            D2D_POINT_2F { x: dx, y: dy },
+            D2D_POINT_2F { x: dx + dw, y: dy },
         )?;
         unsafe { self.ctx.FillRoundedRectangle(&rr, &brush) };
         Ok(())
@@ -1567,10 +1781,10 @@ mod tests {
     #[test]
     fn test_transform_from_rotate() {
         let t = Transform::from_rotate(90.0);
-        assert!((t.sx - 0.0).abs() < 1e-5); // cos(90°) ≈ 0
-        assert!((t.ky - 1.0).abs() < 1e-5); // sin(90°) ≈ 1
-        assert!((t.kx - (-1.0)).abs() < 1e-5); // -sin(90°) ≈ -1
-        assert!((t.sy - 0.0).abs() < 1e-5); // cos(90°) ≈ 0
+        assert!((t.sx - 0.0).abs() < 1e-5); // cos(90deg) ~ 0
+        assert!((t.ky - 1.0).abs() < 1e-5); // sin(90deg) ~ 1
+        assert!((t.kx - (-1.0)).abs() < 1e-5); // -sin(90deg) ~ -1
+        assert!((t.sy - 0.0).abs() < 1e-5); // cos(90deg) ~ 0
         assert_eq!(t.tx, 0.0);
         assert_eq!(t.ty, 0.0);
 
@@ -1752,7 +1966,7 @@ impl<'a> D2DPainter<'a> {
         if measured <= scaled_max {
             return (std::borrow::Cow::Borrowed(text), false);
         }
-        let ellipsis = "…";
+        let ellipsis = "...";
         let ellipsis_w = fonts.measure(ellipsis, scaled_size, weight).0;
         let target = scaled_max - ellipsis_w;
         if target <= 0.0 {
@@ -1761,7 +1975,7 @@ impl<'a> D2DPainter<'a> {
         let mut lo = 0;
         let mut hi = text.chars().count();
         while lo < hi {
-            let mid = (lo + hi + 1) / 2;
+            let mid = (lo + hi).div_ceil(2);
             let substr: String = text.chars().take(mid).collect();
             if fonts.measure(&substr, scaled_size, weight).0 <= target {
                 lo = mid;
@@ -2305,6 +2519,53 @@ impl<'a> D2DPainter<'a> {
         Ok(())
     }
 
+    /// Rounded rect with continuous bottom-to-top faded outline (`0%` top -> `mid_col` -> `bot_col` bottom).
+    /// Matches `DESIGN_SYSTEM.md` `.btn-rim::before` (`~50%` bottom fading smoothly to `0%` at top).
+    #[allow(clippy::too_many_arguments)]
+    pub fn rrect_bottom_fade_stroke(
+        &mut self,
+        x: f32,
+        y: f32,
+        w: f32,
+        h: f32,
+        r: f32,
+        stroke_w: f32,
+        mid_col: Color,
+        bot_col: Color,
+    ) -> Result<()> {
+        let (dx, dy) = self.tf_pt(x, y);
+        let (dw, dh) = (w * self.s, h * self.s);
+        let max_r = (dw.min(dh) * 0.5).max(0.0);
+        let dr = (r * self.s).clamp(0.0, max_r);
+        let c_top = D2D1_COLOR_F { r: 1.0, g: 1.0, b: 1.0, a: 0.0 };
+        let c_mid = mid_col.to_d2d(self.global_alpha);
+        let c_bot = bot_col.to_d2d(self.global_alpha);
+        let brush = self.cache.linear_brush_3stop(
+            self.ctx,
+            c_top,
+            c_mid,
+            c_bot,
+            0.54,
+            D2D_POINT_2F { x: dx, y: dy },
+            D2D_POINT_2F { x: dx, y: dy + dh },
+        )?;
+        // Inset by half stroke width so the 1px rim sits crisply on the pill perimeter
+        let inset = 0.5 * stroke_w * self.s;
+        let rr = D2D1_ROUNDED_RECT {
+            rect: D2D_RECT_F {
+                left: dx + inset,
+                top: dy + inset,
+                right: (dx + dw - inset).max(dx + inset),
+                bottom: (dy + dh - inset).max(dy + inset),
+            },
+            radiusX: (dr - inset).max(0.0),
+            radiusY: (dr - inset).max(0.0),
+        };
+        let style = self.cache.stroke_style_round();
+        unsafe { self.ctx.DrawRoundedRectangle(&rr, &brush, stroke_w * self.s, style.as_ref()) };
+        Ok(())
+    }
+
     /// Rounded rect with per-corner single 3-stop vertical gradient bevel stroke (matching v0.2.4.1).
     pub fn rrect_corners_bevel_stroke(
         &mut self,
@@ -2561,6 +2822,7 @@ pub struct PainterD2D<'a> {
     pub type_scale: crate::models::TypeScale,
     // Clip state
     clip_bounds: Option<(f32, f32, f32, f32)>,
+    base_transform: windows::Foundation::Numerics::Matrix3x2,
 }
 
 impl<'a> PainterD2D<'a> {
@@ -2598,6 +2860,7 @@ impl<'a> PainterD2D<'a> {
             frosted_opacity_pct,
             type_scale,
             clip_bounds: None,
+            base_transform: windows::Foundation::Numerics::Matrix3x2::identity(),
         }
     }
 
@@ -2612,7 +2875,7 @@ impl<'a> PainterD2D<'a> {
 
     pub fn well_col(&self) -> Color {
         if self.frosted {
-            tok::scale_frosted(tok::surface_well_frosted(), self.frosted_opacity_pct)
+            tok::surface_well_frosted()
         } else {
             tok::surface_well()
         }
@@ -2620,7 +2883,7 @@ impl<'a> PainterD2D<'a> {
 
     pub fn surface_top_col(&self) -> Color {
         if self.frosted {
-            tok::scale_frosted(tok::surface_top_frosted(), self.frosted_opacity_pct)
+            tok::surface_top_frosted()
         } else {
             tok::surface_top()
         }
@@ -2641,14 +2904,14 @@ impl<'a> PainterD2D<'a> {
         r: f32,
         aurora: Option<(f32, f32, f32, Color)>,
     ) {
-        let shadow_alpha = if self.frosted { 28 } else { 120 };
-        self.rrect_drop_shadow(x, y, w, h, r, 3.0, 7.0, shadow_alpha);
+        // When frosted glass is active, skip dark drop shadows so background desktop windows
+        // refract cleanly without a dark halo; use a whisper-thin 1px specular rim instead.
+        if !self.frosted {
+            self.rrect_drop_shadow(x, y, w, h, r, 4.0, 10.0, 118);
+        }
 
         let (c_top, c_bot) = if self.frosted {
-            (
-                tok::scale_frosted(tok::surface_top_frosted(), self.frosted_opacity_pct),
-                tok::scale_frosted(tok::surface_base_frosted(), self.frosted_opacity_pct),
-            )
+            (tok::surface_top_frosted(), tok::surface_base_frosted())
         } else {
             (tok::surface_top(), tok::surface_base())
         };
@@ -2660,42 +2923,359 @@ impl<'a> PainterD2D<'a> {
                     x + gx,
                     y + gy,
                     gr,
-                    fade(gcol, 0.38),
+                    fade(gcol, if self.frosted { 0.04 } else { 0.14 }),
                     BlendMode::SourceOver,
                     true,
                 );
             }
+            // Subtle pearlescent bottom-left catch light (DESIGN_SYSTEM.md §1.2)
             self.elliptical_glow(
-                x + w * 0.5,
-                y + h + 4.0,
-                w * 0.56,
-                (h * 0.48).max(20.0),
-                rgba(124, 58, 237, 24),
+                x + w * 0.14,
+                y + h,
+                (w * 0.34).max(36.0),
+                (h * 0.36).max(20.0),
+                rgba(245, 240, 255, if self.frosted { 14 } else { 22 }),
                 BlendMode::Plus,
                 true,
             );
+            // Luminous violet bottom sweep
             self.elliptical_glow(
-                x + w * 0.5,
-                y,
-                w * 0.52,
-                (h * 0.42).max(16.0),
-                rgba(240, 235, 255, 18),
+                x + w * 0.56,
+                y + h + 2.0,
+                w * 0.58,
+                (h * 0.52).max(24.0),
+                rgba(139, 92, 246, if self.frosted { 18 } else { 32 }),
                 BlendMode::Plus,
                 true,
             );
             self.pop_clip();
         }
 
-        self.rrect_bevel_stroke(
+        // Whisper-thin 1px specular glass edge catch
+        self.rrect_stroke(
             x,
             y,
             w,
             h,
             r,
             1.0,
-            rgba(235, 230, 255, 62),
-            rgba(168, 85, 247, 36),
+            rgba(255, 255, 255, if self.frosted { 14 } else { 18 }),
         );
+    }
+
+    fn draw_bitmap_cover_clipped(
+        &mut self,
+        bmp: windows::Win32::Graphics::Direct2D::ID2D1Bitmap1,
+        bw: u32,
+        bh: u32,
+        x: f32,
+        y: f32,
+        w: f32,
+        h: f32,
+        r: f32,
+    ) -> bool {
+        if bw == 0 || bh == 0 {
+            return false;
+        }
+        if !self.prepare_rrect_clip(x, y, w, h, r) {
+            return false;
+        }
+        let (dx, dy) = (self.origin_x + x * self.s, self.origin_y + y * self.s);
+        let (dw, dh) = (w * self.s, h * self.s);
+        let dst_rect = D2D_RECT_F {
+            left: dx,
+            top: dy,
+            right: dx + dw,
+            bottom: dy + dh,
+        };
+        let bwf = bw as f32;
+        let bhf = bh as f32;
+        let dst_aspect = (dw / dh.max(1.0)).max(0.01);
+        let src_aspect = (bwf / bhf.max(1.0)).max(0.01);
+        let src_rect = if src_aspect > dst_aspect {
+            let crop_w = (bhf * dst_aspect).clamp(1.0, bwf);
+            let pad_x = (bwf - crop_w) * 0.5;
+            D2D_RECT_F {
+                left: pad_x,
+                top: 0.0,
+                right: pad_x + crop_w,
+                bottom: bhf,
+            }
+        } else {
+            let crop_h = (bwf / dst_aspect).clamp(1.0, bhf);
+            let pad_y = (bhf - crop_h) * 0.5;
+            D2D_RECT_F {
+                left: 0.0,
+                top: pad_y,
+                right: bwf,
+                bottom: pad_y + crop_h,
+            }
+        };
+        let rt: ID2D1RenderTarget = match self.ctx.cast() {
+            Ok(r) => r,
+            Err(_) => {
+                self.pop_clip();
+                return false;
+            }
+        };
+        unsafe {
+            rt.DrawBitmap(
+                &bmp,
+                Some(&dst_rect),
+                self.global_alpha.clamp(0.0, 1.0),
+                windows::Win32::Graphics::Direct2D::D2D1_BITMAP_INTERPOLATION_MODE_LINEAR,
+                Some(&src_rect),
+            );
+        }
+        self.pop_clip();
+        true
+    }
+
+    /// Applies a subtle scale transform around logical center `(cx, cy)` for **Blur-Fade Rise**
+    /// (`0.96 -> 1.0`). Always pair with `pop_scale_transform()`.
+    pub fn push_scale_about(&self, cx: f32, cy: f32, scale: f32) {
+        if (scale - 1.0).abs() < 0.0005 {
+            return;
+        }
+        let pcx = self.origin_x + cx * self.s;
+        let pcy = self.origin_y + cy * self.s;
+        let tf = windows::Foundation::Numerics::Matrix3x2 {
+            M11: scale,
+            M12: 0.0,
+            M21: 0.0,
+            M22: scale,
+            M31: pcx * (1.0 - scale),
+            M32: pcy * (1.0 - scale),
+        };
+        let combined = Self::mul_m3x2(tf, self.base_transform);
+        unsafe {
+            self.ctx.SetTransform(&combined);
+        }
+    }
+
+    /// Restores the Direct2D transform to `base_transform` after `push_scale_about`.
+    pub fn pop_scale_transform(&self) {
+        unsafe {
+            self.ctx.SetTransform(&self.base_transform);
+        }
+    }
+
+    /// Sets a GPU base transform (e.g. expand/close scale) that composes with all
+    /// nested `push_scale_about` and path/rotated-text transforms.
+    pub fn set_base_transform(&mut self, tf: windows::Foundation::Numerics::Matrix3x2) {
+        self.base_transform = tf;
+        unsafe {
+            self.ctx.SetTransform(&tf);
+        }
+    }
+
+    #[inline]
+    fn mul_m3x2(
+        a: windows::Foundation::Numerics::Matrix3x2,
+        b: windows::Foundation::Numerics::Matrix3x2,
+    ) -> windows::Foundation::Numerics::Matrix3x2 {
+        windows::Foundation::Numerics::Matrix3x2 {
+            M11: a.M11 * b.M11 + a.M12 * b.M21,
+            M12: a.M11 * b.M12 + a.M12 * b.M22,
+            M21: a.M21 * b.M11 + a.M22 * b.M21,
+            M22: a.M21 * b.M12 + a.M22 * b.M22,
+            M31: a.M31 * b.M11 + a.M32 * b.M21 + b.M31,
+            M32: a.M31 * b.M12 + a.M32 * b.M22 + b.M32,
+        }
+    }
+
+    /// Pushes a zero-allocation GPU axis-aligned scissor clip in logical coordinates.
+    pub fn push_rect_clip(&self, x: f32, y: f32, w: f32, h: f32) {
+        let rc = windows::Win32::Graphics::Direct2D::Common::D2D_RECT_F {
+            left: self.origin_x + x * self.s,
+            top: self.origin_y + y * self.s,
+            right: self.origin_x + (x + w) * self.s,
+            bottom: self.origin_y + (y + h) * self.s,
+        };
+        unsafe {
+            self.ctx.PushAxisAlignedClip(
+                &rc,
+                windows::Win32::Graphics::Direct2D::D2D1_ANTIALIAS_MODE_PER_PRIMITIVE,
+            );
+        }
+    }
+
+    /// Pops a scissor clip pushed by `push_rect_clip`.
+    pub fn pop_rect_clip(&self) {
+        unsafe {
+            self.ctx.PopAxisAlignedClip();
+        }
+    }
+
+    /// Draws an in-memory media album cover (`object-fit: cover` center-cropped) inside `(x, y, w, h, r)`.
+    pub fn draw_media_cover(
+        &mut self,
+        cover: &crate::models::CoverArt,
+        x: f32,
+        y: f32,
+        w: f32,
+        h: f32,
+        r: f32,
+    ) -> bool {
+        if w <= 1.0 || h <= 1.0 {
+            return false;
+        }
+        let cache_key = format!("__media_cover_{}", cover.key);
+        let Some((bmp, bw, bh)) = self
+            .cache
+            .memory_thumbnail(self.ctx, &cache_key, cover.w, cover.h, &cover.pbgra)
+        else {
+            return false;
+        };
+        self.draw_bitmap_cover_clipped(bmp, bw, bh, x, y, w, h, r)
+    }
+
+    /// Draws a decoded image thumbnail (`object-fit: cover` center-cropped) inside a rounded rectangle `(x, y, w, h, r)`.
+    /// Returns `true` if a real bitmap was drawn from disk, or `false` if the caller should draw a fallback graphic.
+    pub fn draw_shelf_thumbnail(
+        &mut self,
+        path: &str,
+        x: f32,
+        y: f32,
+        w: f32,
+        h: f32,
+        r: f32,
+    ) -> bool {
+        if w <= 1.0 || h <= 1.0 {
+            return false;
+        }
+        let Some((bmp, bw, bh)) = self.cache.shelf_thumbnail(self.ctx, path) else {
+            return false;
+        };
+        self.draw_bitmap_cover_clipped(bmp, bw, bh, x, y, w, h, r)
+    }
+
+    /// Atomic button primitive supporting `PrimaryFill`, `PrimaryOutline`, and `TextOnly`
+    /// (`DESIGN_SYSTEM.md` §2):
+    /// - Airy translucent glass when OS transparency is ON (never 100% solid opaque block)
+    /// - Bottom-to-top faded outline (`~50% -> 0%`) on `PrimaryFill` & `PrimaryOutline`
+    /// - Gentle bottom-up Amber-Gold liquid hover bloom inside glass, zero outer glow halo
+    #[allow(clippy::too_many_arguments)]
+    pub fn button_pill_variant(
+        &mut self,
+        x: f32,
+        y: f32,
+        w: f32,
+        h: f32,
+        r: f32,
+        hover_t: f32,
+        variant: ButtonVariant,
+    ) {
+        let ht = hover_t.clamp(0.0, 1.0);
+        match variant {
+            ButtonVariant::PrimaryFill => {
+                let (c_top, c_bot) = if self.frosted {
+                    (
+                        lerp_color(rgba(155, 92, 255, 36), rgba(168, 108, 255, 58), ht),
+                        lerp_color(rgba(124, 58, 237, 62), rgba(168, 85, 247, 84), ht),
+                    )
+                } else {
+                    (
+                        lerp_color(rgba(96, 48, 188, 235), rgba(124, 58, 237, 248), ht),
+                        lerp_color(rgba(68, 30, 146, 242), rgba(102, 46, 206, 252), ht),
+                    )
+                };
+                self.rrect_vertical_gradient(x, y, w, h, r, c_top, c_bot);
+
+                if self.prepare_rrect_clip(x, y, w, h, r) {
+                    // Subtle pearlescent bottom catch
+                    self.elliptical_glow(
+                        x + w * 0.5,
+                        y + h + 2.0,
+                        (w * 0.44).max(14.0),
+                        (h * 0.62).clamp(8.0, 26.0),
+                        rgba(243, 232, 255, lerp(28.0, 44.0, ht) as u8),
+                        BlendMode::Plus,
+                        true,
+                    );
+                    // Saturated metallic gold liquid hover bloom (zero outer halo)
+                    if ht > 0.01 {
+                        self.elliptical_glow(
+                            x + w * 0.5,
+                            y + h + 1.0,
+                            (w * 0.54).max(16.0),
+                            (h * 0.72).clamp(10.0, 28.0),
+                            rgba(255, 214, 52, (98.0 * ht) as u8),
+                            BlendMode::Plus,
+                            true,
+                        );
+                    }
+                    self.pop_clip();
+                }
+
+                // 1px bottom-to-top faded outline (50% bottom -> 0% top)
+                self.rrect_bottom_fade_stroke(
+                    x,
+                    y,
+                    w,
+                    h,
+                    r,
+                    1.0,
+                    rgba(216, 180, 254, lerp(56.0, 74.0, ht) as u8),
+                    rgba(255, 255, 255, lerp(128.0, 140.0, ht) as u8),
+                );
+            }
+            ButtonVariant::PrimaryOutline => {
+                let (c_top, c_bot) = if self.frosted {
+                    (
+                        lerp_color(rgba(255, 255, 255, 4), rgba(255, 255, 255, 11), ht),
+                        lerp_color(rgba(22, 16, 46, 16), rgba(56, 36, 98, 38), ht),
+                    )
+                } else {
+                    (
+                        lerp_color(rgba(32, 33, 54, 245), rgba(46, 42, 76, 250), ht),
+                        lerp_color(rgba(20, 21, 36, 248), rgba(34, 28, 60, 252), ht),
+                    )
+                };
+                self.rrect_vertical_gradient(x, y, w, h, r, c_top, c_bot);
+
+                if ht > 0.01 && self.prepare_rrect_clip(x, y, w, h, r) {
+                    // Gentle bottom-up Amber-Gold liquid hover bloom inside glass
+                    self.elliptical_glow(
+                        x + w * 0.5,
+                        y + h + 1.0,
+                        (w * 0.56).max(16.0),
+                        (h * 0.72).clamp(10.0, 26.0),
+                        rgba(253, 230, 138, (64.0 * ht) as u8),
+                        BlendMode::Plus,
+                        true,
+                    );
+                    self.pop_clip();
+                }
+
+                // 1px bottom-to-top faded outline (48% bottom -> 0% top)
+                self.rrect_bottom_fade_stroke(
+                    x,
+                    y,
+                    w,
+                    h,
+                    r,
+                    1.0,
+                    rgba(192, 132, 252, lerp(46.0, 68.0, ht) as u8),
+                    rgba(233, 213, 255, lerp(122.0, 136.0, ht) as u8),
+                );
+            }
+            ButtonVariant::TextOnly => {
+                // Zero fill, zero outline; hover rises pure bottom-up gentle amber liquid glow
+                if ht > 0.01 && self.prepare_rrect_clip(x, y, w, h, r) {
+                    self.elliptical_glow(
+                        x + w * 0.5,
+                        y + h + 1.0,
+                        (w * 0.52).max(14.0),
+                        (h * 0.70).clamp(8.0, 24.0),
+                        rgba(253, 230, 138, (54.0 * ht) as u8),
+                        BlendMode::Plus,
+                        true,
+                    );
+                    self.pop_clip();
+                }
+            }
+        }
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -2711,65 +3291,13 @@ impl<'a> PainterD2D<'a> {
         c_right: Color,
         hover_t: f32,
     ) {
+        // Settings-only variant: honour the caller's palette (Apple blue) instead
+        // of the global Obsidian PrimaryFill colours used by the notch itself.
         let ht = hover_t.clamp(0.0, 1.0);
-        let lift_y = y - 0.8 * ht;
-
-        let glow_strength = lerp(0.50, 0.88, ht);
-        self.rrect_glow_aura(
-            x,
-            lift_y,
-            w,
-            h,
-            r,
-            lerp(5.5, 8.5, ht),
-            fade(c_mid, glow_strength),
-        );
-
-        self.rrect_drop_shadow(
-            x,
-            lift_y,
-            w,
-            h,
-            r,
-            lerp(2.5, 3.2, ht),
-            lerp(4.0, 5.5, ht),
-            115,
-        );
-
-        self.rrect_vertical_gradient(x, lift_y, w, h, r, c_left, c_right);
-
-        if self.prepare_rrect_clip(x, lift_y, w, h, r) {
-            self.elliptical_glow(
-                x + w * 0.5,
-                lift_y,
-                w * 0.46,
-                (h * 0.42).clamp(6.0, 19.0),
-                rgba(248, 244, 255, lerp(92.0, 132.0, ht) as u8),
-                BlendMode::Plus,
-                true,
-            );
-            self.elliptical_glow(
-                x + w * 0.5,
-                lift_y + h,
-                w * 0.44,
-                (h * 0.32).clamp(5.0, 14.0),
-                rgba(233, 213, 255, lerp(54.0, 88.0, ht) as u8),
-                BlendMode::Plus,
-                true,
-            );
-            self.pop_clip();
-        }
-
-        self.rrect_bevel_stroke(
-            x,
-            lift_y,
-            w,
-            h,
-            r,
-            1.15,
-            rgba(248, 244, 255, lerp(205.0, 238.0, ht) as u8),
-            rgba(221, 214, 254, lerp(95.0, 145.0, ht) as u8),
-        );
+        let top = lerp_color(c_left, c_mid, ht);
+        let bot = lerp_color(c_mid, c_right, ht);
+        self.rrect_vertical_gradient(x, y, w, h, r, top, bot);
+        self.rrect_stroke(x, y, w, h, r, 1.0, rgba(255, 255, 255, 42));
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -2809,81 +3337,12 @@ impl<'a> PainterD2D<'a> {
         hover_t: f32,
         active_col: Option<Color>,
     ) {
-        let ht = hover_t.clamp(0.0, 1.0);
-        let lift_y = y - 0.55 * ht;
-        if let Some(ac) = active_col {
-            self.rrect_glow_aura(
-                x,
-                lift_y,
-                w,
-                h,
-                r,
-                lerp(4.2, 6.8, ht),
-                fade(ac, lerp(0.45, 0.62, ht)),
-            );
-            self.rrect_vertical_gradient(
-                x,
-                lift_y,
-                w,
-                h,
-                r,
-                fade(ac, lerp(0.42, 0.56, ht)),
-                fade(ac, lerp(0.20, 0.30, ht)),
-            );
-            if self.prepare_rrect_clip(x, lift_y, w, h, r) {
-                self.elliptical_glow(
-                    x + w * 0.5,
-                    lift_y,
-                    w * 0.45,
-                    (h * 0.40).clamp(4.0, 12.0),
-                    rgba(255, 255, 255, lerp(45.0, 74.0, ht) as u8),
-                    BlendMode::Plus,
-                    true,
-                );
-                self.pop_clip();
-            }
-            self.rrect_bevel_stroke(
-                x,
-                lift_y,
-                w,
-                h,
-                r,
-                1.0,
-                rgba(255, 255, 255, lerp(135.0, 210.0, ht) as u8),
-                fade(ac, lerp(0.45, 0.70, ht)),
-            );
+        let variant = if active_col.is_some() {
+            ButtonVariant::PrimaryFill
         } else {
-            let shadow_alpha = if self.frosted { 24 } else { 80 };
-            self.rrect_drop_shadow(x, lift_y, w, h, r, 1.5, lerp(2.8, 4.2, ht), shadow_alpha);
-            let (top, bot) = if self.frosted {
-                let top_base = tok::scale_frosted(rgba(36, 38, 58, 92), self.frosted_opacity_pct);
-                let top_hot = tok::scale_frosted(rgba(72, 56, 114, 152), self.frosted_opacity_pct);
-                let bot_base = tok::scale_frosted(rgba(20, 22, 36, 78), self.frosted_opacity_pct);
-                let bot_hot = tok::scale_frosted(rgba(44, 32, 74, 138), self.frosted_opacity_pct);
-                (
-                    lerp_color(top_base, top_hot, ht),
-                    lerp_color(bot_base, bot_hot, ht),
-                )
-            } else {
-                let top = lerp_color(rgba(32, 34, 50, 255), rgba(64, 50, 102, 255), ht);
-                let bot = lerp_color(rgba(19, 20, 32, 245), rgba(38, 28, 66, 255), ht);
-                (top, bot)
-            };
-            self.rrect_vertical_gradient(x, lift_y, w, h, r, top, bot);
-            if ht > 0.05 {
-                self.rrect_glow_aura(
-                    x,
-                    lift_y,
-                    w,
-                    h,
-                    r,
-                    4.2 * ht,
-                    fade(tok::cyno_violet(), 0.28 * ht),
-                );
-            }
-            let rim_top = lerp_color(rgba(235, 230, 255, 54), rgba(196, 148, 255, 195), ht);
-            self.rrect_bevel_stroke(x, lift_y, w, h, r, 1.0, rim_top, rgba(168, 85, 247, 22));
-        }
+            ButtonVariant::PrimaryOutline
+        };
+        self.button_pill_variant(x, y, w, h, r, hover_t, variant);
     }
 
     pub fn tactile_surface_pill(
@@ -2912,54 +3371,66 @@ impl<'a> PainterD2D<'a> {
         let ht = hover_t.clamp(0.0, 1.0);
         let r = h / 2.0;
 
-        if st > 0.03 || ht > 0.05 {
-            let aura_c = lerp_color(tok::cyno_violet(), tok::cyno_violet_hi(), st * 0.35);
-            let aura_a = (st * 0.48 + ht * 0.28).clamp(0.0, 0.78);
-            self.rrect_glow_aura(x, y, w, h, r, lerp(4.0, 6.5, ht), fade(aura_c, aura_a));
-        }
-
         let (off_top, off_bot) = if self.frosted {
-            (
-                lerp_color(
-                    tok::scale_frosted(rgba(30, 32, 48, 86), self.frosted_opacity_pct),
-                    tok::scale_frosted(rgba(52, 46, 78, 128), self.frosted_opacity_pct),
-                    ht,
-                ),
-                tok::scale_frosted(rgba(16, 17, 28, 76), self.frosted_opacity_pct),
-            )
+            (rgba(255, 255, 255, 8), rgba(22, 16, 46, 74))
         } else {
-            (
-                lerp_color(rgba(28, 30, 44, 255), rgba(46, 42, 68, 255), ht),
-                rgba(14, 15, 24, 255),
-            )
+            (rgba(30, 32, 50, 245), rgba(18, 19, 32, 248))
         };
-        let on_top = lerp_color(tok::cyno_violet(), tok::cyno_orchid(), ht * 0.55);
-        let on_bot = tok::cyno_indigo();
+        let (on_top, on_bot) = if self.frosted {
+            (rgba(155, 92, 255, 70), rgba(124, 58, 237, 130))
+        } else {
+            (rgba(124, 58, 237, 235), rgba(74, 34, 158, 245))
+        };
 
         let track_top = lerp_color(off_top, on_top, st);
         let track_bot = lerp_color(off_bot, on_bot, st);
         self.rrect_vertical_gradient(x, y, w, h, r, track_top, track_bot);
 
-        let rim_top = lerp_color(
-            rgba(235, 230, 255, lerp(54.0, 150.0, ht) as u8),
-            rgba(245, 240, 255, 210),
-            st,
+        if ht > 0.01 && self.prepare_rrect_clip(x, y, w, h, r) {
+            self.elliptical_glow(
+                x + w * 0.5,
+                y + h + 1.0,
+                w * 0.55,
+                h * 0.7,
+                rgba(233, 218, 255, (54.0 * ht) as u8),
+                BlendMode::Plus,
+                true,
+            );
+            self.pop_clip();
+        }
+
+        // Bottom-to-top faded outline (~48% -> 0%)
+        self.rrect_bottom_fade_stroke(
+            x,
+            y,
+            w,
+            h,
+            r,
+            1.0,
+            rgba(216, 180, 254, lerp(44.0, 68.0, st) as u8),
+            rgba(255, 255, 255, lerp(115.0, 132.0, st) as u8),
         );
-        let rim_bot = lerp_color(rgba(235, 230, 255, 18), rgba(196, 148, 255, 120), st);
-        self.rrect_bevel_stroke(x, y, w, h, r, 1.0, rim_top, rim_bot);
 
         let pad = 3.0;
-        let knob_r = (h - pad * 2.0) / 2.0 + 0.5 * ht;
-        let k_left = x + pad + (h - pad * 2.0) / 2.0;
-        let k_right = x + w - pad - (h - pad * 2.0) / 2.0;
+        let knob_r = (h - pad * 2.0) / 2.0;
+        let k_left = x + pad + knob_r;
+        let k_right = x + w - pad - knob_r;
         let kx = lerp(k_left, k_right, st);
         let ky = y + h / 2.0;
 
-        self.circle(kx, ky + 1.0, knob_r, rgba(0, 0, 0, 110));
-        let knob_col = lerp_color(tok::text2(), tok::cyno_lavender_white(), st.max(ht * 0.45));
+        self.circle(kx, ky + 1.0, knob_r, rgba(6, 4, 16, 86));
+        let knob_col = lerp_color(tok::text2(), rgba(255, 255, 255, 255), st.max(ht * 0.45));
         self.circle(kx, ky, knob_r, knob_col);
+        // Brushed Metallic Gold center jewel on ON thumb (DESIGN_SYSTEM.md §2 Atom #6)
         if st > 0.2 {
-            self.circle(kx, ky, knob_r * 0.34, fade(tok::cyno_deep(), st * 0.75));
+            self.circle(kx, ky, knob_r * 0.44, fade(tok::gold_deep(), st));
+            self.circle(kx, ky, knob_r * 0.36, fade(tok::amber_glow(), st));
+            self.circle(
+                kx - knob_r * 0.11,
+                ky - knob_r * 0.11,
+                knob_r * 0.14,
+                fade(tok::gold_shimmer(), st),
+            );
         }
     }
 
@@ -2989,35 +3460,43 @@ impl<'a> PainterD2D<'a> {
 
         let fill_w = (w * pct.clamp(0.0, 1.0)).max(0.0);
         if fill_w > 2.0 {
-            self.rrect_glow_aura(x, y, fill_w, h, r, 5.5, fade(c1, 0.75));
+            self.rrect_glow_aura(x, y, fill_w, h, r, 2.4, fade(c1, 0.44));
 
-            self.rrect_vertical_gradient(x, y, fill_w, h, r, c0, c1);
+            self.rrect_horizontal_gradient(x, y, fill_w, h, r, c0, c1);
 
             if self.prepare_rrect_clip(x, y, fill_w, h, r) {
-                let mut pb = PathBuilder::new();
-                let step = 10.0;
-                let mut sx = x - h;
-                while sx < x + fill_w + h {
-                    pb.move_to(sx, y + h);
-                    pb.line_to(sx + h * 0.7, y);
-                    pb.line_to(sx + h * 0.7 + 4.0, y);
-                    pb.line_to(sx + 4.0, y + h);
-                    pb.close();
-                    sx += step;
-                }
-                if let Some(stripe_path) = pb.finish() {
-                    self.fill_path(&stripe_path, rgba(255, 255, 255, 32));
-                }
-
-                if let Some(top_glint) = rrect_path(
-                    x + 1.0,
-                    y + 0.5,
-                    (fill_w - 2.0).max(0.0),
-                    (h * 0.42).max(1.0),
+                // Brushed metallic underside shadow for 3D cylindrical depth
+                if let Some(bot_shade) = rrect_path(
+                    x,
+                    y + h * 0.64,
+                    fill_w,
+                    (h * 0.38).max(1.0),
                     r * 0.5,
                 ) {
-                    self.fill_path(&top_glint, rgba(255, 255, 255, 75));
+                    self.fill_path(&bot_shade, rgba(92, 46, 0, 118));
                 }
+
+                // Razor-crisp top metallic specular sheen
+                if let Some(top_glint) = rrect_path(
+                    x + 0.8,
+                    y + 0.35,
+                    (fill_w - 1.6).max(0.0),
+                    (h * 0.36).max(1.0),
+                    r * 0.5,
+                ) {
+                    self.fill_path(&top_glint, rgba(255, 252, 224, 148));
+                }
+
+                // Focused metallic glint hotspot along the bar (~74%)
+                self.elliptical_glow(
+                    x + fill_w * 0.74,
+                    y + h * 0.34,
+                    (fill_w * 0.22).clamp(12.0, 44.0),
+                    (h * 0.85).max(4.0),
+                    rgba(255, 252, 224, 118),
+                    BlendMode::Plus,
+                    true,
+                );
                 self.pop_clip();
             }
 
@@ -3028,8 +3507,8 @@ impl<'a> PainterD2D<'a> {
                 h,
                 r,
                 0.8,
-                rgba(255, 255, 255, 140),
-                rgba(255, 255, 255, 25),
+                rgba(255, 252, 224, 178),
+                rgba(110, 58, 0, 148),
             );
         }
     }
@@ -3066,6 +3545,38 @@ impl<'a> PainterD2D<'a> {
         let _ = p.rrect_vertical_gradient(x, y, w, h, r, c0.to_d2d(1.0), c1.to_d2d(1.0));
     }
 
+    pub fn rrect_horizontal_gradient(&mut self, x: f32, y: f32, w: f32, h: f32, r: f32, c0: Color, c1: Color) {
+        let mut p = self.painter();
+        let _ = p.rrect_horizontal_gradient(x, y, w, h, r, c0.to_d2d(1.0), c1.to_d2d(1.0));
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub fn rrect_horizontal_gradient_3stop(
+        &mut self,
+        x: f32,
+        y: f32,
+        w: f32,
+        h: f32,
+        r: f32,
+        c0: Color,
+        c_mid: Color,
+        c1: Color,
+        mid_pos: f32,
+    ) {
+        let mut p = self.painter();
+        let _ = p.rrect_horizontal_gradient_3stop(
+            x,
+            y,
+            w,
+            h,
+            r,
+            c0.to_d2d(1.0),
+            c_mid.to_d2d(1.0),
+            c1.to_d2d(1.0),
+            mid_pos,
+        );
+    }
+
     pub fn rrect_corners4_vertical_gradient(
         &mut self,
         x: f32,
@@ -3083,6 +3594,22 @@ impl<'a> PainterD2D<'a> {
     pub fn rrect_bevel_stroke(&mut self, x: f32, y: f32, w: f32, h: f32, r: f32, width: f32, hi: Color, sh: Color) {
         let mut p = self.painter();
         let _ = p.rrect_bevel_stroke(x, y, w, h, r, width, hi, sh);
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub fn rrect_bottom_fade_stroke(
+        &mut self,
+        x: f32,
+        y: f32,
+        w: f32,
+        h: f32,
+        r: f32,
+        width: f32,
+        mid_col: Color,
+        bot_col: Color,
+    ) {
+        let mut p = self.painter();
+        let _ = p.rrect_bottom_fade_stroke(x, y, w, h, r, width, mid_col, bot_col);
     }
 
     pub fn rrect_corners4_bevel_stroke(
@@ -3244,22 +3771,88 @@ impl<'a> PainterD2D<'a> {
                     merged.push(tail);
                     return (merged, fit_sz);
                 }
-                return (lines, sz);
+                let bounded: Vec<String> = lines
+                    .into_iter()
+                    .map(|l| {
+                        if self.measure(&l, sz, w) > max_w {
+                            self.ellipsize_cow(&l, sz, w, max_w).into_owned()
+                        } else {
+                            l
+                        }
+                    })
+                    .collect();
+                return (bounded, sz);
             }
             sz = (sz - (base_size - floor_sz) / 4.0).max(floor_sz);
         }
-        let lines = self.wrap_lines(t, floor_sz, w, max_w);
+        let lines: Vec<String> = self
+            .wrap_lines(t, floor_sz, w, max_w)
+            .into_iter()
+            .take(target_lines)
+            .map(|l| {
+                if self.measure(&l, floor_sz, w) > max_w {
+                    self.ellipsize_cow(&l, floor_sz, w, max_w).into_owned()
+                } else {
+                    l
+                }
+            })
+            .collect();
         (lines, floor_sz)
     }
 
-    pub fn text(&mut self, t: &str, x: f32, baseline: f32, size: f32, w: Weight, c: Color) -> f32 {
+    /// Draws single-line text clipped strictly to `max_w` with a smooth GPU alpha fade-out
+    /// on the right edge whenever the text exceeds `max_w` (prevents long URLs/filenames from
+    /// colliding with adjacent buttons like dismiss `x`).
+    pub fn text_fade_right(
+        &mut self,
+        t: &str,
+        x: f32,
+        baseline: f32,
+        size: f32,
+        w: Weight,
+        c: Color,
+        max_w: f32,
+    ) -> f32 {
+        let tw = self.measure(t, size, w);
+        if tw <= max_w || max_w <= 4.0 {
+            return self.text(t, x, baseline, size, w, c);
+        }
         let s = self.s;
         let eff = self.eff_size(size);
         let baseline_adj = baseline + (eff - size) * 0.34;
         let (dx, dy) = (self.origin_x + x * s, self.origin_y + baseline_adj * s);
-        let col = color_to_d2d(c.r, c.g, c.b, c.a, self.global_alpha);
-        if let Ok(brush) = self.cache.solid(self.ctx, col) {
-            if let Ok(brush_as_brush) = brush.cast::<ID2D1Brush>() {
+        let max_dx = dx + max_w * s;
+        let fade_px = (max_w * 0.24).clamp(16.0, 32.0) * s;
+        let fade_start_x = (max_dx - fade_px).max(dx);
+
+        let col_solid = color_to_d2d(c.r, c.g, c.b, c.a, self.global_alpha);
+        let col_clear = D2D1_COLOR_F {
+            r: col_solid.r,
+            g: col_solid.g,
+            b: col_solid.b,
+            a: 0.0,
+        };
+        let clip_rect = D2D_RECT_F {
+            left: dx - 1.0,
+            top: dy - eff * s * 1.45,
+            right: max_dx,
+            bottom: dy + eff * s * 0.65,
+        };
+
+        unsafe {
+            self.ctx.PushAxisAlignedClip(
+                &clip_rect,
+                windows::Win32::Graphics::Direct2D::D2D1_ANTIALIAS_MODE_PER_PRIMITIVE,
+            );
+        }
+        if let Ok(brush) = self.cache.linear_brush(
+            self.ctx,
+            col_solid,
+            col_clear,
+            D2D_POINT_2F { x: fade_start_x, y: dy },
+            D2D_POINT_2F { x: max_dx, y: dy },
+        )
+            && let Ok(brush_as_brush) = brush.cast::<ID2D1Brush>() {
                 let _ = self.fonts.draw_text_baseline(
                     self.ctx,
                     &brush_as_brush,
@@ -3271,7 +3864,78 @@ impl<'a> PainterD2D<'a> {
                     None,
                 );
             }
+        unsafe {
+            self.ctx.PopAxisAlignedClip();
         }
+        max_w
+    }
+
+    pub fn text(&mut self, t: &str, x: f32, baseline: f32, size: f32, w: Weight, c: Color) -> f32 {
+        let s = self.s;
+        let eff = self.eff_size(size);
+        let baseline_adj = baseline + (eff - size) * 0.34;
+        let (dx, dy) = (self.origin_x + x * s, self.origin_y + baseline_adj * s);
+        let col = color_to_d2d(c.r, c.g, c.b, c.a, self.global_alpha);
+        if let Ok(brush) = self.cache.solid(self.ctx, col)
+            && let Ok(brush_as_brush) = brush.cast::<ID2D1Brush>() {
+                let _ = self.fonts.draw_text_baseline(
+                    self.ctx,
+                    &brush_as_brush,
+                    t,
+                    dx,
+                    dy,
+                    eff * s,
+                    w,
+                    None,
+                );
+            }
+        self.fonts.measure(t, eff * s, w).0 / s
+    }
+
+    /// Draws text rotated by `deg` degrees around logical `(pivot_x, pivot_y)`.
+    #[allow(clippy::too_many_arguments)]
+    pub fn text_rotated(
+        &mut self,
+        t: &str,
+        x: f32,
+        baseline: f32,
+        size: f32,
+        w: Weight,
+        c: Color,
+        pivot_x: f32,
+        pivot_y: f32,
+        deg: f32,
+    ) -> f32 {
+        let s = self.s;
+        let eff = self.eff_size(size);
+        let baseline_adj = baseline + (eff - size) * 0.34;
+        let (dx, dy) = (self.origin_x + x * s, self.origin_y + baseline_adj * s);
+        let (px, py) = (self.origin_x + pivot_x * s, self.origin_y + pivot_y * s);
+        let tf = Transform::from_translate(px, py)
+            .pre_rotate(deg)
+            .pre_translate(-px, -py)
+            .to_d2d_matrix3x2();
+        let col = color_to_d2d(c.r, c.g, c.b, c.a, self.global_alpha);
+        if let Ok(brush) = self.cache.solid(self.ctx, col)
+            && let Ok(brush_as_brush) = brush.cast::<ID2D1Brush>() {
+                unsafe {
+                    let mut prev = windows::Foundation::Numerics::Matrix3x2::identity();
+                    self.ctx.GetTransform(&mut prev);
+                    let combined = Self::mul_m3x2(tf, prev);
+                    self.ctx.SetTransform(&combined);
+                    let _ = self.fonts.draw_text_baseline(
+                        self.ctx,
+                        &brush_as_brush,
+                        t,
+                        dx,
+                        dy,
+                        eff * s,
+                        w,
+                        None,
+                    );
+                    self.ctx.SetTransform(&prev);
+                }
+            }
         self.fonts.measure(t, eff * s, w).0 / s
     }
 
@@ -3317,7 +3981,8 @@ impl<'a> PainterD2D<'a> {
         w: Weight,
         c: Color,
     ) -> f32 {
-        self.text(t, x, baseline + 1.0, size, w, rgba(8, 4, 20, 145));
+        // DESIGN_SYSTEM.md §1.2: Ultra-subtle 5% opacity text shadow
+        self.text(t, x, baseline + 1.0, size, w, rgba(8, 4, 20, 13));
         self.text(t, x, baseline, size, w, c)
     }
 
@@ -3444,6 +4109,101 @@ impl<'a> PainterD2D<'a> {
         p.prepare_rrect_clip(x, y, w, h, r).is_ok()
     }
 
+    /// Pushes a pure alpha-gradient opacity mask layer so text dissolves smoothly
+    /// at the trailing edge (e.g. right edge before the Music icon) without drawing
+    /// any opaque background box over translucent frosted glass.
+    #[allow(clippy::too_many_arguments)]
+    pub fn push_fade_mask(
+        &mut self,
+        x: f32,
+        y: f32,
+        w: f32,
+        h: f32,
+        fade_len: f32,
+        vertical: bool,
+        fade_start: bool,
+    ) -> bool {
+        if w <= 1.0 || h <= 1.0 || fade_len <= 0.5 {
+            return false;
+        }
+        let s = self.s;
+        let dx = self.origin_x + x * s;
+        let dy = self.origin_y + y * s;
+        let dw = w * s;
+        let dh = h * s;
+        let df = (fade_len * s).min(if vertical { dh } else { dw });
+        let (start_pt, end_pt) = if vertical {
+            if fade_start {
+                (D2D_POINT_2F { x: dx, y: dy + df }, D2D_POINT_2F { x: dx, y: dy })
+            } else {
+                (
+                    D2D_POINT_2F { x: dx, y: dy + dh - df },
+                    D2D_POINT_2F { x: dx, y: dy + dh },
+                )
+            }
+        } else if fade_start {
+            (D2D_POINT_2F { x: dx + df, y: dy }, D2D_POINT_2F { x: dx, y: dy })
+        } else {
+            (
+                D2D_POINT_2F { x: dx + dw - df, y: dy },
+                D2D_POINT_2F { x: dx + dw, y: dy },
+            )
+        };
+        let stops = [
+            D2D1_GRADIENT_STOP {
+                position: 0.0,
+                color: D2D1_COLOR_F { r: 1.0, g: 1.0, b: 1.0, a: 1.0 },
+            },
+            D2D1_GRADIENT_STOP {
+                position: 0.65,
+                color: D2D1_COLOR_F { r: 1.0, g: 1.0, b: 1.0, a: 0.45 },
+            },
+            D2D1_GRADIENT_STOP {
+                position: 1.0,
+                color: D2D1_COLOR_F { r: 1.0, g: 1.0, b: 1.0, a: 0.0 },
+            },
+        ];
+        unsafe {
+            let Ok(rt) = self.ctx.cast::<ID2D1RenderTarget>() else {
+                return false;
+            };
+            let Ok(stop_col) = rt.CreateGradientStopCollection(
+                &stops,
+                windows::Win32::Graphics::Direct2D::D2D1_GAMMA_2_2,
+                windows::Win32::Graphics::Direct2D::D2D1_EXTEND_MODE_CLAMP,
+            ) else {
+                return false;
+            };
+            let props = windows::Win32::Graphics::Direct2D::D2D1_LINEAR_GRADIENT_BRUSH_PROPERTIES {
+                startPoint: start_pt,
+                endPoint: end_pt,
+            };
+            let Ok(brush) = self.ctx.CreateLinearGradientBrush(&props, None, &stop_col) else {
+                return false;
+            };
+            let brush_base: ID2D1Brush = brush.into();
+            let layer_params = windows::Win32::Graphics::Direct2D::D2D1_LAYER_PARAMETERS1 {
+                contentBounds: D2D_RECT_F {
+                    left: dx,
+                    top: dy,
+                    right: dx + dw,
+                    bottom: dy + dh,
+                },
+                geometricMask: ManuallyDrop::new(None),
+                maskAntialiasMode:
+                    windows::Win32::Graphics::Direct2D::D2D1_ANTIALIAS_MODE_PER_PRIMITIVE,
+                maskTransform: windows::Foundation::Numerics::Matrix3x2::identity(),
+                opacity: 1.0,
+                opacityBrush: ManuallyDrop::new(Some(brush_base)),
+                layerOptions:
+                    windows::Win32::Graphics::Direct2D::D2D1_LAYER_OPTIONS1_NONE,
+            };
+            self.ctx.PushLayer(&layer_params, None);
+            let _ = ManuallyDrop::into_inner(layer_params.opacityBrush);
+        }
+        true
+    }
+
     pub fn pop_clip(&mut self) {
         let mut p = self.painter();
         let _ = p.pop_clip();
@@ -3458,9 +4218,12 @@ impl<'a> PainterD2D<'a> {
             if let Ok(brush) = self.cache.solid(self.ctx, col) {
                 let tf = self.tf().to_d2d_matrix3x2();
                 unsafe {
-                    self.ctx.SetTransform(&tf);
+                    let mut prev = windows::Foundation::Numerics::Matrix3x2::identity();
+                    self.ctx.GetTransform(&mut prev);
+                    let combined = Self::mul_m3x2(tf, prev);
+                    self.ctx.SetTransform(&combined);
                     self.ctx.FillGeometry(&geom, &brush, None);
-                    self.ctx.SetTransform(&windows::Foundation::Numerics::Matrix3x2::identity());
+                    self.ctx.SetTransform(&prev);
                 }
             }
         }
@@ -3474,9 +4237,12 @@ impl<'a> PainterD2D<'a> {
                 let style = self.cache.stroke_style_round();
                 let tf = self.tf().to_d2d_matrix3x2();
                 unsafe {
-                    self.ctx.SetTransform(&tf);
+                    let mut prev = windows::Foundation::Numerics::Matrix3x2::identity();
+                    self.ctx.GetTransform(&mut prev);
+                    let combined = Self::mul_m3x2(tf, prev);
+                    self.ctx.SetTransform(&combined);
                     self.ctx.DrawGeometry(&geom, &brush, width, style.as_ref());
-                    self.ctx.SetTransform(&windows::Foundation::Numerics::Matrix3x2::identity());
+                    self.ctx.SetTransform(&prev);
                 }
             }
         }
@@ -3491,9 +4257,12 @@ impl<'a> PainterD2D<'a> {
                 let combined = self.tf().pre_concat(local_tf);
                 let tf = combined.to_d2d_matrix3x2();
                 unsafe {
-                    self.ctx.SetTransform(&tf);
+                    let mut prev = windows::Foundation::Numerics::Matrix3x2::identity();
+                    self.ctx.GetTransform(&mut prev);
+                    let combined = Self::mul_m3x2(tf, prev);
+                    self.ctx.SetTransform(&combined);
                     self.ctx.DrawGeometry(&geom, &brush, width, style.as_ref());
-                    self.ctx.SetTransform(&windows::Foundation::Numerics::Matrix3x2::identity());
+                    self.ctx.SetTransform(&prev);
                 }
             }
         }
@@ -3506,9 +4275,12 @@ impl<'a> PainterD2D<'a> {
             if let Ok(brush) = self.cache.solid(self.ctx, col) {
                 let tf = self.tf().pre_concat(local_tf).to_d2d_matrix3x2();
                 unsafe {
-                    self.ctx.SetTransform(&tf);
+                    let mut prev = windows::Foundation::Numerics::Matrix3x2::identity();
+                    self.ctx.GetTransform(&mut prev);
+                    let combined = Self::mul_m3x2(tf, prev);
+                    self.ctx.SetTransform(&combined);
                     self.ctx.FillGeometry(&geom, &brush, None);
-                    self.ctx.SetTransform(&windows::Foundation::Numerics::Matrix3x2::identity());
+                    self.ctx.SetTransform(&prev);
                 }
             }
         }
@@ -3525,9 +4297,12 @@ impl<'a> PainterD2D<'a> {
                     if is_add {
                         self.ctx.SetPrimitiveBlend(windows::Win32::Graphics::Direct2D::D2D1_PRIMITIVE_BLEND_ADD);
                     }
-                    self.ctx.SetTransform(&tf);
+                    let mut prev = windows::Foundation::Numerics::Matrix3x2::identity();
+                    self.ctx.GetTransform(&mut prev);
+                    let combined = Self::mul_m3x2(tf, prev);
+                    self.ctx.SetTransform(&combined);
                     self.ctx.FillGeometry(&geom, &brush, None);
-                    self.ctx.SetTransform(&windows::Foundation::Numerics::Matrix3x2::identity());
+                    self.ctx.SetTransform(&prev);
                     if is_add {
                         self.ctx.SetPrimitiveBlend(windows::Win32::Graphics::Direct2D::D2D1_PRIMITIVE_BLEND_SOURCE_OVER);
                     }
@@ -3559,16 +4334,22 @@ impl<'a> PainterD2D<'a> {
                 let d2d_cm = cm.to_d2d(ga);
                 if let Ok(brush) = self.cache.linear_brush_3stop(self.ctx, d2d_c0, d2d_cm, d2d_c1, 0.5, start, end) {
                     unsafe {
-                        self.ctx.SetTransform(&tf);
+                        let mut prev = windows::Foundation::Numerics::Matrix3x2::identity();
+                        self.ctx.GetTransform(&mut prev);
+                        let combined = Self::mul_m3x2(tf, prev);
+                        self.ctx.SetTransform(&combined);
                         self.ctx.FillGeometry(&geom, &brush, None);
-                        self.ctx.SetTransform(&windows::Foundation::Numerics::Matrix3x2::identity());
+                        self.ctx.SetTransform(&prev);
                     }
                 }
             } else if let Ok(brush) = self.cache.linear_brush(self.ctx, d2d_c0, d2d_c1, start, end) {
                 unsafe {
-                    self.ctx.SetTransform(&tf);
+                    let mut prev = windows::Foundation::Numerics::Matrix3x2::identity();
+                    self.ctx.GetTransform(&mut prev);
+                    let combined = Self::mul_m3x2(tf, prev);
+                    self.ctx.SetTransform(&combined);
                     self.ctx.FillGeometry(&geom, &brush, None);
-                    self.ctx.SetTransform(&windows::Foundation::Numerics::Matrix3x2::identity());
+                    self.ctx.SetTransform(&prev);
                 }
             }
         }

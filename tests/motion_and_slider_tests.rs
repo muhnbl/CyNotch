@@ -51,7 +51,7 @@ fn windows_animations_on_drives_spring_motion_and_pane_transitions() {
 
     // Notch hover morph & tab switch start animating smoothly
     state.set_hovered(true);
-    state.set_mode(NotchMode::Telemetry);
+    state.set_mode(NotchMode::MemReduct);
     assert_eq!(state.anim_mode_t, 0.0);
     assert!(state.needs_animation_timer_ms().is_some());
 

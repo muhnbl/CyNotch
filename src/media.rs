@@ -1,4 +1,31 @@
-use crate::models::{LyricLine, MediaTrack};
+use crate::models::{CoverArt, LyricLine, MediaTrack};
+use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
+
+static NEXT_COVER_KEY: AtomicU64 = AtomicU64::new(1);
+
+#[cfg(windows)]
+fn fetch_smtc_thumbnail(
+    props: &windows::Media::Control::GlobalSystemMediaTransportControlsSessionMediaProperties,
+) -> Option<Arc<CoverArt>> {
+    use windows::Storage::Streams::DataReader;
+    let thumb_ref = props.Thumbnail().ok()?;
+    let stream = thumb_ref.OpenReadAsync().ok()?.get().ok()?;
+    let size = stream.Size().ok()?;
+    if size == 0 || size > 12 * 1024 * 1024 {
+        return None;
+    }
+    let reader = DataReader::CreateDataReader(&stream).ok()?;
+    let loaded = reader.LoadAsync(size as u32).ok()?.get().ok()?;
+    if loaded == 0 {
+        return None;
+    }
+    let mut bytes = vec![0u8; loaded as usize];
+    reader.ReadBytes(&mut bytes).ok()?;
+    let (w, h, pbgra) = crate::capture::decode_image_bytes_thumbnail_pbgra(&bytes, 160)?;
+    let key = NEXT_COVER_KEY.fetch_add(1, Ordering::Relaxed);
+    Some(Arc::new(CoverArt { key, w, h, pbgra }))
+}
 
 #[cfg(windows)]
 pub struct MediaPoller {
@@ -7,6 +34,7 @@ pub struct MediaPoller {
     last_title: String,
     last_artist: String,
     last_album: String,
+    last_cover: Option<Arc<CoverArt>>,
     last_end_ms: u64,
     last_raw_pos_ms: u64,
     props_refresh_tick: u32,
@@ -28,6 +56,7 @@ impl MediaPoller {
             last_title: String::new(),
             last_artist: String::new(),
             last_album: String::new(),
+            last_cover: None,
             last_end_ms: 0,
             last_raw_pos_ms: 0,
             props_refresh_tick: 0,
@@ -39,6 +68,7 @@ impl MediaPoller {
         self.last_title.clear();
         self.last_artist.clear();
         self.last_album.clear();
+        self.last_cover = None;
         self.last_end_ms = 0;
         self.last_raw_pos_ms = 0;
         self.props_refresh_tick = 0;
@@ -106,16 +136,26 @@ impl MediaPoller {
                         return None;
                     }
                 };
-                self.last_source_id = source_id;
-                self.last_title = crate::notifications::sanitize_notification_text(
+                let new_title = crate::notifications::sanitize_notification_text(
                     &media_props.Title().unwrap_or_default().to_string(),
                 );
-                self.last_artist = crate::notifications::sanitize_notification_text(
+                let new_artist = crate::notifications::sanitize_notification_text(
                     &media_props.Artist().unwrap_or_default().to_string(),
                 );
-                self.last_album = crate::notifications::sanitize_notification_text(
+                let new_album = crate::notifications::sanitize_notification_text(
                     &media_props.AlbumTitle().unwrap_or_default().to_string(),
                 );
+                let track_changed = new_title != self.last_title
+                    || new_artist != self.last_artist
+                    || new_album != self.last_album
+                    || source_id != self.last_source_id;
+                self.last_source_id = source_id;
+                self.last_title = new_title;
+                self.last_artist = new_artist;
+                self.last_album = new_album;
+                if track_changed || self.last_cover.is_none() {
+                    self.last_cover = fetch_smtc_thumbnail(&media_props);
+                }
                 self.props_refresh_tick = 0;
             }
             self.last_end_ms = duration_ms;
@@ -152,6 +192,7 @@ impl MediaPoller {
                 is_playing,
                 position_ms,
                 duration_ms,
+                cover_art: self.last_cover.clone(),
             })
         }));
         res.ok().flatten()
@@ -325,17 +366,68 @@ pub fn default_demo_lyrics() -> Vec<LyricLine> {
     ]
 }
 
-// Media Control Key simulation (Spotify, YouTube, VLC, Apple Music, etc.)
+// Media Control via WinRT SMTC (Spotify, YouTube/Chrome, Apple Music, VLC) with VK_MEDIA fallback
+#[derive(Clone, Copy)]
+enum SmtcCommand {
+    TogglePlayPause,
+    Next,
+    Prev,
+}
+
+#[cfg(windows)]
+fn dispatch_smtc_command(cmd: SmtcCommand, fallback_vk: u8) {
+    let _ = std::thread::Builder::new()
+        .name("cynotch-smtc-cmd".to_string())
+        .spawn(move || {
+            use windows::Media::Control::GlobalSystemMediaTransportControlsSessionManager;
+            use windows::Win32::System::Com::{COINIT_MULTITHREADED, CoInitializeEx};
+            let hr = unsafe { CoInitializeEx(None, COINIT_MULTITHREADED) };
+            let _com = SeekComGuard(hr.is_ok());
+            let sent = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                let Ok(op) = GlobalSystemMediaTransportControlsSessionManager::RequestAsync() else {
+                    return false;
+                };
+                let Ok(mgr) = op.get() else {
+                    return false;
+                };
+                let Ok(session) = mgr.GetCurrentSession() else {
+                    return false;
+                };
+                match cmd {
+                    SmtcCommand::TogglePlayPause => session
+                        .TryTogglePlayPauseAsync()
+                        .and_then(|o| o.get())
+                        .unwrap_or(false),
+                    SmtcCommand::Next => session
+                        .TrySkipNextAsync()
+                        .and_then(|o| o.get())
+                        .unwrap_or(false),
+                    SmtcCommand::Prev => session
+                        .TrySkipPreviousAsync()
+                        .and_then(|o| o.get())
+                        .unwrap_or(false),
+                }
+            }))
+            .unwrap_or(false);
+            if !sent {
+                send_media_key(fallback_vk);
+            }
+        });
+}
+
+#[cfg(not(windows))]
+fn dispatch_smtc_command(_cmd: SmtcCommand, _fallback_vk: u8) {}
+
 pub fn toggle_play_pause() {
-    send_media_key(0xB3); // VK_MEDIA_PLAY_PAUSE
+    dispatch_smtc_command(SmtcCommand::TogglePlayPause, 0xB3); // VK_MEDIA_PLAY_PAUSE
 }
 
 pub fn next_track() {
-    send_media_key(0xB0); // VK_MEDIA_NEXT_TRACK
+    dispatch_smtc_command(SmtcCommand::Next, 0xB0); // VK_MEDIA_NEXT_TRACK
 }
 
 pub fn prev_track() {
-    send_media_key(0xB1); // VK_MEDIA_PREV_TRACK
+    dispatch_smtc_command(SmtcCommand::Prev, 0xB1); // VK_MEDIA_PREV_TRACK
 }
 
 fn send_media_key(vk: u8) {

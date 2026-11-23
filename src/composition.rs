@@ -1,24 +1,35 @@
 #![allow(unsafe_op_in_unsafe_fn)]
 
+use crate::dcomp_blur::{
+    BlurSpec, CALIBRATED_BLUR_PX, ColorMatrixEffect, GaussianBlurEffect, blur_px_to_sigma,
+    build_d2d_rounded_path, optical_luminosity_clamp_matrix,
+};
 use std::cell::RefCell;
+use std::ffi::c_void;
+use std::mem::size_of;
 use std::sync::atomic::{AtomicU64, Ordering};
-use windows::Foundation::Numerics::Vector2;
+use windows::Foundation::Numerics::{Matrix3x2, Vector2, Vector3};
+use windows::Graphics::Effects::{IGraphicsEffect, IGraphicsEffectSource};
 use windows::System::DispatcherQueueController;
 use windows::UI::Composition::Desktop::DesktopWindowTarget;
 use windows::UI::Composition::{
-    CompositionBrush, CompositionStretch, CompositionSurfaceBrush, Compositor, ContainerVisual,
-    SpriteVisual,
+    CompositionBrush, CompositionEffectBrush, CompositionEffectSourceParameter,
+    CompositionStretch, CompositionSurfaceBrush, Compositor, ContainerVisual, SpriteVisual,
 };
-use windows::Win32::Foundation::{E_INVALIDARG, FALSE, HMODULE, HWND};
+use windows::Win32::Foundation::{BOOL, E_INVALIDARG, FALSE, HMODULE, HWND, TRUE};
 use windows::Win32::Graphics::Direct3D::{
     D3D_DRIVER_TYPE_HARDWARE, D3D_DRIVER_TYPE_WARP, D3D_FEATURE_LEVEL_10_0, D3D_FEATURE_LEVEL_11_0,
     D3D_FEATURE_LEVEL_11_1,
 };
 use windows::Win32::Graphics::Direct2D::{
-    D2D1CreateFactory, D2D1_FACTORY_TYPE_SINGLE_THREADED, D2D1_BITMAP_PROPERTIES1,
-    D2D1_BITMAP_OPTIONS_CANNOT_DRAW, D2D1_BITMAP_OPTIONS_TARGET,
-    ID2D1Bitmap1, ID2D1Device, ID2D1DeviceContext, ID2D1Factory1,
+    D2D1CreateFactory, D2D1_ANTIALIAS_MODE_PER_PRIMITIVE, D2D1_BITMAP_OPTIONS_CANNOT_DRAW,
+    D2D1_BITMAP_OPTIONS_TARGET, D2D1_BITMAP_PROPERTIES1, D2D1_FACTORY_TYPE_SINGLE_THREADED,
+    ID2D1Bitmap1, ID2D1Device, ID2D1DeviceContext, ID2D1Factory1, ID2D1SolidColorBrush,
 };
+use windows::Win32::Graphics::Dwm::{
+    DWMWA_USE_HOSTBACKDROPBRUSH, DwmExtendFrameIntoClientArea, DwmSetWindowAttribute,
+};
+use windows::Win32::UI::Controls::MARGINS;
 use windows::Win32::Graphics::Direct2D::Common::{
     D2D1_ALPHA_MODE_PREMULTIPLIED, D2D1_COLOR_F, D2D1_PIXEL_FORMAT,
 };
@@ -184,15 +195,29 @@ fn create_d3d11_device() -> Result<(ID3D11Device, ID3D11DeviceContext)> {
 /// Hardware-accelerated DirectComposition + DXGI SwapChain presenter for
 /// premultiplied per-pixel alpha windows without DWM backdrop blur or GDI
 /// `UpdateLayeredWindow` CPU sync overhead.
+struct BlurLayer {
+    visual: SpriteVisual,
+    brush: CompositionEffectBrush,
+    luminosity_clamped: bool,
+    mask_swap_chain: IDXGISwapChain1,
+    _mask_surface_brush: CompositionSurfaceBrush,
+    mask_w: u32,
+    mask_h: u32,
+    mask_target: Option<ID2D1Bitmap1>,
+    white_brush: Option<ID2D1SolidColorBrush>,
+}
+
 pub struct DCompHost {
     shared_gen: u64,
     _compositor: Compositor,
     _target: DesktopWindowTarget,
     root_visual: ContainerVisual,
+    blur_layer: Option<BlurLayer>,
     content_visual: SpriteVisual,
     _d3d_device: ID3D11Device,
     d3d_context: ID3D11DeviceContext,
     swap_chain: IDXGISwapChain1,
+    d2d_factory: ID2D1Factory1,
     d2d_context: ID2D1DeviceContext,
     _surface_brush: CompositionSurfaceBrush,
     width: u32,
@@ -200,6 +225,102 @@ pub struct DCompHost {
     bgra_scratch: Vec<u8>,
     prev_dirty: Option<(u32, u32, u32, u32)>,
     d2d_target: Option<ID2D1Bitmap1>,
+    last_blur: Option<BlurSpec>,
+}
+
+fn init_blur_layer(
+    compositor: &Compositor,
+    comp_interop: &ICompositorInterop,
+    factory: &IDXGIFactory2,
+    d3d_device: &ID3D11Device,
+    w: u32,
+    h: u32,
+) -> Result<BlurLayer> {
+    let host_backdrop = compositor.CreateHostBackdropBrush()?;
+    let source_param =
+        CompositionEffectSourceParameter::Create(&windows::core::HSTRING::from("Backdrop"))?;
+    let source_iface: IGraphicsEffectSource = source_param.cast()?;
+    let calibrated_sigma = blur_px_to_sigma(CALIBRATED_BLUR_PX);
+    let anim_props: windows::Foundation::Collections::IIterable<windows::core::HSTRING> =
+        vec![windows::core::HSTRING::from("Blur.BlurAmount")].try_into()?;
+
+    // Chain GaussianBlurEffect(24px) -> Option B Optical Luminosity Clamp (ColorMatrixEffect)
+    // so pure #FFFFFF PDFs/light apps stay smoked obsidian (~10.8:1 AAA) with 0% CPU capture.
+    // Falls back gracefully to GaussianBlur-only if the OS compositor rejects the chained graph.
+    let blur_for_chain = GaussianBlurEffect::new(calibrated_sigma, Some(source_iface.clone()));
+    let blur_src: IGraphicsEffectSource = blur_for_chain.into();
+    let clamped_effect = ColorMatrixEffect::new(optical_luminosity_clamp_matrix(), Some(blur_src));
+    let clamped_iface: IGraphicsEffect = clamped_effect.into();
+    let (eff_factory, luminosity_clamped) =
+        match compositor.CreateEffectFactoryWithProperties(&clamped_iface, &anim_props) {
+            Ok(f)
+                if !matches!(
+                    f.LoadStatus(),
+                    Ok(windows::UI::Composition::CompositionEffectFactoryLoadStatus::EffectTooComplex
+                        | windows::UI::Composition::CompositionEffectFactoryLoadStatus::Other)
+                ) =>
+            {
+                (f, true)
+            }
+            _ => {
+                let fallback_blur = GaussianBlurEffect::new(calibrated_sigma, Some(source_iface));
+                let fallback_iface: IGraphicsEffect = fallback_blur.into();
+                (
+                    compositor.CreateEffectFactoryWithProperties(&fallback_iface, &anim_props)?,
+                    false,
+                )
+            }
+        };
+    let brush = eff_factory.CreateBrush()?;
+    let backdrop_brush: CompositionBrush = host_backdrop.cast()?;
+    brush.SetSourceParameter(&windows::core::HSTRING::from("Backdrop"), &backdrop_brush)?;
+
+    let mw = w.max(1);
+    let mh = h.max(1);
+    let mask_desc = DXGI_SWAP_CHAIN_DESC1 {
+        Width: mw,
+        Height: mh,
+        Format: DXGI_FORMAT_B8G8R8A8_UNORM,
+        Stereo: FALSE,
+        SampleDesc: DXGI_SAMPLE_DESC {
+            Count: 1,
+            Quality: 0,
+        },
+        BufferUsage: DXGI_USAGE_RENDER_TARGET_OUTPUT,
+        BufferCount: 3,
+        Scaling: DXGI_SCALING_STRETCH,
+        SwapEffect: DXGI_SWAP_EFFECT_FLIP_SEQUENTIAL,
+        AlphaMode: DXGI_ALPHA_MODE_PREMULTIPLIED,
+        Flags: 0,
+    };
+    let mask_swap_chain = unsafe { factory.CreateSwapChainForComposition(d3d_device, &mask_desc, None)? };
+    let mask_surface = unsafe { comp_interop.CreateCompositionSurfaceForSwapChain(&mask_swap_chain)? };
+    let mask_surface_brush = compositor.CreateSurfaceBrushWithSurface(&mask_surface)?;
+    mask_surface_brush.SetStretch(CompositionStretch::None)?;
+    mask_surface_brush.SetHorizontalAlignmentRatio(0.0)?;
+    mask_surface_brush.SetVerticalAlignmentRatio(0.0)?;
+
+    let mask_brush = compositor.CreateMaskBrush()?;
+    let effect_brush_base: CompositionBrush = brush.cast()?;
+    let mask_brush_base: CompositionBrush = mask_surface_brush.cast()?;
+    mask_brush.SetSource(&effect_brush_base)?;
+    mask_brush.SetMask(&mask_brush_base)?;
+
+    let visual = compositor.CreateSpriteVisual()?;
+    visual.SetIsVisible(false)?;
+    let combined_brush: CompositionBrush = mask_brush.cast()?;
+    visual.SetBrush(&combined_brush)?;
+    Ok(BlurLayer {
+        visual,
+        brush,
+        luminosity_clamped,
+        mask_swap_chain,
+        _mask_surface_brush: mask_surface_brush,
+        mask_w: mw,
+        mask_h: mh,
+        mask_target: None,
+        white_brush: None,
+    })
 }
 
 impl DCompHost {
@@ -208,13 +329,33 @@ impl DCompHost {
         let w = width.max(1);
         let h = height.max(1);
 
+        // Enable DWM host-backdrop sampling on Win32 WS_POPUP + WS_EX_NOREDIRECTIONBITMAP
+        // windows so Compositor::CreateHostBackdropBrush() composites the desktop behind
+        // the window instead of rendering opaque black.
+        unsafe {
+            let margins = MARGINS {
+                cxLeftWidth: -1,
+                cxRightWidth: -1,
+                cyTopHeight: -1,
+                cyBottomHeight: -1,
+            };
+            let _ = DwmExtendFrameIntoClientArea(hwnd, &margins);
+            let use_host_backdrop = TRUE;
+            let _ = DwmSetWindowAttribute(
+                hwnd,
+                DWMWA_USE_HOSTBACKDROPBRUSH,
+                &use_host_backdrop as *const BOOL as *const c_void,
+                size_of::<BOOL>() as u32,
+            );
+        }
+
         let SharedDComp {
             generation: shared_gen,
             compositor,
             d3d_device,
             d3d_context,
             dxgi_factory: factory,
-            d2d_factory: _,
+            d2d_factory,
             d2d_device,
         } = shared_dcomp()?;
         let desktop_interop: ICompositorDesktopInterop = compositor.cast()?;
@@ -256,6 +397,14 @@ impl DCompHost {
         let surface_brush = compositor.CreateSurfaceBrushWithSurface(&surface)?;
         surface_brush.SetStretch(CompositionStretch::Fill)?;
 
+        let blur_layer = match init_blur_layer(&compositor, &comp_interop, &factory, &d3d_device, w, h) {
+            Ok(layer) => {
+                let _ = root_visual.Children()?.InsertAtTop(&layer.visual);
+                Some(layer)
+            }
+            Err(_) => None,
+        };
+
         let content_visual = compositor.CreateSpriteVisual()?;
         content_visual.SetSize(Vector2 {
             X: w as f32,
@@ -270,17 +419,20 @@ impl DCompHost {
             _compositor: compositor,
             _target: target,
             root_visual,
+            blur_layer,
             content_visual,
             _d3d_device: d3d_device,
             d3d_context,
             swap_chain,
+            d2d_factory,
             d2d_context,
             _surface_brush: surface_brush,
             width: w,
             height: h,
-            bgra_scratch: vec![0u8; (w as usize) * (h as usize) * 4],
+            bgra_scratch: Vec::new(),
             prev_dirty: None,
             d2d_target: None,
+            last_blur: None,
         };
         host.bind_d2d_target()?;
         Ok(host)
@@ -318,6 +470,209 @@ impl DCompHost {
         &self.d2d_context
     }
 
+    pub fn blur_supported(&self) -> bool {
+        self.blur_layer.is_some()
+    }
+
+    /// True when the WinRT `GaussianBlurEffect -> ColorMatrixEffect` Option B
+    /// Optical Luminosity Clamp chain loaded without falling back to blur-only.
+    pub fn luminosity_clamp_active(&self) -> bool {
+        self.blur_layer
+            .as_ref()
+            .is_some_and(|l| l.luminosity_clamped)
+    }
+
+    /// Updates the single-HWND native DirectComposition backdrop blur layer using
+    /// a Direct2D-antialiased `CompositionMaskBrush` alpha mask.
+    ///
+    /// Must be called outside `begin_d2d_draw()`..`end_d2d_draw_and_present()`.
+    /// Returns `false` if host-backdrop blur is unavailable (caller should fall back
+    /// to denser translucent glass).
+    pub fn set_blur(&mut self, spec: Option<BlurSpec>) -> bool {
+        let Some(layer) = self.blur_layer.as_mut() else {
+            return false;
+        };
+        if self.last_blur == spec {
+            return true;
+        }
+        let Some(s) = spec else {
+            let _ = layer.visual.SetIsVisible(false);
+            self.last_blur = None;
+            return true;
+        };
+
+        let w = s.w.max(1.0);
+        let h = s.h.max(1.0);
+        let prev = self.last_blur;
+
+        if prev.is_none_or(|p| p.blur_px != s.blur_px) {
+            let sigma = blur_px_to_sigma(s.blur_px);
+            if let Ok(props) = layer.brush.Properties() {
+                let _ = props.InsertScalar(&windows::core::HSTRING::from("Blur.BlurAmount"), sigma);
+            }
+        }
+
+        if prev.is_none_or(|p| {
+            (
+                (p.x * 2.0).round() as i32,
+                (p.y * 2.0).round() as i32,
+                (p.w * 2.0).round() as i32,
+                (p.h * 2.0).round() as i32,
+                p.radii,
+                p.box1_h,
+                p.extra_boxes,
+            ) != (
+                (s.x * 2.0).round() as i32,
+                (s.y * 2.0).round() as i32,
+                (s.w * 2.0).round() as i32,
+                (s.h * 2.0).round() as i32,
+                s.radii,
+                s.box1_h,
+                s.extra_boxes,
+            )
+        }) {
+            let need_w = (s.x + w).ceil().max(1.0) as u32;
+            let need_h = (s.y + h).ceil().max(1.0) as u32;
+            let cap_w = self.width.max(need_w);
+            let cap_h = self.height.max(need_h);
+            let need_grow = need_w > layer.mask_w || need_h > layer.mask_h;
+            let need_trim = layer.mask_w > cap_w + 360 || layer.mask_h > cap_h + 360;
+            let mut visual_resized = false;
+            let ok = unsafe {
+                let resized = if need_grow || need_trim {
+                    // Release cached D2D bitmap bound to backbuffer 0 before ResizeBuffers.
+                    layer.mask_target = None;
+                    let target_mw = if need_grow { cap_w.max(layer.mask_w) } else { cap_w };
+                    let target_mh = if need_grow { cap_h.max(layer.mask_h) } else { cap_h };
+                    layer
+                        .mask_swap_chain
+                        .ResizeBuffers(
+                            3,
+                            target_mw,
+                            target_mh,
+                            DXGI_FORMAT_B8G8R8A8_UNORM,
+                            DXGI_SWAP_CHAIN_FLAG(0),
+                        )
+                        .map(|_| {
+                            layer.mask_w = target_mw;
+                            layer.mask_h = target_mh;
+                            visual_resized = true;
+                        })
+                } else {
+                    Ok(())
+                };
+                let draw_res = resized.and_then(|()| {
+                    if layer.mask_target.is_none() {
+                        let surface: IDXGISurface = layer.mask_swap_chain.GetBuffer(0)?;
+                        let props = D2D1_BITMAP_PROPERTIES1 {
+                            pixelFormat: D2D1_PIXEL_FORMAT {
+                                format: DXGI_FORMAT_B8G8R8A8_UNORM,
+                                alphaMode: D2D1_ALPHA_MODE_PREMULTIPLIED,
+                            },
+                            dpiX: 96.0,
+                            dpiY: 96.0,
+                            bitmapOptions: D2D1_BITMAP_OPTIONS_TARGET
+                                | D2D1_BITMAP_OPTIONS_CANNOT_DRAW,
+                            colorContext: std::mem::ManuallyDrop::new(None),
+                        };
+                        let bmp: ID2D1Bitmap1 = self
+                            .d2d_context
+                            .CreateBitmapFromDxgiSurface(&surface, Some(&props))?;
+                        layer.mask_target = Some(bmp);
+                    }
+                    if layer.white_brush.is_none() {
+                        let white = D2D1_COLOR_F {
+                            r: 1.0,
+                            g: 1.0,
+                            b: 1.0,
+                            a: 1.0,
+                        };
+                        layer.white_brush =
+                            Some(self.d2d_context.CreateSolidColorBrush(&white, None)?);
+                    }
+                    let mask_bmp = layer.mask_target.as_ref().unwrap();
+                    let white_brush = layer.white_brush.as_ref().unwrap();
+                    let primary_h = s.box1_h.unwrap_or(h).clamp(1.0, h);
+                    // Draw mask in full-canvas coordinates at (s.x, s.y) so `layer.visual`
+                    // keeps a FIXED Size & Offset during expand/close animations — preventing
+                    // dwm.exe from reallocating HostBackdropBrush blur targets every frame!
+                    let path = build_d2d_rounded_path(&self.d2d_factory, s.x, s.y, w, primary_h, s.radii)?;
+                    self.d2d_context.SetTarget(mask_bmp);
+                    self.d2d_context.BeginDraw();
+                    self.d2d_context.SetTransform(&Matrix3x2::identity());
+                    self.d2d_context
+                        .SetAntialiasMode(D2D1_ANTIALIAS_MODE_PER_PRIMITIVE);
+                    self.d2d_context.Clear(Some(&D2D1_COLOR_F {
+                        r: 0.0,
+                        g: 0.0,
+                        b: 0.0,
+                        a: 0.0,
+                    }));
+                    self.d2d_context.FillGeometry(&path, white_brush, None);
+                    if let Some(extras) = s.extra_boxes {
+                        for (bx, by, bw, bh, br) in extras {
+                            if bw > 0.5 && bh > 0.5 {
+                                let ep = build_d2d_rounded_path(
+                                    &self.d2d_factory,
+                                    s.x + bx,
+                                    s.y + by,
+                                    bw,
+                                    bh,
+                                    (br, br, br, br),
+                                )?;
+                                self.d2d_context.FillGeometry(&ep, white_brush, None);
+                            }
+                        }
+                    }
+                    let end_res = self.d2d_context.EndDraw(None, None);
+                    if let Some(t) = self.d2d_target.as_ref() {
+                        self.d2d_context.SetTarget(t);
+                    } else {
+                        self.d2d_context.SetTarget(None);
+                    }
+                    end_res?;
+                    let hr = layer.mask_swap_chain.Present(0, DXGI_PRESENT(0));
+                    if hr.is_err() {
+                        return Err(windows::core::Error::from(hr));
+                    }
+                    Ok(())
+                });
+                draw_res.is_ok()
+            };
+            if !ok {
+                let _ = layer.visual.SetIsVisible(false);
+                self.last_blur = None;
+                return false;
+            }
+            if visual_resized || prev.is_none() {
+                let _ = layer.visual.SetOffset(Vector3 {
+                    X: 0.0,
+                    Y: 0.0,
+                    Z: 0.0,
+                });
+                let _ = layer.visual.SetSize(Vector2 {
+                    X: layer.mask_w as f32,
+                    Y: layer.mask_h as f32,
+                });
+            }
+        }
+
+        if prev.is_none() {
+            let _ = layer.visual.SetOffset(Vector3 {
+                X: 0.0,
+                Y: 0.0,
+                Z: 0.0,
+            });
+            let _ = layer.visual.SetSize(Vector2 {
+                X: layer.mask_w as f32,
+                Y: layer.mask_h as f32,
+            });
+            let _ = layer.visual.SetIsVisible(true);
+        }
+        self.last_blur = Some(s);
+        true
+    }
+
     pub fn begin_d2d_draw(&mut self) -> Result<&ID2D1DeviceContext> {
         if self.d2d_target.is_none() {
             self.bind_d2d_target()?;
@@ -326,6 +681,8 @@ impl DCompHost {
             self.d2d_context.BeginDraw();
             self.d2d_context
                 .SetTransform(&windows::Foundation::Numerics::Matrix3x2::identity());
+            self.d2d_context
+                .SetAntialiasMode(D2D1_ANTIALIAS_MODE_PER_PRIMITIVE);
             self.d2d_context.Clear(Some(&D2D1_COLOR_F {
                 r: 0.0,
                 g: 0.0,
@@ -374,7 +731,7 @@ impl DCompHost {
             self.d2d_target = None;
             self.swap_chain
                 .ResizeBuffers(
-                    2,
+                    3,
                     w,
                     h,
                     DXGI_FORMAT_B8G8R8A8_UNORM,
@@ -392,13 +749,6 @@ impl DCompHost {
         };
         self.root_visual.SetSize(sz)?;
         self.content_visual.SetSize(sz)?;
-        let needed = (w as usize) * (h as usize) * 4;
-        if self.bgra_scratch.len() != needed {
-            self.bgra_scratch.resize(needed, 0);
-            if needed < self.bgra_scratch.capacity() {
-                self.bgra_scratch.shrink_to_fit();
-            }
-        }
         self.prev_dirty = None;
         self.bind_d2d_target()?;
         Ok(())
@@ -426,6 +776,9 @@ impl DCompHost {
         let expected = (self.width as usize) * (self.height as usize) * 4;
         if rgba_data.len() < expected {
             return Err(windows::core::Error::from(E_INVALIDARG));
+        }
+        if self.bgra_scratch.len() != expected {
+            self.bgra_scratch.resize(expected, 0);
         }
 
         let clamped_box = dirty.and_then(|(dx, dy, dw, dh)| {
@@ -541,7 +894,7 @@ fn is_device_lost_hresult(hr: windows::core::HRESULT) -> bool {
 
 fn swizzle_rgba_to_bgra(dst: &mut [u8], src: &[u8]) {
     for (d, s) in dst
-        .chunks_exact_mut(4)
+        .as_chunks_mut::<4>().0.iter_mut()
         .zip(src.chunks_exact(4))
     {
         let px = u32::from_le_bytes(s.try_into().unwrap());

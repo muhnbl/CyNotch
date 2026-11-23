@@ -1,19 +1,31 @@
-use super::*;
+﻿use super::*;
+use crate::painter_d2d::{PathBuilder, lerp};
 use std::fmt::Write as _;
+
+// 4-Point Spacing Scale (UX Planet 4-pt system: consistent 4px multiples & Law of Proximity)
+const SP_2: f32 = 8.0;
+const SP_4: f32 = 16.0;
+const SP_6: f32 = 24.0;
 
 impl Renderer {
     pub(super) fn draw_home_view(p: &mut PainterD2D, state: &AppState, w: f32, card_y: f32) {
         let smooth = state.micro_interactions;
-        let margin_x = 20.0;
-        let card_h = 154.0;
-        let left_w = 192.0;
-        let gap = 14.0;
+        let margin_x = 24.0;
+        let card_h = 200.0;
+        let left_w = 200.0;
+        let gap = 16.0;
         let right_x = margin_x + left_w + gap;
         let right_w = w - (margin_x * 2.0) - left_w - gap;
+        let prev_alpha = p.global_alpha;
+
+        let (dy0, a0, sc0) = Self::mode_stagger(state, 0);
+        p.global_alpha = prev_alpha * a0;
+        let c0_y = card_y + dy0;
+        p.push_scale_about(margin_x + left_w * 0.5, c0_y + card_h * 0.5, sc0);
 
         p.elevated_card(
             margin_x,
-            card_y,
+            c0_y,
             left_w,
             card_h,
             16.0,
@@ -22,7 +34,7 @@ impl Renderer {
 
         if !state.show_mascot {
             let emb_cx = margin_x + 30.0;
-            let emb_cy = card_y + 31.0;
+            let emb_cy = c0_y + 31.0;
             p.circle(emb_cx, emb_cy, 15.5, rgba(24, 22, 42, 225));
             p.circle_stroke(emb_cx, emb_cy, 15.5, 1.0, rgba(192, 132, 252, 95));
             icons::draw(
@@ -38,28 +50,28 @@ impl Renderer {
         p.text(
             "General Cyno",
             margin_x + 56.0,
-            card_y + 27.0,
-            12.5,
+            c0_y + 29.0,
+            13.0,
             Weight::Bold,
             tok::text1(),
         );
         let mut pwr_str = StackStr::<48>::new();
         match (state.telemetry.battery_pct, state.telemetry.on_ac) {
             (Some(pct), true) => {
-                let _ = write!(pwr_str, "CPU {:.0}% • {}% AC", state.telemetry.cpu_usage, pct);
+                let _ = write!(pwr_str, "CPU {:.0}%  -  {}% AC", state.telemetry.cpu_usage, pct);
             }
             (Some(pct), false) => {
-                let _ = write!(pwr_str, "CPU {:.0}% • {}% Bat", state.telemetry.cpu_usage, pct);
+                let _ = write!(pwr_str, "CPU {:.0}%  -  {}% Bat", state.telemetry.cpu_usage, pct);
             }
             (None, _) => {
-                let _ = write!(pwr_str, "CPU {:.0}% • AC Power", state.telemetry.cpu_usage);
+                let _ = write!(pwr_str, "CPU {:.0}%  -  AC Power", state.telemetry.cpu_usage);
             }
         }
         p.text(
             &pwr_str,
             margin_x + 56.0,
-            card_y + 42.0,
-            9.8,
+            c0_y + 46.0,
+            10.2,
             Weight::Regular,
             tok::text2(),
         );
@@ -69,8 +81,8 @@ impl Renderer {
         p.text(
             &ram_label,
             margin_x + 16.0,
-            card_y + 70.0,
-            10.5,
+            c0_y + 82.0,
+            11.0,
             Weight::Semibold,
             tok::text_soft(),
         );
@@ -79,8 +91,8 @@ impl Renderer {
         p.text_right(
             &used_lbl,
             margin_x + left_w - 16.0,
-            card_y + 70.0,
-            10.5,
+            c0_y + 82.0,
+            11.0,
             Weight::Semibold,
             tok::cyno_mist(),
         );
@@ -92,18 +104,18 @@ impl Renderer {
         };
         p.glowing_striped_bar(
             margin_x + 16.0,
-            card_y + 79.0,
+            c0_y + 94.0,
             left_w - 32.0,
-            7.5,
+            8.0,
             ram_pct,
-            tok::cyno_deep(),
-            tok::cyno_violet_hi(),
+            tok::gold_deep(),
+            tok::gold_champagne(),
         );
 
         let purge_x = margin_x + 16.0;
-        let purge_y = card_y + 106.0;
+        let purge_y = c0_y + 146.0;
         let purge_w = left_w - 32.0;
-        let purge_h = 30.0;
+        let purge_h = 36.0;
         let purge_ht = p.hot_t(purge_x, purge_y, purge_w, purge_h);
         p.luminous_pill_button_t(
             purge_x,
@@ -124,151 +136,43 @@ impl Renderer {
         p.text_center_shadow(
             purge_lbl,
             purge_x + purge_w / 2.0,
-            purge_y + 19.0 - 0.8 * purge_ht,
+            purge_y + 22.0 - 0.8 * purge_ht,
             11.5,
             Weight::Bold,
             tok::text1(),
         );
         p.hit(purge_x, purge_y, purge_w, purge_h, Action::PurgeRam);
+        p.pop_scale_transform();
 
-        // Right Top Card: Live Network & Telemetry
-        let top_h = 71.0;
+        // Right Split: 2 Spacious Full-Height Cards (Now Playing + Quick Shelf)
+        let bot_h = 200.0;
+        let sub_w = (right_w - 16.0) / 2.0;
+
+        // Card Left: Media Overview
+        let (dy1, a1, sc1) = Self::mode_stagger(state, 1);
+        p.global_alpha = prev_alpha * a1;
+        let bot_y1 = card_y + dy1;
+        p.push_scale_about(right_x + sub_w * 0.5, bot_y1 + bot_h * 0.5, sc1);
         p.elevated_card(
             right_x,
-            card_y,
-            right_w,
-            top_h,
-            15.0,
-            Some((right_w - 34.0, 22.0, 74.0, tok::cyan_hi())),
+            bot_y1,
+            sub_w,
+            bot_h,
+            16.0,
+            Some((sub_w - 24.0, 22.0, 68.0, tok::cyno_violet())),
         );
-        let net_card_ht = p.hot_t(right_x, card_y, right_w, top_h);
-        if net_card_ht > 0.02 {
-            p.rrect_bevel_stroke(
-                right_x,
-                card_y,
-                right_w,
-                top_h,
-                15.0,
-                1.0,
-                fade(tok::cyan_hi(), 0.38 * net_card_ht),
-                fade(tok::cyno_violet(), 0.14 * net_card_ht),
+        let media_card_ht = p.hot_t(right_x, bot_y1, sub_w - 44.0, bot_h);
+        if media_card_ht > 0.02 && p.prepare_rrect_clip(right_x, bot_y1, sub_w, bot_h, 16.0) {
+            p.elliptical_glow(
+                right_x + sub_w * 0.5,
+                bot_y1 + bot_h + 2.0,
+                sub_w * 0.52,
+                bot_h * 0.58,
+                rgba(253, 230, 138, (46.0 * media_card_ht) as u8),
+                BlendMode::Plus,
+                true,
             );
-        }
-        icons::draw(
-            p,
-            Icon::Activity,
-            right_x + 16.0,
-            card_y + 13.0,
-            14.5,
-            tok::cyan_hi(),
-        );
-        p.text(
-            "Live Network",
-            right_x + 35.0,
-            card_y + 23.5,
-            11.5,
-            Weight::Bold,
-            tok::text1(),
-        );
-
-        // Compact LIVE pill + subtle activity bars on right side of Network card
-        let pill_w = 50.0;
-        let pill_h = 18.0;
-        let pill_x = right_x + right_w - pill_w - 14.0;
-        let pill_y = card_y + 11.5;
-        p.rrect(pill_x, pill_y, pill_w, pill_h, 9.0, rgba(125, 211, 252, 22));
-        p.rrect_bevel_stroke(
-            pill_x,
-            pill_y,
-            pill_w,
-            pill_h,
-            9.0,
-            0.8,
-            rgba(125, 211, 252, 72),
-            rgba(125, 211, 252, 22),
-        );
-        let pulse = if state.are_animations_active() {
-            0.65 + 0.35 * (state.anim_time * 3.0).sin().abs()
-        } else {
-            1.0
-        };
-        p.circle(
-            pill_x + 10.5,
-            pill_y + pill_h * 0.5,
-            2.6,
-            fade(tok::cyan_hi(), pulse),
-        );
-        p.text(
-            "LIVE",
-            pill_x + 18.0,
-            pill_y + 12.2,
-            8.2,
-            Weight::Bold,
-            tok::cyan_hi(),
-        );
-
-        let bar_base_x = right_x + right_w - 58.0;
-        let bar_bot_y = card_y + 54.0;
-        let activity = ((state.telemetry.net_down_kbps + state.telemetry.net_up_kbps) / 2000.0)
-            .clamp(0.18, 1.0);
-        for i in 0..6 {
-            let phase = (i as f32) * 0.85 + if state.are_animations_active() { state.anim_time * 2.4 } else { 0.4 };
-            let wave = 0.35 + 0.65 * (0.5 + 0.5 * phase.sin());
-            let bh = (4.0 + 13.0 * activity * wave).clamp(3.5, 17.0);
-            let bx = bar_base_x + (i as f32) * 7.5;
-            p.rrect(
-                bx,
-                bar_bot_y - bh,
-                4.0,
-                bh,
-                2.0,
-                fade(tok::cyan_hi(), 0.30 + 0.50 * wave),
-            );
-        }
-
-        let mut net_txt = StackStr::<64>::new();
-        let _ = write!(
-            net_txt,
-            "↓ {}   ↑ {}",
-            format_speed_long(state.telemetry.net_down_kbps),
-            format_speed_long(state.telemetry.net_up_kbps)
-        );
-        let net_ell = p.ellipsize_cow(&net_txt, 10.8, Weight::Semibold, right_w - 86.0);
-        p.text(
-            &net_ell,
-            right_x + 16.0,
-            card_y + 47.5,
-            10.8,
-            Weight::Semibold,
-            tok::cyan_hi(),
-        );
-        p.hit(
-            right_x,
-            card_y,
-            right_w,
-            top_h,
-            Action::SetMode(NotchMode::Telemetry),
-        );
-
-        // Right Bottom Split: Media Overview + Tasks & Capture
-        let bot_y = card_y + top_h + 12.0;
-        let bot_h = 71.0;
-        let sub_w = (right_w - 12.0) / 2.0;
-
-        // Bottom-Left: Media Overview
-        p.elevated_card(right_x, bot_y, sub_w, bot_h, 15.0, None);
-        let media_card_ht = p.hot_t(right_x, bot_y, sub_w - 42.0, bot_h);
-        if media_card_ht > 0.02 {
-            p.rrect_bevel_stroke(
-                right_x,
-                bot_y,
-                sub_w,
-                bot_h,
-                15.0,
-                1.0,
-                fade(tok::cyno_violet_hi(), 0.45 * media_card_ht),
-                fade(tok::cyno_violet(), 0.18 * media_card_ht),
-            );
+            p.pop_clip();
         }
         let media_header = if state.media.is_idle() {
             "No Active Media"
@@ -277,40 +181,62 @@ impl Renderer {
         } else {
             "Media Paused"
         };
+        icons::draw(
+            p,
+            Icon::Music,
+            right_x + 16.0,
+            bot_y1 + 18.0,
+            15.0,
+            tok::cyno_violet_hi(),
+        );
         p.text(
             media_header,
-            right_x + 14.0,
-            bot_y + 22.0,
-            10.0,
+            right_x + 37.0,
+            bot_y1 + 29.0,
+            10.8,
             Weight::Semibold,
             tok::text2(),
         );
-        let song = p.ellipsize_cow(&state.media.title, 12.0, Weight::Bold, sub_w - 56.0);
+        let song = p.ellipsize_cow(&state.media.title, 14.0, Weight::Bold, sub_w - 32.0);
         p.text(
             &song,
-            right_x + 14.0,
-            bot_y + 46.0,
-            12.0,
+            right_x + 16.0,
+            bot_y1 + 78.0,
+            14.0,
             Weight::Bold,
             tok::text1(),
         );
+        let artist_lbl = if state.media.artist.is_empty() {
+            "Open Music Player"
+        } else {
+            state.media.artist.as_str()
+        };
+        let artist_ell = p.ellipsize_cow(artist_lbl, 11.0, Weight::Regular, sub_w - 32.0);
+        p.text(
+            &artist_ell,
+            right_x + 16.0,
+            bot_y1 + 100.0,
+            11.0,
+            Weight::Regular,
+            tok::text2(),
+        );
         p.hit(
             right_x,
-            bot_y,
-            sub_w - 42.0,
+            bot_y1,
+            sub_w - 48.0,
             bot_h,
             Action::SetMode(NotchMode::Music),
         );
 
-        let mini_play_x = right_x + sub_w - 40.0;
-        let mini_play_y = bot_y + 21.5;
-        let mp_ht = p.hot_t(mini_play_x, mini_play_y, 28.0, 28.0);
+        let mini_play_x = right_x + sub_w - 44.0;
+        let mini_play_y = bot_y1 + bot_h - 44.0;
+        let mp_ht = p.hot_t(mini_play_x, mini_play_y, 30.0, 30.0);
         p.tactile_surface_pill_t(
             mini_play_x,
             mini_play_y,
-            28.0,
-            28.0,
-            14.0,
+            30.0,
+            30.0,
+            15.0,
             mp_ht,
             Some(tok::cyno_violet()),
         );
@@ -321,857 +247,415 @@ impl Renderer {
             } else {
                 Icon::Play
             },
-            mini_play_x + 8.0,
-            mini_play_y + 8.0 - 0.55 * mp_ht,
+            mini_play_x + 9.0,
+            mini_play_y + 9.0 - 0.55 * mp_ht,
             12.0,
             tok::text1(),
         );
         p.hit(
             mini_play_x,
             mini_play_y,
-            28.0,
-            28.0,
+            30.0,
+            30.0,
             Action::TogglePlayPause,
         );
+        p.pop_scale_transform();
 
-        // Bottom-Right: Tasks & Quick Screen Shot
-        let br_x = right_x + sub_w + 12.0;
-        p.elevated_card(br_x, bot_y, sub_w, bot_h, 15.0, None);
-        let tasks_card_ht = p.hot_t(br_x, bot_y, sub_w - 42.0, bot_h);
-        if tasks_card_ht > 0.02 {
-            p.rrect_bevel_stroke(
-                br_x,
-                bot_y,
-                sub_w,
-                bot_h,
-                15.0,
-                1.0,
-                fade(tok::cyno_mist(), 0.42 * tasks_card_ht),
-                fade(tok::cyno_orchid(), 0.16 * tasks_card_ht),
+        // Card Right: Quick Shelf
+        let (dy2, a2, sc2) = Self::mode_stagger(state, 2);
+        p.global_alpha = prev_alpha * a2;
+        let bot_y2 = card_y + dy2;
+        let br_x = right_x + sub_w + 16.0;
+        p.push_scale_about(br_x + sub_w * 0.5, bot_y2 + bot_h * 0.5, sc2);
+        p.elevated_card(
+            br_x,
+            bot_y2,
+            sub_w,
+            bot_h,
+            16.0,
+            Some((sub_w - 24.0, 22.0, 68.0, tok::gold_mid())),
+        );
+        let shelf_card_ht = p.hot_t(br_x, bot_y2, sub_w, bot_h);
+        if shelf_card_ht > 0.02 && p.prepare_rrect_clip(br_x, bot_y2, sub_w, bot_h, 16.0) {
+            p.elliptical_glow(
+                br_x + sub_w * 0.5,
+                bot_y2 + bot_h + 2.0,
+                sub_w * 0.52,
+                bot_h * 0.58,
+                rgba(253, 230, 138, (46.0 * shelf_card_ht) as u8),
+                BlendMode::Plus,
+                true,
             );
+            p.pop_clip();
         }
-        let pending = state.tasks.iter().filter(|t| !t.completed).count();
+        icons::draw(
+            p,
+            Icon::Clipboard,
+            br_x + 16.0,
+            bot_y2 + 18.0,
+            15.0,
+            tok::amber_glow(),
+        );
         p.text(
-            "Tasks Open",
-            br_x + 14.0,
-            bot_y + 22.0,
-            10.0,
+            "Quick Shelf",
+            br_x + 37.0,
+            bot_y2 + 29.0,
+            10.8,
             Weight::Semibold,
             tok::text2(),
         );
-        let mut task_num = StackStr::<24>::new();
-        let _ = write!(task_num, "{} active", pending);
+        let mut shelf_num = StackStr::<24>::new();
+        let _ = write!(shelf_num, "{} parked", state.shelf_items.len());
         p.text(
-            &task_num,
-            br_x + 14.0,
-            bot_y + 46.0,
-            13.5,
+            &shelf_num,
+            br_x + 16.0,
+            bot_y2 + 78.0,
+            16.0,
             Weight::Bold,
             tok::cyno_mist(),
         );
-        p.hit(
-            br_x,
-            bot_y,
-            sub_w - 42.0,
-            bot_h,
-            Action::SetMode(NotchMode::Tasks),
-        );
-
-        let shot_x = br_x + sub_w - 40.0;
-        let shot_y = bot_y + 21.5;
-        let shot_ht = p.hot_t(shot_x, shot_y, 28.0, 28.0);
-        p.tactile_surface_pill_t(shot_x, shot_y, 28.0, 28.0, 14.0, shot_ht, None);
-        icons::draw(
-            p,
-            Icon::Video,
-            shot_x + 7.5,
-            shot_y + 7.5 - 0.55 * shot_ht,
-            13.0,
-            tok::cyno_violet_hi(),
-        );
-        p.hit(shot_x, shot_y, 28.0, 28.0, Action::CaptureScreen);
-    }
-
-    // ─────────────────────────────────────────────────────────────────────────────
-    // 1. MUSIC PLAYER (Aligned 154x154 Art + Real Multi-Line Lyrics View)
-    // ─────────────────────────────────────────────────────────────────────────────
-    pub(super) fn draw_music_view(p: &mut PainterD2D, state: &AppState, w: f32, card_y: f32) {
-        let card_x = 20.0;
-        let card_size = 154.0;
-
-        // Luminous Volumetric Album Art Cover (matches right card height symmetrically!)
-        p.luminous_pill_button(
-            card_x,
-            card_y,
-            card_size,
-            card_size,
-            22.0,
-            tok::cyno_indigo(),
-            tok::cyno_violet(),
-            tok::cyno_orchid(),
-            false,
-        );
-        p.dot_matrix(
-            card_x + 16.0,
-            card_y + 16.0,
-            4,
-            3,
-            5.5,
-            rgba(255, 255, 255, 55),
-        );
-
-        if state.show_mascot && state.media.is_playing {
-            let hero_cx = card_x + card_size * 0.5;
-            let hero_cy = card_y + 62.0;
-            p.circle(hero_cx, hero_cy - 1.5, 41.0, rgba(10, 9, 20, 145));
-            p.circle_stroke(hero_cx, hero_cy - 1.5, 41.0, 1.0, rgba(255, 255, 255, 45));
+        let shelf_sub = if state.shelf_items.is_empty() {
+            "Drop files or Ctrl+C"
         } else {
-            icons::draw(
-                p,
-                Icon::Music,
-                card_x + (card_size - 42.0) / 2.0,
-                card_y + 42.0 + 1.5,
-                42.0,
-                rgba(0, 0, 0, 85),
-            );
-            icons::draw(
-                p,
-                Icon::Music,
-                card_x + (card_size - 42.0) / 2.0,
-                card_y + 42.0,
-                42.0,
-                rgba(255, 255, 255, 255),
-            );
-        }
-
-        let art_badge = if !state.media.album.is_empty() {
-            state.media.album.as_str()
-        } else if state.media.is_idle() {
-            "IDLE"
-        } else if state.media.is_playing {
-            "LIVE AUDIO"
-        } else {
-            "PAUSED"
+            "Click to open shelf"
         };
-        let badge_txt = p.ellipsize_cow(art_badge, 9.5, Weight::Bold, card_size - 28.0);
-        p.rrect(
-            card_x + 16.0,
-            card_y + 116.0,
-            card_size - 32.0,
-            22.0,
+        p.text(
+            shelf_sub,
+            br_x + 16.0,
+            bot_y2 + 100.0,
             11.0,
-            rgba(10, 8, 22, 150),
-        );
-        p.text_center(
-            &badge_txt,
-            card_x + card_size / 2.0,
-            card_y + 130.5,
-            9.5,
-            Weight::Bold,
-            tok::text1(),
-        );
-
-        let info_x = card_x + card_size + 14.0;
-        let info_w = (w - 20.0) - info_x;
-
-        p.elevated_card(
-            info_x,
-            card_y,
-            info_w,
-            card_size,
-            16.0,
-            Some((info_w - 22.0, 22.0, 80.0, tok::cyno_violet())),
-        );
-
-        let pad_x = AppState::MUSIC_SCRUBBER_X;
-        let inner_w = AppState::MUSIC_SCRUBBER_W;
-
-        if state.show_lyrics {
-            Self::draw_lyrics_panel(p, state, pad_x, card_y + 8.0, inner_w, 101.0, false);
-
-            let played_pct = if state.media.duration_ms > 0 {
-                (state.media.position_ms as f32 / state.media.duration_ms as f32).clamp(0.0, 1.0)
-            } else {
-                0.0
-            };
-            let mini_w = inner_w - 138.0;
-            let mini_y = card_y + 123.0;
-            p.glowing_striped_bar(
-                pad_x,
-                mini_y,
-                mini_w,
-                6.0,
-                played_pct,
-                tok::cyno_deep(),
-                tok::cyno_violet(),
-            );
-            let mini_hot = p.hot(pad_x - 4.0, card_y + 115.0, mini_w + 8.0, 22.0);
-            let thumb_x = (pad_x + mini_w * played_pct).clamp(pad_x + 4.0, pad_x + mini_w - 3.0);
-            let thumb_y = mini_y + 3.0;
-            let thumb_r = if mini_hot { 5.8 } else { 4.6 };
-            p.radial_glow(
-                thumb_x,
-                thumb_y,
-                if mini_hot { 11.0 } else { 8.5 },
-                rgba(233, 213, 255, if mini_hot { 130 } else { 85 }),
-                BlendMode::Plus,
-                false,
-            );
-            p.circle(thumb_x, thumb_y, thumb_r, rgba(255, 255, 255, 250));
-            p.circle(thumb_x, thumb_y, thumb_r * 0.44, tok::cyno_deep());
-            p.hit(
-                pad_x,
-                card_y + 115.0,
-                mini_w,
-                22.0,
-                Action::SeekMusic(played_pct),
-            );
-            Self::draw_transport_buttons(
-                p,
-                state.media.is_playing,
-                pad_x + inner_w - 60.0,
-                card_y + 112.0,
-            );
-            return;
-        }
-
-        // Standard Now Playing View
-        let title_y = card_y + 26.0;
-        let title_max_w = if state.equalizer_enabled {
-            inner_w - 72.0
-        } else {
-            inner_w
-        };
-        let title_text = p.ellipsize_cow(&state.media.title, 15.5, Weight::Bold, title_max_w);
-        p.text(
-            &title_text,
-            pad_x,
-            title_y,
-            15.5,
-            Weight::Bold,
-            tok::text1(),
-        );
-
-        let artist_y = title_y + 19.0;
-        let artist_txt = p.ellipsize_cow(&state.media.artist, 12.0, Weight::Regular, inner_w);
-        p.text(
-            &artist_txt,
-            pad_x,
-            artist_y,
-            12.0,
             Weight::Regular,
             tok::text2(),
         );
+        p.hit(
+            br_x,
+            bot_y2,
+            sub_w,
+            bot_h,
+            Action::SetMode(NotchMode::Shelf),
+        );
+        p.pop_scale_transform();
+        p.global_alpha = prev_alpha;
+    }
 
-        let prog_y = artist_y + 13.0;
+    // â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+    // 1. MUSIC PLAYER (Aligned 154x154 Art + Real Multi-Line Lyrics View)
+    // â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+    pub(super) fn draw_music_view(p: &mut PainterD2D, state: &AppState, w: f32, card_y: f32) {
+        let cx = w * 0.5;
+        let prev_alpha = p.global_alpha;
+
+        // 1. BOX 1 (Top Notch Box y=0..164): Centered Large Lyrics + Full-Width Progress Bar
+        let (dy0, a0, sc0) = Self::mode_stagger(state, 0);
+        p.global_alpha = prev_alpha * a0;
+        let ctx_y = card_y + dy0; // y = 68.0 (18px breathing room below dock)
+        let ctx_h = 72.0; // ends y = 140.0 (8px above seek bar at 148.0)
+        p.push_scale_about(cx, ctx_y + 44.0, sc0);
+        let center_y = ctx_y + ctx_h * 0.5;
+        if state.lyrics.is_empty() {
+            p.text_center(
+                "No synced lyrics found for this track yet.",
+                cx,
+                center_y + 4.0,
+                12.5,
+                Weight::Regular,
+                tok::text2(),
+            );
+        } else {
+            let base_idx = state.current_lyric_index.unwrap_or(0) as i32;
+            let max_idx = (state.lyrics.len() as i32) - 1;
+            let center_idx = (base_idx + state.lyrics_offset).clamp(0, max_idx) as usize;
+            let dimmed = rgba(199, 194, 223, 108);
+
+            let (act_lines, fit_act_sz) = p.wrap_lines_fit(
+                &state.lyrics[center_idx].text,
+                17.0,
+                12.5,
+                Weight::Bold,
+                w - 80.0,
+                2,
+            );
+            let line_cnt = act_lines.len().max(1);
+            let line_step = fit_act_sz * 1.24;
+            let text_block_h = (line_cnt as f32 - 1.0) * line_step;
+
+            p.radial_glow(
+                cx,
+                center_y,
+                (ctx_h * 0.52).max(24.0),
+                rgba(139, 92, 246, 26),
+                BlendMode::SourceOver,
+                true,
+            );
+
+            let active_top = center_y - text_block_h * 0.5 - fit_act_sz * 0.45;
+            let active_bot = center_y + text_block_h * 0.5 + fit_act_sz * 0.55;
+
+            if center_idx > 0 && line_cnt == 1 {
+                let prev_ell = p.ellipsize_cow(
+                    &state.lyrics[center_idx - 1].text,
+                    11.2,
+                    Weight::Regular,
+                    w - 96.0,
+                );
+                p.text_center(
+                    &prev_ell,
+                    cx,
+                    (active_top - 12.0).max(ctx_y + 10.0),
+                    11.2,
+                    Weight::Regular,
+                    dimmed,
+                );
+                p.hit(24.0, ctx_y, w - 48.0, 22.0, Action::ScrollLyrics(-1));
+            }
+
+            let first_base = center_y - text_block_h * 0.5 + fit_act_sz * 0.34;
+            for (li, line) in act_lines.iter().enumerate() {
+                p.text_center_shadow(
+                    line,
+                    cx,
+                    first_base + (li as f32) * line_step,
+                    fit_act_sz,
+                    Weight::Bold,
+                    tok::text1(),
+                );
+            }
+
+            if center_idx + 1 < state.lyrics.len() {
+                let next_ell = p.ellipsize_cow(
+                    &state.lyrics[center_idx + 1].text,
+                    11.2,
+                    Weight::Regular,
+                    w - 96.0,
+                );
+                p.text_center(
+                    &next_ell,
+                    cx,
+                    (active_bot + 16.0).min(ctx_y + ctx_h - 2.0),
+                    11.2,
+                    Weight::Regular,
+                    dimmed,
+                );
+                p.hit(
+                    24.0,
+                    active_bot,
+                    w - 48.0,
+                    (ctx_y + ctx_h - active_bot).max(18.0),
+                    Action::ScrollLyrics(1),
+                );
+            }
+        }
+
+        // Full-Width Progress / Seek Bar at bottom of Box 1 (y=148)
         let played_pct = if state.media.duration_ms > 0 {
             (state.media.position_ms as f32 / state.media.duration_ms as f32).clamp(0.0, 1.0)
         } else {
             0.0
         };
+        let scrub_x = 32.0;
+        let scrub_w = (w - 64.0).max(80.0);
+        let scrub_y = 148.0 + dy0;
         p.glowing_striped_bar(
-            pad_x,
-            prog_y,
-            inner_w,
-            6.5,
+            scrub_x,
+            scrub_y,
+            scrub_w,
+            5.5,
             played_pct,
-            tok::cyno_deep(),
-            tok::cyno_violet(),
+            tok::gold_deep(),
+            tok::gold_champagne(),
         );
-        let scrub_hot = p.hot(pad_x - 4.0, prog_y - 6.0, inner_w + 8.0, 19.0);
-        let thumb_x = (pad_x + inner_w * played_pct).clamp(pad_x + 5.0, pad_x + inner_w - 3.0);
-        let thumb_y = prog_y + 3.25;
-        let thumb_r = if scrub_hot { 6.2 } else { 5.0 };
+        let mini_hot = p.hot(scrub_x - 4.0, scrub_y - 7.0, scrub_w + 8.0, 20.0);
+        let thumb_x = (scrub_x + scrub_w * played_pct).clamp(scrub_x + 4.0, scrub_x + scrub_w - 3.0);
+        let thumb_y = scrub_y + 2.75;
+        let thumb_r = if mini_hot { 5.5 } else { 4.4 };
         p.radial_glow(
             thumb_x,
             thumb_y,
-            if scrub_hot { 12.0 } else { 9.0 },
-            rgba(233, 213, 255, if scrub_hot { 135 } else { 90 }),
+            if mini_hot { 10.0 } else { 8.0 },
+            rgba(200, 155, 60, if mini_hot { 125 } else { 80 }),
             BlendMode::Plus,
             false,
         );
-        p.circle(thumb_x, thumb_y, thumb_r, rgba(255, 255, 255, 252));
-        p.circle(thumb_x, thumb_y, thumb_r * 0.44, tok::cyno_deep());
-        p.hit(
-            pad_x,
-            prog_y - 6.0,
-            inner_w,
-            19.0,
-            Action::SeekMusic(played_pct),
-        );
+        p.circle(thumb_x, thumb_y, thumb_r, rgba(255, 255, 255, 250));
+        p.circle(thumb_x, thumb_y, thumb_r * 0.44, tok::amber_glow());
+        p.hit(scrub_x, scrub_y - 7.0, scrub_w, 20.0, Action::SeekMusic(played_pct));
+        p.pop_scale_transform();
 
-        let time_y = prog_y + 17.0;
-        let pos_sec = state.media.position_ms / 1000;
-        let dur_sec = state.media.duration_ms / 1000;
-        let rem_sec = dur_sec.saturating_sub(pos_sec);
-        let left_time = format!("{}:{:02}", pos_sec / 60, pos_sec % 60);
-        let right_time = if state.media.duration_ms > 0 {
-            format!("-{}:{:02}", rem_sec / 60, rem_sec % 60)
+        // 2. BOX 2 (Floating Obsidian Glass Track Info y=176..242, h=66px, 12px transparent gap below Box 1)
+        // Outer shell stays at 176..242 to match BlurSpec mask; inner content cascades with Blur-Fade Rise.
+        let (dy1, a1, sc1) = Self::mode_stagger(state, 1);
+        p.global_alpha = prev_alpha * a1;
+        let box2_y = 176.0;
+        let box2_h = 66.0;
+        let (card_top, card_bot) = if p.frosted {
+            (tok::obsidian_shell_frosted(), tok::obsidian_deep_frosted())
         } else {
-            "--:--".to_string()
+            (tok::obsidian_shell(), tok::obsidian_deep())
         };
-        p.text(
-            &left_time,
-            pad_x,
-            time_y,
-            10.0,
-            Weight::Semibold,
-            tok::text2(),
+        p.rrect_corners4_vertical_gradient(
+            0.0,
+            box2_y,
+            w,
+            box2_h,
+            (16.0, 16.0, 16.0, 16.0),
+            card_top,
+            card_bot,
+        );
+        if p.prepare_rrect_clip(0.0, box2_y, w, box2_h, 16.0) {
+            p.elliptical_glow(
+                w * 0.5,
+                box2_y + box2_h + 3.0,
+                w * 0.5,
+                24.0,
+                rgba(124, 58, 237, if p.frosted { 30 } else { 48 }),
+                BlendMode::Plus,
+                true,
+            );
+            p.pop_clip();
+        }
+
+        // Cover art: Fill Height (box2_h - 16px uniform 8px padding) + Lock 1:1 Aspect Ratio (50x50px)
+        let inner_box2_y = box2_y + dy1;
+        p.push_scale_about(cx, inner_box2_y + box2_h * 0.5, sc1);
+        let art_pad = SP_2;
+        let art_sz = box2_h - art_pad * 2.0; // 50.0 x 50.0 (1:1 locked)
+        let art_x = art_pad;
+        let art_y = inner_box2_y + art_pad;
+        let drew_cover = state
+            .media
+            .cover_art
+            .as_ref()
+            .is_some_and(|cov| p.draw_media_cover(cov, art_x, art_y, art_sz, art_sz, 10.0));
+        if !drew_cover {
+            p.rrect_vertical_gradient(
+                art_x,
+                art_y,
+                art_sz,
+                art_sz,
+                10.0,
+                rgba(88, 48, 168, 130),
+                rgba(34, 22, 68, 155),
+            );
+            icons::draw(
+                p,
+                Icon::Music,
+                art_x + (art_sz - 20.0) * 0.5,
+                art_y + (art_sz - 20.0) * 0.5,
+                20.0,
+                tok::text1(),
+            );
+        }
+        if state.media.is_playing {
+            p.circle(art_x + art_sz - 5.0, art_y + 5.0, 2.8, tok::amber_glow());
+        }
+
+        let pos_s = state.media.position_ms / 1000;
+        let dur_s = state.media.duration_ms / 1000;
+        let rem_s = dur_s.saturating_sub(pos_s);
+        let mut time_str = StackStr::<32>::new();
+        let _ = write!(
+            time_str,
+            "{}:{:02} / -{}:{:02}",
+            pos_s / 60,
+            pos_s % 60,
+            rem_s / 60,
+            rem_s % 60
         );
         p.text_right(
-            &right_time,
-            pad_x + inner_w,
-            time_y,
-            10.0,
+            &time_str,
+            w - SP_4,
+            inner_box2_y + box2_h * 0.5 + 4.0,
+            11.0,
             Weight::Semibold,
-            tok::text2(),
+            tok::text3(),
         );
 
-        let lyric_y = time_y + 16.0;
-        let (snip_lines, snip_sz) = p.wrap_lines_fit(
-            &state.current_lyric_text,
-            12.0,
-            9.5,
-            Weight::Regular,
-            inner_w,
-            2,
-        );
-        for (li, line) in snip_lines.iter().take(2).enumerate() {
-            p.text(
-                line,
-                pad_x,
-                lyric_y + (li as f32) * (snip_sz + 2.0),
-                snip_sz,
-                Weight::Regular,
-                tok::text_soft(),
-            );
-        }
-
-        let ctrl_cx = pad_x + inner_w / 2.0;
-        let ctrl_y = card_y + 113.0;
-        Self::draw_transport_buttons(p, state.media.is_playing, ctrl_cx, ctrl_y);
-    }
-
-    pub(super) fn draw_lyrics_panel(
-        p: &mut PainterD2D,
-        state: &AppState,
-        pad_x: f32,
-        top_y: f32,
-        inner_w: f32,
-        body_h: f32,
-        is_vertical: bool,
-    ) {
-        let chip_h = 20.0;
-        let style_w = if is_vertical { 58.0 } else { 64.0 };
-        let size_w = if is_vertical { 28.0 } else { 32.0 };
-        let chip_gap = 6.0;
-        let style_x = pad_x + inner_w - style_w;
-        let size_x = style_x - chip_gap - size_w;
-
-        let max_title_w = (size_x - pad_x - 10.0).max(48.0);
-        let title_mini = p.ellipsize_cow(&state.media.title, 12.2, Weight::Bold, max_title_w);
-        p.text(
-            &title_mini,
-            pad_x,
-            top_y + 13.5,
-            12.2,
-            Weight::Bold,
-            tok::text1(),
-        );
-
-        let size_ht = p.hot_t(size_x, top_y, size_w, chip_h);
-        p.tactile_surface_pill_t(
-            size_x,
-            top_y,
-            size_w,
-            chip_h,
-            10.0,
-            size_ht,
-            Some(tok::cyno_orchid()),
-        );
-        p.text_center(
-            state.lyric_size.short_label(),
-            size_x + size_w * 0.5,
-            top_y + 13.4 - 0.45 * size_ht,
-            9.2,
-            Weight::Bold,
-            tok::cyno_mist(),
-        );
-        p.hit(size_x, top_y, size_w, chip_h, Action::CycleLyricSize);
-
-        let style_ht = p.hot_t(style_x, top_y, style_w, chip_h);
-        p.tactile_surface_pill_t(
-            style_x,
-            top_y,
-            style_w,
-            chip_h,
-            10.0,
-            style_ht,
-            Some(tok::cyno_violet()),
-        );
-        p.text_center(
-            state.lyric_style.short_label(),
-            style_x + style_w * 0.5,
-            top_y + 13.4 - 0.45 * style_ht,
-            9.2,
-            Weight::Bold,
-            tok::cyno_violet_hi(),
-        );
-        p.hit(style_x, top_y, style_w, chip_h, Action::CycleLyricStyle);
-
-        let ctx_y = top_y + 22.0;
-        let ctx_h = (body_h - 22.0).max(56.0);
-        let center_y = ctx_y + ctx_h * 0.5;
-
-        if state.lyrics.is_empty() {
-            p.text_center(
-                "No synced lyrics found for this track yet.",
-                pad_x + inner_w * 0.5,
-                center_y + 4.0,
-                12.2,
-                Weight::Regular,
-                tok::text2(),
-            );
-            return;
-        }
-
-        let base_idx = state.current_lyric_index.unwrap_or(0) as i32;
-        let max_idx = (state.lyrics.len() as i32) - 1;
-        let center_idx = (base_idx + state.lyrics_offset).clamp(0, max_idx) as usize;
-
-        let (prev_sz, act_sz) = match state.lyric_size {
-            LyricSize::Compact => (11.2, 13.5),
-            LyricSize::Standard => (12.2, 15.4),
-            LyricSize::Large => (13.4, 17.4),
+        let text_x = art_x + art_sz + SP_4;
+        let text_max_w = (w - text_x - 112.0).max(80.0);
+        let title_ell = p.ellipsize_cow(&state.media.title, 14.0, Weight::Bold, text_max_w);
+        p.text(&title_ell, text_x, inner_box2_y + 28.0, 14.0, Weight::Bold, tok::text1());
+        let artist_str = if state.media.artist.is_empty() {
+            "Unknown Artist"
+        } else {
+            state.media.artist.as_str()
         };
+        let artist_ell = p.ellipsize_cow(artist_str, 11.5, Weight::Regular, text_max_w);
+        p.text(&artist_ell, text_x, inner_box2_y + 48.0, 11.5, Weight::Regular, tok::text2());
+        p.pop_scale_transform();
 
-        match state.lyric_style {
-            LyricStyle::ClassicList | LyricStyle::KaraokeGlow => {
-                let (act_lines, fit_act_sz) = p.wrap_lines_fit(
-                    &state.lyrics[center_idx].text,
-                    act_sz,
-                    10.8,
-                    Weight::Bold,
-                    inner_w - 22.0,
-                    2,
-                );
-                let line_cnt = act_lines.len().max(1);
-                let line_step = fit_act_sz * 1.15;
-                let base_pill_h = if line_cnt == 1 {
-                    (fit_act_sz + 13.0).clamp(26.0, 34.0)
-                } else {
-                    (line_cnt as f32 * line_step + 13.0).clamp(38.0, 52.0)
-                };
-                let pill_h = if state.lyric_style == LyricStyle::KaraokeGlow {
-                    (base_pill_h + 3.0).min(ctx_h * 0.60)
-                } else {
-                    base_pill_h.min(ctx_h * 0.58)
-                };
-                let pill_y = center_y - pill_h * 0.5;
-                let neighbor_max_lines = if is_vertical && line_cnt == 1 { 2 } else { 1 };
+        // 3. BOX 3 (3 Separated Floating Obsidian Glass Buttons y=250..286, 6px safe margin from bottom)
+        // Outer button shells stay at 250..286 to match BlurSpec & >=3px bottom margin; pills & icons cascade.
+        let btn_y = 250.0;
+        let btn_w = 56.0;
+        let btn_h = 36.0;
+        let btn_gap = 12.0;
+        let start_x = cx - (btn_w * 3.0 + btn_gap * 2.0) * 0.5;
 
-                if center_idx > 0 {
-                    let (prev_lines, fit_prev_sz) = p.wrap_lines_fit(
-                        &state.lyrics[center_idx - 1].text,
-                        prev_sz,
-                        9.2,
-                        Weight::Regular,
-                        inner_w - 10.0,
-                        neighbor_max_lines,
-                    );
-                    let p_cnt = prev_lines.len().max(1);
-                    let p_step = fit_prev_sz * 1.14;
-                    let last_base = (pill_y - 7.0).max(ctx_y + (p_cnt as f32) * p_step - 2.0);
-                    for (li, line) in prev_lines.iter().enumerate() {
-                        let by = last_base - ((p_cnt - 1 - li) as f32) * p_step;
-                        p.text_center(
-                            line,
-                            pad_x + inner_w * 0.5,
-                            by,
-                            fit_prev_sz,
-                            Weight::Regular,
-                            tok::text2(),
-                        );
-                    }
-                    p.hit(
-                        pad_x,
-                        ctx_y,
-                        inner_w,
-                        (pill_y - ctx_y).max(16.0),
-                        Action::ScrollLyrics(-1),
-                    );
-                }
-
-                let text_block_h = (line_cnt as f32 - 1.0) * line_step;
-                if state.lyric_style == LyricStyle::KaraokeGlow {
-                    p.luminous_pill_button(
-                        pad_x,
-                        pill_y,
-                        inner_w,
-                        pill_h,
-                        9.5,
-                        tok::cyno_indigo(),
-                        tok::cyno_violet(),
-                        tok::cyno_orchid(),
-                        false,
-                    );
-                    let cur_sec = state.lyrics[center_idx].seconds;
-                    let next_sec = state
-                        .lyrics
-                        .get(center_idx + 1)
-                        .map(|l| l.seconds)
-                        .unwrap_or(cur_sec + 4.0);
-                    let span = (next_sec - cur_sec).max(1.0);
-                    let pos_sec = state.media.position_ms as f64 / 1000.0;
-                    let karaoke_pct = if state.lyrics_offset == 0
-                        && state.media.duration_ms > 0
-                        && pos_sec >= cur_sec
-                    {
-                        ((pos_sec - cur_sec) / span).clamp(0.14, 1.0) as f32
-                    } else {
-                        0.64
-                    };
-                    p.rrect(
-                        pad_x + 10.0,
-                        pill_y + pill_h - 3.5,
-                        inner_w - 20.0,
-                        2.0,
-                        1.0,
-                        rgba(10, 8, 22, 135),
-                    );
-                    p.rrect(
-                        pad_x + 10.0,
-                        pill_y + pill_h - 3.5,
-                        (inner_w - 20.0) * karaoke_pct,
-                        2.0,
-                        1.0,
-                        tok::cyno_mist(),
-                    );
-
-                    let first_base =
-                        pill_y + (pill_h - 4.0) * 0.5 - text_block_h * 0.5 + fit_act_sz * 0.32;
-                    for (li, line) in act_lines.iter().enumerate() {
-                        p.text_center_shadow(
-                            line,
-                            pad_x + inner_w * 0.5,
-                            first_base + (li as f32) * line_step,
-                            fit_act_sz,
-                            Weight::Bold,
-                            tok::text1(),
-                        );
-                    }
+        let btns = [
+            (start_x, Icon::Prev, Action::PrevTrack, false),
+            (
+                start_x + btn_w + btn_gap,
+                if state.media.is_playing { Icon::Pause } else { Icon::Play },
+                Action::TogglePlayPause,
+                true,
+            ),
+            (start_x + (btn_w + btn_gap) * 2.0, Icon::Next, Action::NextTrack, false),
+        ];
+        for (bi, (bx, ic, act, is_primary)) in btns.into_iter().enumerate() {
+            let (dy_b, ab, sc_b) = Self::mode_stagger(state, 2 + bi);
+            p.global_alpha = prev_alpha * ab;
+            p.push_scale_about(bx + btn_w * 0.5, btn_y + btn_h * 0.5, sc_b);
+            let ht = p.hot_t(bx, btn_y, btn_w, btn_h);
+            p.rrect_corners4_vertical_gradient(
+                bx,
+                btn_y,
+                btn_w,
+                btn_h,
+                (13.0, 13.0, 13.0, 13.0),
+                card_top,
+                card_bot,
+            );
+            p.button_pill_variant(
+                bx,
+                btn_y,
+                btn_w,
+                btn_h,
+                13.0,
+                ht,
+                if is_primary {
+                    ButtonVariant::PrimaryFill
                 } else {
-                    p.tactile_surface_pill(
-                        pad_x,
-                        pill_y,
-                        inner_w,
-                        pill_h,
-                        9.0,
-                        false,
-                        Some(tok::cyno_violet()),
-                    );
-                    let first_base = pill_y + pill_h * 0.5 - text_block_h * 0.5 + fit_act_sz * 0.34;
-                    for (li, line) in act_lines.iter().enumerate() {
-                        p.text_center_shadow(
-                            line,
-                            pad_x + inner_w * 0.5,
-                            first_base + (li as f32) * line_step,
-                            fit_act_sz,
-                            Weight::Bold,
-                            tok::text1(),
-                        );
-                    }
-                }
-
-                if center_idx + 1 < state.lyrics.len() {
-                    let (next_lines, fit_next_sz) = p.wrap_lines_fit(
-                        &state.lyrics[center_idx + 1].text,
-                        prev_sz,
-                        9.2,
-                        Weight::Regular,
-                        inner_w - 10.0,
-                        neighbor_max_lines,
-                    );
-                    let n_step = fit_next_sz * 1.14;
-                    let first_next_y =
-                        (pill_y + pill_h + fit_next_sz + 5.0).min(ctx_y + ctx_h - 2.0);
-                    for (li, line) in next_lines.iter().enumerate() {
-                        let by = first_next_y + (li as f32) * n_step;
-                        if by <= ctx_y + ctx_h + 2.0 {
-                            p.text_center(
-                                line,
-                                pad_x + inner_w * 0.5,
-                                by,
-                                fit_next_sz,
-                                Weight::Regular,
-                                tok::text2(),
-                            );
-                        }
-                    }
-                    p.hit(
-                        pad_x,
-                        pill_y + pill_h + 1.0,
-                        inner_w,
-                        (ctx_y + ctx_h - (pill_y + pill_h)).max(16.0),
-                        Action::ScrollLyrics(1),
-                    );
-                }
-            }
-            LyricStyle::MinimalSingle => {
-                let (hero_sz, cue_sz) = match state.lyric_size {
-                    LyricSize::Compact => (14.8, 11.4),
-                    LyricSize::Standard => (17.2, 12.4),
-                    LyricSize::Large => (19.6, 13.4),
-                };
-                // BH-42: Clamp glow radius softly within lyrics region instead of pushing a tight
-                // inner clip box that creates a visible horizontal seam below the header bar.
-                let safe_r = (inner_w * 0.36).min((ctx_h * 0.48).max(12.0));
-                p.radial_glow(
-                    pad_x + inner_w * 0.5,
-                    center_y - 2.0,
-                    safe_r,
-                    rgba(139, 92, 246, 38),
-                    BlendMode::SourceOver,
-                    true,
-                );
-                let (hero_lines, fit_hero_sz) = p.wrap_lines_fit(
-                    &state.lyrics[center_idx].text,
-                    hero_sz,
-                    11.5,
-                    Weight::Bold,
-                    inner_w - 12.0,
-                    2,
-                );
-                let h_cnt = hero_lines.len().max(1);
-                let h_step = fit_hero_sz * 1.15;
-                let hero_top_base = if h_cnt == 1 {
-                    center_y - 4.0
-                } else {
-                    center_y - h_step * 0.65
-                };
-                for (li, line) in hero_lines.iter().enumerate() {
-                    p.text_center_shadow(
-                        line,
-                        pad_x + inner_w * 0.5,
-                        hero_top_base + (li as f32) * h_step,
-                        fit_hero_sz,
-                        Weight::Bold,
-                        tok::text1(),
-                    );
-                }
-                let last_hero_base = hero_top_base + ((h_cnt - 1) as f32) * h_step;
-                let bar_y = last_hero_base + 5.5;
-                p.rrect(
-                    pad_x + inner_w * 0.5 - 18.0,
-                    bar_y,
-                    36.0,
-                    2.2,
-                    1.1,
-                    tok::cyno_mist(),
-                );
-                let cue = state
-                    .lyrics
-                    .get(center_idx + 1)
-                    .map(|l| l.text.as_str())
-                    .unwrap_or("End of lyrics");
-                let cue_max_lines = if h_cnt == 1 { 2 } else { 1 };
-                let (cue_lines, fit_cue_sz) = p.wrap_lines_fit(
-                    cue,
-                    cue_sz,
-                    9.4,
-                    Weight::Regular,
-                    inner_w - 16.0,
-                    cue_max_lines,
-                );
-                for (li, line) in cue_lines.iter().enumerate() {
-                    let cy = bar_y + 3.0 + fit_cue_sz + (li as f32) * (fit_cue_sz * 1.14);
-                    if cy <= ctx_y + ctx_h + 2.0 {
-                        p.text_center(
-                            line,
-                            pad_x + inner_w * 0.5,
-                            cy,
-                            fit_cue_sz,
-                            Weight::Regular,
-                            tok::text2(),
-                        );
-                    }
-                }
-                p.hit(pad_x, ctx_y, inner_w * 0.5, ctx_h, Action::ScrollLyrics(-1));
-                p.hit(
-                    pad_x + inner_w * 0.5,
-                    ctx_y,
-                    inner_w * 0.5,
-                    ctx_h,
-                    Action::ScrollLyrics(1),
-                );
-            }
-            LyricStyle::CompactStream => {
-                let (base_font, act_font): (f32, f32) = match state.lyric_size {
-                    LyricSize::Compact => (11.4, 12.4),
-                    LyricSize::Standard => (12.6, 13.8),
-                    LyricSize::Large => (14.0, 15.2),
-                };
-                let max_slots = if state.lyric_size == LyricSize::Large && !is_vertical {
-                    3
-                } else {
-                    4
-                };
-                let start_idx = if state.lyrics.len() <= max_slots {
-                    0
-                } else {
-                    center_idx
-                        .saturating_sub(1)
-                        .min(state.lyrics.len() - max_slots)
-                };
-                let mut cur_y = ctx_y;
-                for slot in 0..max_slots {
-                    let idx = start_idx + slot;
-                    if idx >= state.lyrics.len() {
-                        break;
-                    }
-                    let is_cur = idx == center_idx;
-                    let target_sz = if is_cur { act_font } else { base_font };
-                    let weight = if is_cur {
-                        Weight::Bold
-                    } else {
-                        Weight::Regular
-                    };
-                    let allow_lines = if is_cur { 2 } else { 1 };
-                    let (lines, fit_sz) = p.wrap_lines_fit(
-                        &state.lyrics[idx].text,
-                        target_sz,
-                        9.2,
-                        weight,
-                        inner_w - 20.0,
-                        allow_lines,
-                    );
-                    let l_cnt = lines.len().max(1);
-                    let l_step = fit_sz * 1.15;
-                    let item_h = (l_cnt as f32) * l_step + 5.0;
-                    if slot > 0 && cur_y + item_h > ctx_y + ctx_h + 4.0 {
-                        break;
-                    }
-                    if is_cur {
-                        p.rrect(
-                            pad_x,
-                            cur_y,
-                            inner_w,
-                            item_h - 1.0,
-                            6.5,
-                            rgba(124, 58, 237, 58),
-                        );
-                        p.rrect(
-                            pad_x + 4.0,
-                            cur_y + 3.5,
-                            2.8,
-                            (item_h - 8.0).max(6.0),
-                            1.4,
-                            tok::cyno_mist(),
-                        );
-                    }
-                    for (li, line) in lines.iter().enumerate() {
-                        p.text(
-                            line,
-                            pad_x + 12.0,
-                            cur_y + 2.0 + fit_sz + (li as f32) * l_step,
-                            fit_sz,
-                            weight,
-                            if is_cur { tok::text1() } else { tok::text2() },
-                        );
-                    }
-                    if !is_cur {
-                        p.hit(
-                            pad_x,
-                            cur_y,
-                            inner_w,
-                            item_h,
-                            Action::ScrollLyrics(idx as i32 - center_idx as i32),
-                        );
-                    }
-                    cur_y += item_h;
-                }
-            }
+                    ButtonVariant::PrimaryOutline
+                },
+            );
+            icons::draw(
+                p,
+                ic,
+                bx + (btn_w - 16.0) * 0.5,
+                btn_y + (btn_h - 16.0) * 0.5 - 0.5 * ht + dy_b * 0.45,
+                16.0,
+                tok::text1(),
+            );
+            p.hit(bx, btn_y, btn_w, btn_h, act);
+            p.pop_scale_transform();
         }
+        p.global_alpha = prev_alpha;
     }
 
-    pub(super) fn draw_transport_buttons(
-        p: &mut PainterD2D,
-        is_playing: bool,
-        ctrl_cx: f32,
-        ctrl_y: f32,
-    ) {
-        let prev_x = ctrl_cx - 60.0;
-        let prev_ht = p.hot_t(prev_x, ctrl_y, 32.0, 26.0);
-        p.tactile_surface_pill_t(prev_x, ctrl_y, 32.0, 26.0, 13.0, prev_ht, None);
-        icons::draw(
-            p,
-            Icon::Prev,
-            prev_x + 8.5,
-            ctrl_y + 5.5 - 0.55 * prev_ht,
-            15.0,
-            tok::text1(),
-        );
-        p.hit(prev_x, ctrl_y, 32.0, 26.0, Action::PrevTrack);
-
-        let play_w = 46.0;
-        let play_x = ctrl_cx - play_w / 2.0;
-        let play_ht = p.hot_t(play_x, ctrl_y - 2.0, play_w, 30.0);
-        p.luminous_pill_button_t(
-            play_x,
-            ctrl_y - 2.0,
-            play_w,
-            30.0,
-            15.0,
-            tok::cyno_indigo(),
-            tok::cyno_violet(),
-            tok::cyno_orchid(),
-            play_ht,
-        );
-        let play_icon = if is_playing { Icon::Pause } else { Icon::Play };
-        let dy = -0.8 * play_ht;
-        icons::draw(
-            p,
-            play_icon,
-            play_x + 15.5,
-            ctrl_y + 5.5 + dy,
-            15.0,
-            rgba(0, 0, 0, 110),
-        );
-        icons::draw(
-            p,
-            play_icon,
-            play_x + 15.5,
-            ctrl_y + 5.0 + dy,
-            15.0,
-            rgba(255, 255, 255, 255),
-        );
-        p.hit(play_x, ctrl_y - 2.0, play_w, 30.0, Action::TogglePlayPause);
-
-        let next_x = ctrl_cx + 28.0;
-        let next_ht = p.hot_t(next_x, ctrl_y, 32.0, 26.0);
-        p.tactile_surface_pill_t(next_x, ctrl_y, 32.0, 26.0, 13.0, next_ht, None);
-        icons::draw(
-            p,
-            Icon::Next,
-            next_x + 8.5,
-            ctrl_y + 5.5 - 0.55 * next_ht,
-            15.0,
-            tok::text1(),
-        );
-        p.hit(next_x, ctrl_y, 32.0, 26.0, Action::NextTrack);
-    }
-
-    // ─────────────────────────────────────────────────────────────────────────────
-    // 2. VOLUME MASTER VIEW
-    // ─────────────────────────────────────────────────────────────────────────────
     pub(super) fn draw_volume_view(p: &mut PainterD2D, state: &AppState, w: f32, card_y: f32) {
         let smooth = state.micro_interactions;
-        let margin_x = 20.0;
-        let card_h = 154.0;
-        let left_w = 148.0;
-        let gap = 14.0;
+        let margin_x = 24.0;
+        let card_h = 200.0;
+        let left_w = 152.0;
+        let gap = 16.0;
         let right_w = w - (margin_x * 2.0) - left_w - gap;
         let right_x = margin_x + left_w + gap;
+        let prev_alpha = p.global_alpha;
+
+        let (dy0, a0, sc0) = Self::mode_stagger(state, 0);
+        p.global_alpha = prev_alpha * a0;
+        let c0_y = card_y + dy0;
+        p.push_scale_about(margin_x + left_w * 0.5, c0_y + card_h * 0.5, sc0);
 
         let vol_int = (state.volume_pct * 100.0).round() as i32;
         let is_muted = vol_int == 0;
@@ -1183,7 +667,7 @@ impl Renderer {
         };
         p.elevated_card(
             margin_x,
-            card_y,
+            c0_y,
             left_w,
             card_h,
             16.0,
@@ -1191,7 +675,7 @@ impl Renderer {
         );
 
         let ic_cx = margin_x + left_w / 2.0;
-        let ic_cy = card_y + 34.0;
+        let ic_cy = c0_y + 40.0;
         p.tactile_surface_pill(
             ic_cx - 18.0,
             ic_cy - 18.0,
@@ -1219,16 +703,16 @@ impl Renderer {
         p.text_center(
             &pct_str,
             margin_x + left_w / 2.0,
-            card_y + 82.0,
-            23.0,
+            c0_y + 94.0,
+            24.0,
             Weight::Bold,
             tok::text1(),
         );
 
-        let mute_btn_w = 104.0;
-        let mute_btn_h = 28.0;
+        let mute_btn_w = 108.0;
+        let mute_btn_h = 32.0;
         let mute_btn_x = margin_x + (left_w - mute_btn_w) / 2.0;
-        let mute_btn_y = card_y + 106.0;
+        let mute_btn_y = c0_y + 132.0;
         let mute_ht = p.hot_t(mute_btn_x, mute_btn_y, mute_btn_w, mute_btn_h);
 
         if is_muted {
@@ -1270,11 +754,16 @@ impl Renderer {
             mute_btn_h,
             Action::ToggleMute,
         );
+        p.pop_scale_transform();
 
         // Right Card
+        let (dy1, a1, sc1) = Self::mode_stagger(state, 1);
+        p.global_alpha = prev_alpha * a1;
+        let c1_y = card_y + dy1;
+        p.push_scale_about(right_x + right_w * 0.5, c1_y + card_h * 0.5, sc1);
         p.elevated_card(
             right_x,
-            card_y,
+            c1_y,
             right_w,
             card_h,
             16.0,
@@ -1282,7 +771,7 @@ impl Renderer {
         );
         p.dot_matrix(
             right_x + right_w - 50.0,
-            card_y + 14.0,
+            c1_y + 14.0,
             6,
             3,
             5.5,
@@ -1292,22 +781,22 @@ impl Renderer {
         p.text(
             "System Volume Master",
             right_x + 18.0,
-            card_y + 29.0,
+            c1_y + 29.0,
             14.0,
             Weight::Bold,
             tok::text1(),
         );
         p.text(
-            "Windows Core Audio • Drag slider or scroll wheel",
+            "Windows Core Audio  -  Drag slider or scroll wheel",
             right_x + 18.0,
-            card_y + 45.0,
+            c1_y + 45.0,
             10.5,
             Weight::Regular,
             tok::text2(),
         );
 
         let slider_x = AppState::VOLUME_SLIDER_X;
-        let slider_y = card_y + 66.0;
+        let slider_y = c1_y + 78.0;
         let slider_w = AppState::VOLUME_SLIDER_W;
         let slider_h = 14.0;
         let pct_clamped = if smooth {
@@ -1321,8 +810,8 @@ impl Renderer {
             slider_w,
             slider_h,
             pct_clamped,
-            tok::cyno_deep(),
-            tok::cyno_violet(),
+            tok::gold_deep(),
+            tok::gold_champagne(),
         );
 
         let thumb_x = (slider_x + slider_w * pct_clamped)
@@ -1333,9 +822,9 @@ impl Renderer {
             thumb_y,
             14.0,
             if is_muted {
-                rgba(239, 68, 68, 80)
+                rgba(220, 38, 38, 95)
             } else {
-                rgba(255, 255, 255, 110)
+                rgba(200, 155, 60, 90)
             },
             BlendMode::Plus,
             false,
@@ -1350,7 +839,7 @@ impl Renderer {
                 rgba(255, 255, 255, 255)
             },
         );
-        p.circle(thumb_x, thumb_y, 4.0, tok::cyno_deep());
+        p.circle(thumb_x, thumb_y, 4.0, tok::amber_glow());
 
         p.hit(
             slider_x,
@@ -1369,8 +858,8 @@ impl Renderer {
         ];
         let pb_gap = 8.0;
         let pb_w = (slider_w - (pb_gap * 4.0)) / 5.0;
-        let pb_y = card_y + 100.0;
-        let pb_h = 30.0;
+        let pb_y = c1_y + 122.0;
+        let pb_h = 34.0;
 
         for (i, &(target_pct, label)) in presets.iter().enumerate() {
             let px = slider_x + (i as f32 * (pb_w + pb_gap));
@@ -1411,29 +900,36 @@ impl Renderer {
             }
             p.hit(px, pb_y, pb_w, pb_h, Action::SetVolume(target_pct));
         }
+        p.pop_scale_transform();
+        p.global_alpha = prev_alpha;
     }
 
-    // ─────────────────────────────────────────────────────────────────────────────
+    // â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
     // 3. MEMORY REDUCT VIEW (Full 8-Area Parity + Pool Metrics + Disable Triggers)
-    // ─────────────────────────────────────────────────────────────────────────────
+    // â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
     pub(super) fn draw_memreduct_view(p: &mut PainterD2D, state: &AppState, w: f32, card_y: f32) {
         let smooth = state.micro_interactions;
-        let margin_x = 20.0;
+        let margin_x = 24.0;
         let grid_w = w - (margin_x * 2.0);
-        let col_gap = 14.0;
-        let row_gap = 12.0;
+        let col_gap = 16.0;
+        let row_gap = 16.0;
         let col_w = (grid_w - col_gap) / 2.0;
-        let card_h = 71.0;
+        let card_h = 92.0;
 
         let col1_x = margin_x;
         let col2_x = margin_x + col_w + col_gap;
         let row1_y = card_y;
         let row2_y = row1_y + card_h + row_gap;
+        let prev_alpha = p.global_alpha;
 
         // Card 1: Physical + Pagefile + SysCache + Elevation badge
+        let (dy0, a0, sc0) = Self::mode_stagger(state, 0);
+        p.global_alpha = prev_alpha * a0;
+        let r1_c0_y = row1_y + dy0;
+        p.push_scale_about(col1_x + col_w * 0.5, r1_c0_y + card_h * 0.5, sc0);
         p.elevated_card(
             col1_x,
-            row1_y,
+            r1_c0_y,
             col_w,
             card_h,
             15.0,
@@ -1441,9 +937,9 @@ impl Renderer {
         );
         p.text(
             "Physical Memory",
-            col1_x + 14.0,
-            row1_y + 17.5,
-            10.2,
+            col1_x + 16.0,
+            r1_c0_y + 20.0,
+            10.5,
             Weight::Semibold,
             tok::text2(),
         );
@@ -1458,9 +954,9 @@ impl Renderer {
         };
         p.text_right(
             &right_stat,
-            col1_x + col_w - 14.0,
-            row1_y + 17.5,
-            9.8,
+            col1_x + col_w - 16.0,
+            r1_c0_y + 20.0,
+            10.0,
             Weight::Bold,
             tok::cyno_mist(),
         );
@@ -1473,8 +969,8 @@ impl Renderer {
         );
         p.text(
             &ram_val,
-            col1_x + 14.0,
-            row1_y + 36.5,
+            col1_x + 16.0,
+            r1_c0_y + 40.0,
             14.0,
             Weight::Bold,
             tok::text1(),
@@ -1486,211 +982,85 @@ impl Renderer {
             (state.telemetry.memory_percent / 100.0).clamp(0.0, 1.0)
         };
         p.glowing_striped_bar(
-            col1_x + 14.0,
-            row1_y + 43.5,
-            col_w - 28.0,
-            6.0,
+            col1_x + 16.0,
+            r1_c0_y + 50.0,
+            col_w - 32.0,
+            6.5,
             ram_pct,
-            tok::cyno_deep(),
-            tok::cyno_violet_hi(),
+            tok::gold_deep(),
+            tok::gold_champagne(),
         );
 
         let pools_str = format!(
-            "Page {:.0}% • SysCache {:.0} MB",
+            "Page {:.0}%  -  SysCache {:.0} MB",
             state.telemetry.pagefile_percent, state.telemetry.sys_cache_mb
         );
-        let pools_ell = p.ellipsize_cow(&pools_str, 9.2, Weight::Regular, col_w - 28.0);
+        let pools_ell = p.ellipsize_cow(&pools_str, 10.0, Weight::Regular, col_w - 32.0);
         p.text(
             &pools_ell,
-            col1_x + 14.0,
-            row1_y + 62.0,
-            9.2,
+            col1_x + 16.0,
+            r1_c0_y + 71.0,
+            10.0,
             Weight::Regular,
             tok::text2(),
         );
+        p.pop_scale_transform();
 
-        // Card 2: All 8 Mem Reduct Clean Areas + Auto Clean Toggle
-        p.elevated_card(col2_x, row1_y, col_w, card_h, 15.0, None);
-
-        let auto_w = 68.0;
-        let auto_x = col2_x + col_w - auto_w - 12.0;
-        let auto_y = row1_y + 6.0;
-        let auto_h = 16.0;
-
-        let a_gap_x = 4.5;
-        let a_gap_y = 3.5;
-        let pill_w = (col_w - 28.0 - a_gap_x * 3.0) / 4.0;
-        let pill_h = 16.0;
-
-        let hovered_area = (0..8).find(|&idx| {
-            let col_i = idx % 4;
-            let row_i = idx / 4;
-            let px = col2_x + 14.0 + (col_i as f32 * (pill_w + a_gap_x));
-            let py = row1_y + 29.0 + (row_i as f32 * (pill_h + a_gap_y));
-            p.hot(px, py, pill_w, pill_h)
-        });
-        let header_max_w = (auto_x - (col2_x + 14.0) - 8.0).max(60.0);
-        if let Some(desc) = hovered_area.and_then(crate::memreduct::clean_area_description) {
-            let ell = p.ellipsize_cow(desc, 9.2, Weight::Semibold, header_max_w);
-            p.text(
-                &ell,
-                col2_x + 14.0,
-                row1_y + 16.0,
-                9.2,
-                Weight::Semibold,
-                tok::cyno_violet_hi(),
-            );
-        } else {
-            p.text(
-                "Clean Areas",
-                col2_x + 14.0,
-                row1_y + 16.0,
-                10.0,
-                Weight::Semibold,
-                tok::text2(),
-            );
-        }
-
-        let auto_ht = p.hot_t(auto_x, auto_y, auto_w, auto_h);
-        p.tactile_surface_pill_t(
-            auto_x,
-            auto_y,
-            auto_w,
-            auto_h,
-            8.0,
-            auto_ht,
-            if state.mem_reduct.auto_clean_enabled {
-                Some(tok::cyno_violet())
-            } else {
-                None
-            },
-        );
-        let auto_lbl = if state.mem_reduct.auto_clean_enabled {
-            "Auto: ON"
-        } else {
-            "Auto: OFF"
-        };
+        // Card 2: Safe Trim Profile (centered/balanced text, no Auto button)
+        let (dy1, a1, sc1) = Self::mode_stagger(state, 1);
+        p.global_alpha = prev_alpha * a1;
+        let r1_c1_y = row1_y + dy1;
+        p.push_scale_about(col2_x + col_w * 0.5, r1_c1_y + card_h * 0.5, sc1);
+        p.elevated_card(col2_x, r1_c1_y, col_w, card_h, 15.0, None);
         p.text_center(
-            auto_lbl,
-            auto_x + auto_w / 2.0,
-            auto_y + 11.0 - 0.45 * auto_ht,
-            9.0,
+            "Safe Trim Profile",
+            col2_x + col_w * 0.5,
+            r1_c1_y + 32.0,
+            12.0,
             Weight::Bold,
-            if state.mem_reduct.auto_clean_enabled {
-                tok::text1()
-            } else {
-                lerp_color(tok::text2(), tok::text1(), auto_ht)
-            },
+            tok::text1(),
         );
-        p.hit(auto_x, auto_y, auto_w, auto_h, Action::ToggleAutoClean);
-
-        let areas = [
-            (
-                "WS",
-                state.mem_reduct.clean_working_sets,
-                Action::ToggleArea(0),
-            ),
-            (
-                "SysWS",
-                state.mem_reduct.clean_system_ws,
-                Action::ToggleArea(1),
-            ),
-            (
-                "Standby",
-                state.mem_reduct.clean_standby_list,
-                Action::ToggleArea(2),
-            ),
-            (
-                "ModPg",
-                state.mem_reduct.clean_modified_page_list,
-                Action::ToggleArea(3),
-            ),
-            (
-                "StbyLo",
-                state.mem_reduct.clean_standby_low,
-                Action::ToggleArea(4),
-            ),
-            (
-                "ModFile",
-                state.mem_reduct.clean_modified_file_cache,
-                Action::ToggleArea(5),
-            ),
-            (
-                "RegCch",
-                state.mem_reduct.clean_registry_cache,
-                Action::ToggleArea(6),
-            ),
-            (
-                "Combine",
-                state.mem_reduct.clean_combine_memory_lists,
-                Action::ToggleArea(7),
-            ),
-        ];
-
-        for (idx, (label, active, act)) in areas.iter().enumerate() {
-            let col_i = idx % 4;
-            let row_i = idx / 4;
-            let px = col2_x + 14.0 + (col_i as f32 * (pill_w + a_gap_x));
-            let py = row1_y + 29.0 + (row_i as f32 * (pill_h + a_gap_y));
-            let ht = p.hot_t(px, py, pill_w, pill_h);
-            p.tactile_surface_pill_t(
-                px,
-                py,
-                pill_w,
-                pill_h,
-                6.0,
-                ht,
-                if *active {
-                    Some(tok::cyno_violet())
-                } else {
-                    None
-                },
-            );
-            p.text_center(
-                label,
-                px + pill_w / 2.0,
-                py + 11.5 - 0.45 * ht,
-                8.5,
-                if *active {
-                    Weight::Bold
-                } else {
-                    Weight::Semibold
-                },
-                if *active {
-                    tok::text1()
-                } else {
-                    lerp_color(tok::text2(), tok::text1(), ht)
-                },
-            );
-            p.hit(px, py, pill_w, pill_h, *act);
-        }
+        p.text_center_fit(
+            "Frees unused RAM safely  -  keeps apps & tabs intact",
+            col2_x + col_w * 0.5,
+            r1_c1_y + 56.0,
+            10.2,
+            Weight::Regular,
+            tok::text2(),
+            col_w - 28.0,
+        );
+        p.pop_scale_transform();
 
         // Card 3: Rules (Independent Threshold & Interval triggers with Disabled option)
-        let chip_y = row2_y + 28.0;
-        let chip_h = 30.0;
-        let chip_w = (col_w - 28.0 - 8.0) / 2.0;
-        let chip1_x = col1_x + 14.0;
+        let (dy2, a2, sc2) = Self::mode_stagger(state, 2);
+        p.global_alpha = prev_alpha * a2;
+        let r2_c0_y = row2_y + dy2;
+        p.push_scale_about(col1_x + col_w * 0.5, r2_c0_y + card_h * 0.5, sc2);
+        let chip_y = r2_c0_y + 34.0;
+        let chip_h = 34.0;
+        let chip_w = (col_w - 32.0 - 8.0) / 2.0;
+        let chip1_x = col1_x + 16.0;
         let chip2_x = chip1_x + chip_w + 8.0;
 
-        p.elevated_card(col1_x, row2_y, col_w, card_h, 15.0, None);
+        p.elevated_card(col1_x, r2_c0_y, col_w, card_h, 15.0, None);
         p.text(
             "Clean Above",
             chip1_x,
-            row2_y + 19.5,
-            10.0,
+            r2_c0_y + 22.0,
+            10.5,
             Weight::Semibold,
             tok::text2(),
         );
         p.text(
             "Clean Every",
             chip2_x,
-            row2_y + 19.5,
-            10.0,
+            r2_c0_y + 22.0,
+            10.5,
             Weight::Semibold,
             tok::text2(),
         );
 
-        let c1_ht = p.hot_t(col1_x, row2_y, col_w / 2.0, card_h);
+        let c1_ht = p.hot_t(col1_x, r2_c0_y, col_w / 2.0, card_h);
         p.tactile_surface_pill_t(chip1_x, chip_y, chip_w, chip_h, 8.5, c1_ht, None);
         let (th_str, th_col) = if state.mem_reduct.when_above_pct == 0 {
             ("Disabled".to_string(), tok::text2())
@@ -1708,9 +1078,9 @@ impl Renderer {
             Weight::Bold,
             th_col,
         );
-        p.hit(col1_x, row2_y, col_w / 2.0, card_h, Action::CycleThreshold);
+        p.hit(col1_x, r2_c0_y, col_w / 2.0, card_h, Action::CycleThreshold);
 
-        let c2_ht = p.hot_t(col1_x + col_w / 2.0, row2_y, col_w / 2.0, card_h);
+        let c2_ht = p.hot_t(col1_x + col_w / 2.0, r2_c0_y, col_w / 2.0, card_h);
         p.tactile_surface_pill_t(chip2_x, chip_y, chip_w, chip_h, 8.5, c2_ht, None);
         let (int_str, int_col) = if state.mem_reduct.every_mins == 0 {
             ("Disabled".to_string(), tok::text2())
@@ -1730,17 +1100,22 @@ impl Renderer {
         );
         p.hit(
             col1_x + col_w / 2.0,
-            row2_y,
+            r2_c0_y,
             col_w / 2.0,
             card_h,
             Action::CycleInterval,
         );
+        p.pop_scale_transform();
 
         // Card 4: Clean Memory CTA with Live Status
-        let purge_ht = p.hot_t(col2_x, row2_y, col_w, card_h);
+        let (dy3, a3, sc3) = Self::mode_stagger(state, 3);
+        p.global_alpha = prev_alpha * a3;
+        let r2_c1_y = row2_y + dy3;
+        p.push_scale_about(col2_x + col_w * 0.5, r2_c1_y + card_h * 0.5, sc3);
+        let purge_ht = p.hot_t(col2_x, r2_c1_y, col_w, card_h);
         p.luminous_pill_button_t(
             col2_x,
-            row2_y,
+            r2_c1_y,
             col_w,
             card_h,
             15.0,
@@ -1753,13 +1128,13 @@ impl Renderer {
         let dy = -0.8 * purge_ht;
         p.circle(
             col2_x + 30.0,
-            row2_y + card_h / 2.0 + dy,
+            r2_c1_y + card_h / 2.0 + dy,
             16.0,
             rgba(12, 7, 26, 165),
         );
         p.circle_stroke(
             col2_x + 30.0,
-            row2_y + card_h / 2.0 + dy,
+            r2_c1_y + card_h / 2.0 + dy,
             16.0,
             1.0,
             rgba(255, 255, 255, 130),
@@ -1769,7 +1144,7 @@ impl Renderer {
             Self::draw_cyno_mascot(
                 p,
                 col2_x + 30.0,
-                row2_y + card_h / 2.0 + dy + 0.5,
+                r2_c1_y + card_h / 2.0 + dy + 0.5,
                 0.72,
                 MascotMood::Purging,
                 anim_t,
@@ -1780,7 +1155,7 @@ impl Renderer {
                 p,
                 Icon::Zap,
                 col2_x + 22.5,
-                row2_y + card_h / 2.0 - 7.5 + dy,
+                r2_c1_y + card_h / 2.0 - 7.5 + dy,
                 15.0,
                 tok::cyno_mist(),
             );
@@ -1793,503 +1168,144 @@ impl Renderer {
         };
         p.text_shadow(
             cta_title,
-            col2_x + 54.0,
-            row2_y + 31.0 + dy,
+            col2_x + 56.0,
+            r2_c1_y + 36.0 + dy,
             14.0,
             Weight::Bold,
             tok::text1(),
         );
         let status_sub = p.ellipsize_cow(
             &state.mem_reduct.last_cleaned_status,
-            9.8,
+            10.2,
             Weight::Semibold,
-            col_w - 66.0,
+            col_w - 72.0,
         );
         p.text_shadow(
             &status_sub,
-            col2_x + 54.0,
-            row2_y + 48.0 + dy,
-            9.8,
+            col2_x + 56.0,
+            r2_c1_y + 55.0 + dy,
+            10.2,
             Weight::Semibold,
             rgba(241, 245, 249, 245),
         );
-        p.hit(col2_x, row2_y, col_w, card_h, Action::PurgeRam);
+        p.hit(col2_x, r2_c1_y, col_w, card_h, Action::PurgeRam);
+        p.pop_scale_transform();
+        p.global_alpha = prev_alpha;
     }
 
-    // ─────────────────────────────────────────────────────────────────────────────
-    // 4. SCREEN TIME TELEMETRY VIEW (Real Hourly Sparkline + Multi-day Average)
-    // ─────────────────────────────────────────────────────────────────────────────
-    pub(super) fn draw_screentime_view(p: &mut PainterD2D, state: &AppState, w: f32, card_y: f32) {
-        let margin_x = 20.0;
-        let grid_w = w - (margin_x * 2.0);
-        let col_gap = 14.0;
-        let row_gap = 12.0;
-        let col_w = (grid_w - col_gap) / 2.0;
-        let card_h = 71.0;
-
-        let col1_x = margin_x;
-        let col2_x = margin_x + col_w + col_gap;
-        let row1_y = card_y;
-        let row2_y = row1_y + card_h + row_gap;
-
-        // Card 1: Today
-        p.elevated_card(
-            col1_x,
-            row1_y,
-            col_w,
-            card_h,
-            15.0,
-            Some((col_w - 25.0, 15.0, 65.0, tok::cyno_violet())),
-        );
-        p.dot_matrix(
-            col1_x + col_w - 42.0,
-            row1_y + 10.0,
-            5,
-            3,
-            5.0,
-            rgba(255, 255, 255, 32),
-        );
-        p.text(
-            "Today",
-            col1_x + 16.0,
-            row1_y + 21.0,
-            10.5,
-            Weight::Semibold,
-            tok::text2(),
-        );
-        let today_h = state.screen_time.today_secs / 3600;
-        let today_m = (state.screen_time.today_secs % 3600) / 60;
-        let today_str = format!("{} h {} m", today_h, today_m);
-        p.text(
-            &today_str,
-            col1_x + 16.0,
-            row1_y + 50.0,
-            19.0,
-            Weight::Bold,
-            tok::text1(),
-        );
-
-        // Card 2: Most used + runner-up
-        p.elevated_card(
-            col2_x,
-            row1_y,
-            col_w,
-            card_h,
-            15.0,
-            Some((col_w - 25.0, 15.0, 65.0, tok::cyno_orchid())),
-        );
-        p.text(
-            "Most used",
-            col2_x + 16.0,
-            row1_y + 20.0,
-            10.5,
-            Weight::Semibold,
-            tok::text2(),
-        );
-        if let Some((second_name, second_secs)) = state.screen_time.top_apps.get(1) {
-            let mut runner_buf = StackStr::<64>::new();
-            let _ = write!(runner_buf, "#2 {} {}m", second_name, second_secs / 60);
-            let runner = p.ellipsize_cow(&runner_buf, 9.5, Weight::Regular, col_w - 92.0);
-            p.text_right(
-                &runner,
-                col2_x + col_w - 16.0,
-                row1_y + 20.0,
-                9.5,
-                Weight::Regular,
-                tok::text2(),
-            );
-        }
-        let top_name = p.ellipsize_cow(
-            &state.screen_time.top_app_name,
-            15.0,
-            Weight::Bold,
-            col_w - 96.0,
-        );
-        p.text(
-            &top_name,
-            col2_x + 16.0,
-            row1_y + 42.0,
-            15.0,
-            Weight::Bold,
-            tok::cyno_mist(),
-        );
-        let top_h = state.screen_time.top_app_secs / 3600;
-        let top_m = (state.screen_time.top_app_secs % 3600) / 60;
-        let top_str = format!("{} h {} m", top_h, top_m);
-        p.text_right(
-            &top_str,
-            col2_x + col_w - 16.0,
-            row1_y + 42.0,
-            11.5,
-            Weight::Semibold,
-            tok::text1(),
-        );
-
-        let share = if state.screen_time.today_secs > 0 {
-            (state.screen_time.top_app_secs as f32 / state.screen_time.today_secs as f32)
-                .clamp(0.08, 1.0)
+    // â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+    // 4. TEMPORARY SHELF VIEW (4-Col Hug-Contents Bento Grid)
+    // â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+    pub(super) fn draw_shelf_view(
+        p: &mut PainterD2D,
+        state: &AppState,
+        w: f32,
+        live_h: f32,
+        card_y: f32,
+    ) {
+        let now = std::time::Instant::now();
+        // Appear transition for the Shelf card. Deliberately alpha-floored at
+        // 0.9: the old full 0->1 fade (mode_stagger) re-ran on hover/mode
+        // changes and read as a fast flicker of "Temporary Shelf". A gentle
+        // rise + scale with a near-opaque alpha gives a visible appear without
+        // ever blanking the header.
+        let appear_t = if state.are_animations_active() {
+            state.anim_mode_t.clamp(0.0, 1.0)
         } else {
-            0.0
+            1.0
         };
-        p.glowing_striped_bar(
-            col2_x + 16.0,
-            row1_y + 53.0,
-            col_w - 32.0,
-            6.5,
-            share,
-            tok::cyno_deep(),
-            tok::cyno_orchid(),
-        );
+        let appear_e = 1.0 - (1.0 - appear_t).powi(3);
+        let card_dy = (1.0 - appear_e) * 8.0;
+        let card_alpha = 0.9 + 0.1 * appear_e;
+        let card_sc = 0.985 + 0.015 * appear_e;
+        let prev_alpha = p.global_alpha;
+        p.global_alpha = prev_alpha * card_alpha;
 
-        // Card 3: 7-day average
-        p.elevated_card(col1_x, row2_y, col_w, card_h, 15.0, None);
-        p.text(
-            "7-day average",
-            col1_x + 16.0,
-            row2_y + 21.0,
-            10.5,
-            Weight::Semibold,
-            tok::text2(),
-        );
-        let days_lbl = format!("{}d log", state.screen_time.tracked_days.max(1));
-        p.text_right(
-            &days_lbl,
-            col1_x + col_w - 16.0,
-            row2_y + 21.0,
-            9.5,
-            Weight::Semibold,
-            tok::text2(),
-        );
-        let avg_h = state.screen_time.seven_day_avg_secs / 3600;
-        let avg_m = (state.screen_time.seven_day_avg_secs % 3600) / 60;
-        let avg_str = format!("{} h {} m", avg_h, avg_m);
-        p.text(
-            &avg_str,
-            col1_x + 16.0,
-            row2_y + 50.0,
-            19.0,
-            Weight::Bold,
-            tok::cyno_violet_hi(),
-        );
+        const COLS: usize = 4;
+        let total = state.shelf_items.len();
+        let rows = total.div_ceil(COLS).clamp(1, 6);
+        let tile_h = 104.0;
+        let gap = SP_4;
 
-        // Card 4: Computed Peak hour + 12-bin 24h Sparkline
-        p.elevated_card(
-            col2_x,
-            row2_y,
-            col_w,
-            card_h,
-            15.0,
-            Some((col2_x * 0.1 + 40.0, 42.0, 50.0, tok::cyno_violet())),
-        );
-        p.text(
-            "Peak hour",
-            col2_x + 16.0,
-            row2_y + 21.0,
-            10.5,
-            Weight::Semibold,
-            tok::text2(),
-        );
-        p.text(
-            &state.screen_time.peak_hour_str,
-            col2_x + 16.0,
-            row2_y + 50.0,
-            19.0,
-            Weight::Bold,
-            tok::text1(),
-        );
-
-        // Mini 12-bin (2h buckets across 24h) activity chart on right side of Card 4
-        let mut bins = [0u64; 12];
-        for (h_idx, &secs) in state.screen_time.hourly_secs.iter().enumerate() {
-            bins[h_idx / 2] += secs;
-        }
-        let max_bin = bins.iter().copied().max().unwrap_or(1).max(1);
-        let peak_bin = state.screen_time.peak_hour / 2;
-        let chart_x = col2_x + col_w - 124.0;
-        let chart_base_y = row2_y + 57.0;
-        let max_bar_h = 34.0;
-        for (b, &val) in bins.iter().enumerate() {
-            let bx = chart_x + (b as f32 * 9.0);
-            let bh = if val == 0 {
-                2.0
-            } else {
-                ((val as f32 / max_bin as f32) * max_bar_h).clamp(4.0, max_bar_h)
-            };
-            let bar_col = if val > 0 && b == peak_bin {
-                tok::cyno_mist()
-            } else if val > 0 {
-                tok::cyno_violet()
-            } else {
-                rgba(255, 255, 255, 22)
-            };
-            p.rrect(bx, chart_base_y - bh, 5.5, bh, 2.5, bar_col);
-        }
-    }
-
-    // ─────────────────────────────────────────────────────────────────────────────
-    // 5. TASKS CHECKLIST VIEW (Scrollable + Individual Delete × + From Clip)
-    // ─────────────────────────────────────────────────────────────────────────────
-    pub(super) fn draw_tasks_view(p: &mut PainterD2D, state: &AppState, w: f32, card_y: f32) {
-        let margin_x = 20.0;
+        let card_y = card_y + card_dy;
+        let margin_x = SP_6;
         let card_w = w - (margin_x * 2.0);
-        let card_h = 154.0;
+        let full_card_h = 200.0 + ((rows - 1) as f32) * (tile_h + gap);
+        // Track live shell height smoothly so Shelf extends/retracts downward without popping dock/header.
+        let card_h = (live_h - card_y - 24.0).max(200.0);
 
-        p.elevated_card(
-            margin_x,
-            card_y,
-            card_w,
-            card_h,
-            16.0,
-            Some((card_w - 40.0, 20.0, 84.0, tok::cyno_violet())),
-        );
-
-        icons::draw(
-            p,
-            Icon::List,
-            margin_x + 18.0,
-            card_y + 16.0,
-            18.0,
-            tok::cyno_violet_hi(),
-        );
-        p.text(
-            "Tasks & Todos",
-            margin_x + 44.0,
-            card_y + 27.5,
-            13.5,
-            Weight::Bold,
-            tok::text1(),
-        );
-
-        let total = state.tasks.len();
-        let pending = state.tasks.iter().filter(|t| !t.completed).count();
-        let start_idx = state.tasks_scroll.min(total.saturating_sub(3));
-
-        // Action pills
-        let btn_h = 24.0;
-        let btn_y = card_y + 15.0;
-        let clear_w = 78.0;
-        let clear_x = margin_x + card_w - clear_w - 16.0;
-        let clear_ht = p.hot_t(clear_x, btn_y, clear_w, btn_h);
-        p.tactile_surface_pill_t(clear_x, btn_y, clear_w, btn_h, 7.5, clear_ht, None);
-        p.text_center(
-            "Clear Done",
-            clear_x + clear_w / 2.0,
-            btn_y + 16.0 - 0.55 * clear_ht,
-            10.0,
-            Weight::Semibold,
-            lerp_color(tok::text_soft(), tok::text1(), clear_ht),
-        );
-        p.hit(clear_x, btn_y, clear_w, btn_h, Action::ClearCompletedTasks);
-
-        let add_w = 86.0;
-        let add_x = clear_x - add_w - 8.0;
-        let add_ht = p.hot_t(add_x, btn_y, add_w, btn_h);
-        p.tactile_surface_pill_t(
-            add_x,
-            btn_y,
-            add_w,
-            btn_h,
-            7.5,
-            add_ht,
-            Some(tok::cyno_violet()),
-        );
-        p.text_center(
-            "+ From Clip",
-            add_x + add_w / 2.0,
-            btn_y + 16.0 - 0.55 * add_ht,
-            10.0,
-            Weight::Bold,
-            tok::text1(),
-        );
-        p.hit(add_x, btn_y, add_w, btn_h, Action::PasteAsTask);
-
-        let sub = if total > 3 {
-            format!(
-                "{} open • {}-{} of {} (scroll)",
-                pending,
-                start_idx + 1,
-                (start_idx + 3).min(total),
-                total
-            )
-        } else {
-            format!("{} open • toggle or × remove", pending)
-        };
-        let sub_max_w = (add_x - (margin_x + 44.0) - 10.0).max(60.0);
-        let sub_ell = p.ellipsize_cow(&sub, 10.0, Weight::Regular, sub_max_w);
-        p.text(
-            &sub_ell,
-            margin_x + 44.0,
-            card_y + 42.5,
-            10.0,
-            Weight::Regular,
-            tok::text2(),
-        );
-
-        if state.tasks.is_empty() {
-            p.text_center(
-                "All tasks clear! Copy text and click '+ From Clip' to add.",
-                margin_x + card_w / 2.0,
-                card_y + 98.0,
-                11.5,
-                Weight::Regular,
-                tok::text2(),
-            );
-        } else {
-            for (slot, (real_idx, task)) in state
-                .tasks
-                .iter()
-                .enumerate()
-                .skip(start_idx)
-                .take(3)
-                .enumerate()
-            {
-                let item_y = card_y + 56.0 + (slot as f32 * 30.0);
-                let item_h = 26.0;
-                let item_x = margin_x + 16.0;
-                let del_w = 26.0;
-                let row_w = card_w - 32.0 - del_w - 8.0;
-                let row_ht = p.hot_t(item_x, item_y, row_w, item_h);
-
-                p.tactile_surface_pill_t(item_x, item_y, row_w, item_h, 7.5, row_ht, None);
-
-                let dy = -0.55 * row_ht;
-                let check_cx = item_x + 15.0;
-                let check_cy = item_y + item_h / 2.0 + dy;
-                if task.completed {
-                    p.radial_glow(
-                        check_cx,
-                        check_cy,
-                        10.0,
-                        rgba(139, 92, 246, 95),
-                        BlendMode::Plus,
-                        false,
-                    );
-                    p.circle(check_cx, check_cy, 6.5, tok::cyno_violet());
-                    icons::draw(
-                        p,
-                        Icon::Check,
-                        check_cx - 4.5,
-                        check_cy - 4.5,
-                        9.0,
-                        rgba(255, 255, 255, 255),
-                    );
-                } else {
-                    let well = p.well_col();
-                    p.circle(check_cx, check_cy, 6.5, well);
-                    p.circle_stroke(check_cx, check_cy, 6.5, 1.0, rgba(255, 255, 255, 70));
-                }
-
-                let task_text = p.ellipsize_cow(&task.text, 11.5, Weight::Regular, row_w - 44.0);
-                let text_color = if task.completed {
-                    tok::text3()
-                } else {
-                    tok::text1()
-                };
-                p.text(
-                    &task_text,
-                    item_x + 30.0,
-                    item_y + 17.0 + dy,
-                    11.5,
-                    Weight::Regular,
-                    text_color,
-                );
-                p.hit(item_x, item_y, row_w, item_h, Action::ToggleTask(real_idx));
-
-                // Delete pill button
-                let del_x = item_x + row_w + 8.0;
-                let del_ht = p.hot_t(del_x, item_y, del_w, item_h);
-                p.tactile_surface_pill_t(del_x, item_y, del_w, item_h, 7.5, del_ht, None);
-                if del_ht > 0.02 {
-                    p.rrect(
-                        del_x,
-                        item_y - 0.55 * del_ht,
-                        del_w,
-                        item_h,
-                        7.5,
-                        fade(rgba(220, 38, 38, 195), del_ht),
-                    );
-                }
-                icons::draw(
-                    p,
-                    Icon::Close,
-                    del_x + 7.0,
-                    item_y + 7.0 - 0.55 * del_ht,
-                    12.0,
-                    lerp_color(tok::text2(), tok::text1(), del_ht),
-                );
-                p.hit(del_x, item_y, del_w, item_h, Action::DeleteTask(real_idx));
-            }
-        }
-    }
-
-    // ─────────────────────────────────────────────────────────────────────────────
-    // 7. SHELF (Persistent Clipboard History + Drag-and-Drop File Shelf)
-    // ─────────────────────────────────────────────────────────────────────────────
-    pub(super) fn draw_shelf_view(p: &mut PainterD2D, state: &AppState, w: f32, card_y: f32) {
-        let margin_x = 20.0;
-        let card_w = w - (margin_x * 2.0);
-        let card_h = 154.0;
-
-        p.elevated_card(
-            margin_x,
-            card_y,
-            card_w,
-            card_h,
-            16.0,
-            Some((card_w - 40.0, 20.0, 84.0, tok::cyno_orchid())),
-        );
+        p.push_scale_about(margin_x + card_w * 0.5, card_y + card_h * 0.5, card_sc);
+        p.elevated_card(margin_x, card_y, card_w, card_h, 22.0, None);
 
         icons::draw(
             p,
             Icon::Clipboard,
-            margin_x + 18.0,
+            margin_x + SP_4,
             card_y + 16.0,
             18.0,
             tok::cyno_violet_hi(),
         );
         p.text(
-            "Clipboard & File Shelf",
-            margin_x + 44.0,
+            "Temporary Shelf",
+            margin_x + 42.0,
             card_y + 27.5,
             13.5,
             Weight::Bold,
             tok::text1(),
         );
 
-        let total = state.shelf_items.len();
-        let start_idx = state.shelf_scroll.min(total.saturating_sub(3));
-
-        let clr_w = 64.0;
+        let clr_w = 50.0;
         let clr_h = 24.0;
-        let clr_x = margin_x + card_w - clr_w - 16.0;
+        let clr_x = margin_x + card_w - clr_w - 14.0;
         let clr_y = card_y + 15.0;
         let clr_ht = p.hot_t(clr_x, clr_y, clr_w, clr_h);
-        p.tactile_surface_pill_t(clr_x, clr_y, clr_w, clr_h, 7.5, clr_ht, None);
+        p.button_pill_variant(clr_x, clr_y, clr_w, clr_h, 12.0, clr_ht, ButtonVariant::TextOnly);
         p.text_center(
             "Clear",
             clr_x + clr_w / 2.0,
-            clr_y + 16.0 - 0.55 * clr_ht,
-            10.0,
+            clr_y + 15.5,
+            10.5,
             Weight::Semibold,
-            lerp_color(tok::text_soft(), tok::text1(), clr_ht),
+            lerp_color(tok::text2(), tok::text1(), clr_ht),
         );
         p.hit(clr_x, clr_y, clr_w, clr_h, Action::ClearShelf);
 
-        let sub = if total > 3 {
-            format!(
-                "Drop files or Ctrl+C • {}-{} of {}",
-                start_idx + 1,
-                (start_idx + 3).min(total),
-                total
-            )
+        let mut right_bound = clr_x;
+        if state.has_active_shelf_undo() {
+            let undo_w = 52.0;
+            let undo_x = clr_x - undo_w - 6.0;
+            let undo_ht = p.hot_t(undo_x, clr_y, undo_w, clr_h);
+            p.button_pill_variant(
+                undo_x,
+                clr_y,
+                undo_w,
+                clr_h,
+                12.0,
+                undo_ht,
+                ButtonVariant::PrimaryOutline,
+            );
+            p.text_center(
+                "Undo",
+                undo_x + undo_w / 2.0,
+                clr_y + 15.5,
+                10.0,
+                Weight::Semibold,
+                lerp_color(tok::amber_glow(), tok::text1(), undo_ht),
+            );
+            p.hit(undo_x, clr_y, undo_w, clr_h, Action::UndoShelfRemove);
+            right_bound = undo_x;
+        }
+
+        let sub = if total > 0 {
+            format!("{} / 24 parked  -  Click or drag out", total)
         } else {
-            "Drop files or Ctrl+C • Click to copy/open".to_string()
+            "Drop anything or Ctrl+C  -  Click or drag out".to_string()
         };
-        let sub_max_w = (clr_x - (margin_x + 44.0) - 10.0).max(60.0);
+        let sub_max_w = (right_bound - (margin_x + 42.0) - 10.0).max(60.0);
         let sub_ell = p.ellipsize_cow(&sub, 10.0, Weight::Regular, sub_max_w);
         p.text(
             &sub_ell,
-            margin_x + 44.0,
+            margin_x + 42.0,
             card_y + 42.5,
             10.0,
             Weight::Regular,
@@ -2298,314 +1314,476 @@ impl Renderer {
 
         if state.shelf_items.is_empty() {
             p.text_center(
-                "Shelf empty • Drop files onto notch or press Ctrl+C anywhere",
+                "Shelf empty  -  Drop files, images, text or press Ctrl+C",
                 margin_x + card_w / 2.0,
-                card_y + 98.0,
-                11.5,
+                card_y + 122.0,
+                12.0,
                 Weight::Regular,
                 tok::text2(),
             );
+            p.pop_scale_transform();
         } else {
-            for (slot, (real_idx, item)) in state
-                .shelf_items
-                .iter()
-                .enumerate()
-                .skip(start_idx)
-                .take(3)
-                .enumerate()
-            {
-                let item_y = card_y + 56.0 + (slot as f32 * 30.0);
-                let item_h = 26.0;
-                let item_x = margin_x + 16.0;
-                let del_w = 26.0;
-                let row_w = card_w - 32.0 - del_w - 8.0;
-                let row_ht = p.hot_t(item_x, item_y, row_w, item_h);
+            p.pop_scale_transform();
+            let start_x = margin_x + SP_4;
+            let inner_w = card_w - SP_4 * 2.0;
+            let tile_w = (inner_w - gap * ((COLS - 1) as f32)) / (COLS as f32);
+            let grid_y = card_y + 64.0;
+            let clip_grid = card_h < full_card_h - 1.0;
+            if clip_grid {
+                p.push_rect_clip(
+                    margin_x + 4.0,
+                    card_y + 54.0,
+                    card_w - 8.0,
+                    (card_h - 62.0).max(8.0),
+                );
+            }
 
-                p.tactile_surface_pill_t(item_x, item_y, row_w, item_h, 7.5, row_ht, None);
-                let dy = -0.55 * row_ht;
-                if row_ht > 0.02 {
-                    p.rrect(
-                        item_x,
-                        item_y + dy,
-                        row_w,
-                        item_h,
-                        7.5,
-                        fade(tok::cyno_violet(), 0.25 * row_ht),
-                    );
-                }
-
-                let (ic, ic_col) = match item.kind {
-                    ShelfKind::File => (Icon::File, tok::cyno_mist()),
-                    ShelfKind::Text => (Icon::Clipboard, tok::cyno_violet_hi()),
+            for (idx, item) in state.shelf_items.iter().take(24).enumerate() {
+                let col = idx % COLS;
+                let row = idx / COLS;
+                // Only the newly dropped item animates in. Existing tiles stay
+                // fully opaque so adding a 5th item just extends the grid down.
+                let (fx_y, fx_a) = if state.are_animations_active() {
+                    (
+                        state.shelf_fx.buoyancy_offset(item.id, now),
+                        state.shelf_fx.row_entry_alpha(item.id, now),
+                    )
+                } else {
+                    (0.0, 1.0)
                 };
-                icons::draw(p, ic, item_x + 10.0, item_y + 6.5 + dy, 13.0, ic_col);
+                let tile_sc = (0.96 + 0.04 * fx_a) * (0.985 + 0.015 * appear_e);
+                p.global_alpha = prev_alpha * fx_a * (0.9 + 0.1 * appear_e);
+                let tx = start_x + (col as f32) * (tile_w + gap);
+                let ty = grid_y + (row as f32) * (tile_h + gap) + fx_y
+                    + (1.0 - appear_e) * 10.0;
+                p.push_scale_about(tx + tile_w * 0.5, ty + tile_h * 0.5, tile_sc);
+                Self::draw_shelf_bento_tile(p, item, tx, ty, tile_w, tile_h, false);
+                p.pop_scale_transform();
+            }
+            if clip_grid {
+                p.pop_rect_clip();
+            }
+        }
 
-                let clip_snippet = p.ellipsize_cow(&item.label, 11.0, Weight::Regular, row_w - 44.0);
-                p.text(
-                    &clip_snippet,
-                    item_x + 30.0,
-                    item_y + 17.0 + dy,
-                    11.0,
-                    Weight::Regular,
-                    tok::text1(),
-                );
-                p.hit(
-                    item_x,
-                    item_y,
-                    row_w,
-                    item_h,
-                    Action::ActivateShelfItem(real_idx),
-                );
+        p.global_alpha = prev_alpha * card_alpha;
+        Self::draw_shelf_liquid_fx(p, state, margin_x, card_y, card_w, card_h, 22.0);
+        p.global_alpha = prev_alpha;
+    }
 
-                let del_x = item_x + row_w + 8.0;
-                let del_ht = p.hot_t(del_x, item_y, del_w, item_h);
-                p.tactile_surface_pill_t(del_x, item_y, del_w, item_h, 7.5, del_ht, None);
-                if del_ht > 0.02 {
-                    p.rrect(
-                        del_x,
-                        item_y - 0.55 * del_ht,
-                        del_w,
-                        item_h,
-                        7.5,
-                        fade(rgba(220, 38, 38, 195), del_ht),
+    /// Renders an individual Bento Shelf Tile (Hero Image Tile with real decoded WIC/SVG thumbnail,
+    /// Multi-line Text Snippet Tile with `...`, Domain/Path URL Tile, or Extension File Tile).
+    pub(super) fn draw_shelf_bento_tile(
+        p: &mut PainterD2D,
+        item: &crate::models::ShelfItem,
+        tx: f32,
+        ty: f32,
+        tw: f32,
+        th: f32,
+        is_hero: bool,
+    ) {
+        let del_w = 22.0;
+        let del_h = 22.0;
+        let act_w = (tw - del_w - 4.0).max(24.0);
+        let tile_ht = p.hot_t(tx, ty, act_w, th);
+        let dy = -1.2 * tile_ht;
+        let r = 13.0;
+
+        p.button_pill_variant(
+            tx,
+            ty + dy,
+            tw,
+            th,
+            r,
+            tile_ht,
+            ButtonVariant::PrimaryOutline,
+        );
+
+        let badge = item.badge_label();
+
+        if item.is_image() {
+            // 1. Live Image Thumbnail (WIC / SVG) or Procedural Vector Preview Backdrop
+            let pad = 2.0;
+            let ix = tx + pad;
+            let iy = ty + pad + dy;
+            let iw = (tw - pad * 2.0).max(8.0);
+            let ih = (th - pad * 2.0).max(8.0);
+            let ir = (r - 1.5).max(6.0);
+
+            let drew_real = p.draw_shelf_thumbnail(&item.payload, ix, iy, iw, ih, ir);
+            if !drew_real && p.prepare_rrect_clip(ix, iy, iw, ih, ir) {
+                // Fallback procedural glass artwork preview when path is synthetic/in-memory
+                p.rrect_vertical_gradient(
+                    ix,
+                    iy,
+                    iw,
+                    ih,
+                    ir,
+                    rgba(58, 32, 112, 165),
+                    rgba(22, 14, 48, 210),
+                );
+                p.radial_glow(
+                    ix + iw * 0.72,
+                    iy + ih * 0.32,
+                    iw.min(ih) * 0.45,
+                    fade(tok::gold_champagne(), 0.42),
+                    BlendMode::Plus,
+                    true,
+                );
+                p.circle(
+                    ix + iw * 0.74,
+                    iy + ih * 0.30,
+                    if is_hero { 9.0 } else { 6.5 },
+                    fade(tok::gold_champagne(), 0.85),
+                );
+                // Vector mountain silhouette
+                let mut m1 = PathBuilder::new();
+                m1.move_to(ix, iy + ih);
+                m1.line_to(ix + iw * 0.36, iy + ih * 0.44);
+                m1.line_to(ix + iw * 0.68, iy + ih * 0.76);
+                m1.line_to(ix + iw * 0.84, iy + ih * 0.54);
+                m1.line_to(ix + iw, iy + ih * 0.72);
+                m1.line_to(ix + iw, iy + ih);
+                m1.close();
+                if let Some(path) = m1.finish() {
+                    p.fill_path(&path, rgba(139, 92, 246, 95));
+                }
+                p.pop_clip();
+            }
+
+            // Bottom dark glass scrim for caption + format pill badge legibility
+            if p.prepare_rrect_clip(ix, iy, iw, ih, ir) {
+                let scrim_h = if is_hero { 30.0 } else { 26.0 };
+                let scrim_y = iy + ih - scrim_h;
+                p.rrect_vertical_gradient(
+                    ix,
+                    scrim_y,
+                    iw,
+                    scrim_h,
+                    0.0,
+                    rgba(10, 8, 22, 20),
+                    rgba(10, 8, 22, 218),
+                );
+                p.pop_clip();
+            }
+
+            // Format Badge Pill (PNG / JPG / SVG) in Brushed Metallic Gold
+            let bw = (p.measure(&badge, 8.2, Weight::Bold) + 12.0).clamp(28.0, 44.0);
+            let bx = tx + 8.0;
+            let by = ty + th - 22.0 + dy;
+            p.rrect(bx, by, bw, 15.0, 5.0, rgba(20, 14, 38, 210));
+            p.rrect_stroke(bx, by, bw, 15.0, 5.0, 0.8, fade(tok::gold_champagne(), 0.75));
+            p.text_center(
+                &badge,
+                bx + bw * 0.5,
+                by + 10.6,
+                8.0,
+                Weight::Bold,
+                tok::gold_champagne(),
+            );
+
+            // Filename caption with `...` truncation
+            let cap_x = bx + bw + 6.0;
+            let cap_max_w = (tw - (cap_x - tx) - 8.0).max(28.0);
+            let short_lbl = p.ellipsize_cow(&item.label, 9.6, Weight::Semibold, cap_max_w);
+            p.text_shadow(
+                &short_lbl,
+                cap_x,
+                by + 11.2,
+                9.6,
+                Weight::Semibold,
+                tok::text1(),
+            );
+        } else {
+            // Top micro-header: Icon + Format Badge Pill
+            let (ic, ic_col, badge_col) = match item.kind {
+                ShelfKind::Text => (Icon::Clipboard, tok::cyno_violet_hi(), tok::text2()),
+                ShelfKind::Url => (Icon::AppBrowser, tok::amber_glow(), tok::gold_champagne()),
+                ShelfKind::File | ShelfKind::Image => (Icon::File, tok::cyno_mist(), tok::cyno_violet_hi()),
+            };
+            icons::draw(p, ic, tx + 10.0, ty + 9.0 + dy, 12.0, ic_col);
+
+            let bw = (p.measure(&badge, 8.0, Weight::Bold) + 10.0).clamp(28.0, 46.0);
+            let bx = tx + 26.0;
+            let by = ty + 7.5 + dy;
+            p.rrect(bx, by, bw, 14.5, 4.5, rgba(255, 255, 255, 14));
+            p.text_center(&badge, bx + bw * 0.5, by + 10.2, 7.8, Weight::Bold, badge_col);
+
+            let content_x = tx + 10.0;
+            let content_w = (tw - 20.0).max(32.0);
+
+            match item.kind {
+                ShelfKind::Text => {
+                    // Multi-line text snippet preview with "..." truncation
+                    let clean: String = item
+                        .payload
+                        .split_whitespace()
+                        .collect::<Vec<_>>()
+                        .join(" ");
+                    let src_txt = if clean.is_empty() {
+                        item.label.trim()
+                    } else {
+                        clean.as_str()
+                    };
+                    let max_lines = if th >= 82.0 { 3 } else { 2 };
+                    let font_sz = 9.6;
+                    let line_step = 13.0;
+                    let raw_lines = p.wrap_lines(src_txt, font_sz, Weight::Regular, content_w);
+                    let start_y = ty + 36.5 + dy;
+
+                    for i in 0..raw_lines.len().min(max_lines) {
+                        let is_last = i + 1 == max_lines && raw_lines.len() > max_lines;
+                        let line_str = if is_last {
+                            let with_dots = format!("{}...", raw_lines[i].trim_end_matches('.'));
+                            p.ellipsize_cow(&with_dots, font_sz, Weight::Regular, content_w)
+                                .into_owned()
+                        } else if p.measure(&raw_lines[i], font_sz, Weight::Regular) > content_w {
+                            p.ellipsize_cow(&raw_lines[i], font_sz, Weight::Regular, content_w)
+                                .into_owned()
+                        } else {
+                            raw_lines[i].clone()
+                        };
+                        p.text(
+                            &line_str,
+                            content_x,
+                            start_y + (i as f32) * line_step,
+                            font_sz,
+                            if i == 0 { Weight::Semibold } else { Weight::Regular },
+                            if i == 0 { tok::text1() } else { tok::text2() },
+                        );
+                    }
+                }
+                ShelfKind::Url => {
+                    let (host, path_part) = item.url_host_and_path();
+                    let host_ell = p.ellipsize_cow(&host, 10.4, Weight::Bold, content_w);
+                    p.text(
+                        &host_ell,
+                        content_x,
+                        ty + 39.0 + dy,
+                        10.4,
+                        Weight::Bold,
+                        tok::text1(),
+                    );
+                    let path_ell = p.ellipsize_cow(&path_part, 9.2, Weight::Regular, content_w);
+                    p.text(
+                        &path_ell,
+                        content_x,
+                        ty + 54.0 + dy,
+                        9.2,
+                        Weight::Regular,
+                        tok::text2(),
                     );
                 }
+                ShelfKind::File | ShelfKind::Image => {
+                    let max_lines = if th >= 82.0 { 2 } else { 1 };
+                    let raw_lines = p.wrap_lines(&item.label, 10.0, Weight::Semibold, content_w);
+                    let start_y = ty + 40.0 + dy;
+                    for i in 0..raw_lines.len().min(max_lines) {
+                        let is_last = i + 1 == max_lines && raw_lines.len() > max_lines;
+                        let line_str = if is_last {
+                            let with_dots = format!("{}...", raw_lines[i]);
+                            p.ellipsize_cow(&with_dots, 10.0, Weight::Semibold, content_w)
+                                .into_owned()
+                        } else {
+                            p.ellipsize_cow(&raw_lines[i], 10.0, Weight::Semibold, content_w)
+                                .into_owned()
+                        };
+                        p.text(
+                            &line_str,
+                            content_x,
+                            start_y + (i as f32) * 13.5,
+                            10.0,
+                            Weight::Semibold,
+                            tok::text1(),
+                        );
+                    }
+                }
+            }
+        }
+
+        // Non-overlapping hitboxes: Activate on tile body, Delete on top-right `Ã—` pill
+        p.hit(
+            tx,
+            ty,
+            act_w,
+            th,
+            Action::ActivateShelfItem(item.id),
+        );
+
+        let del_x = tx + tw - del_w - 3.0;
+        let del_y = ty + 3.0;
+        let del_ht = p.hot_t(del_x, del_y, del_w, del_h);
+        if item.is_image() {
+            p.rrect(
+                del_x,
+                del_y + dy,
+                del_w,
+                del_h,
+                11.0,
+                rgba(12, 10, 26, lerp(145.0, 215.0, del_ht) as u8),
+            );
+        } else {
+            p.button_pill_variant(
+                del_x,
+                del_y + dy,
+                del_w,
+                del_h,
+                11.0,
+                del_ht,
+                ButtonVariant::TextOnly,
+            );
+        }
+        icons::draw(
+            p,
+            Icon::Close,
+            del_x + 6.0,
+            del_y + 6.0 + dy,
+            10.0,
+            lerp_color(tok::text2(), tok::text1(), del_ht),
+        );
+        p.hit(
+            del_x,
+            del_y,
+            del_w + 3.0,
+            del_h + 4.0,
+            Action::DeleteShelfItem(item.id),
+        );
+    }
+
+    // â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+    // 8. QUICK CAPTURE VIEW (Lazyshot-style Instant Desktop/Window PNG + Clipboard)
+    // â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+    pub(super) fn draw_shelf_liquid_fx(
+        p: &mut PainterD2D,
+        state: &AppState,
+        card_x: f32,
+        card_y: f32,
+        card_w: f32,
+        card_h: f32,
+        radius: f32,
+    ) {
+        let now = std::time::Instant::now();
+        let hover_t = state.shelf_fx.drag_hover_t;
+        let plop_t = if state.are_animations_active() {
+            state
+                .shelf_fx
+                .plop_started_at
+                .map(|s| now.saturating_duration_since(s).as_secs_f32())
+                .filter(|&t| t < crate::models::LIQUID_PLOP_DURATION_SECS)
+        } else {
+            None
+        };
+        if hover_t <= 0.005 && plop_t.is_none() {
+            return;
+        }
+
+        let clipped = p.prepare_rrect_mask(card_x, card_y, card_w, card_h, radius);
+
+        // 1. Drag-over subtle cursor radial lens (MOTION_SYSTEM.md Â§2.2: rgba(216,180,254,0.14))
+        if hover_t > 0.005 {
+            let cx = state
+                .shelf_fx
+                .drag_cursor_smooth
+                .0
+                .clamp(card_x + 16.0, card_x + card_w - 16.0);
+            let cy = state
+                .shelf_fx
+                .drag_cursor_smooth
+                .1
+                .clamp(card_y + 16.0, card_y + card_h - 16.0);
+            p.radial_glow(
+                cx,
+                cy,
+                84.0,
+                fade(rgba(216, 180, 254, 36), hover_t),
+                BlendMode::Plus,
+                false,
+            );
+            if hover_t > 0.25 {
+                let badge_w = 112.0;
+                let badge_h = 22.0;
+                let bx = card_x + (card_w - badge_w) * 0.5;
+                let by = card_y + card_h - badge_h - 10.0;
+                p.button_pill_variant(
+                    bx,
+                    by,
+                    badge_w,
+                    badge_h,
+                    11.0,
+                    hover_t * 0.4,
+                    ButtonVariant::PrimaryOutline,
+                );
                 icons::draw(
                     p,
-                    Icon::Close,
-                    del_x + 7.0,
-                    item_y + 7.0 - 0.55 * del_ht,
-                    12.0,
-                    lerp_color(tok::text2(), tok::text1(), del_ht),
+                    Icon::Droplet,
+                    bx + 10.0,
+                    by + 5.0,
+                    11.5,
+                    fade(tok::amber_glow(), hover_t),
                 );
-                p.hit(
-                    del_x,
-                    item_y,
-                    del_w,
-                    item_h,
-                    Action::DeleteShelfItem(real_idx),
+                p.text(
+                    "Drop to Shelf",
+                    bx + 26.0,
+                    by + 14.5,
+                    10.0,
+                    Weight::Semibold,
+                    fade(tok::text1(), hover_t),
                 );
             }
         }
-    }
 
-    // ─────────────────────────────────────────────────────────────────────────────
-    // 8. QUICK CAPTURE VIEW (Lazyshot-style Instant Desktop/Window PNG + Clipboard)
-    // ─────────────────────────────────────────────────────────────────────────────
-    pub(super) fn draw_capture_view(p: &mut PainterD2D, state: &AppState, w: f32, card_y: f32) {
-        let margin_x = 20.0;
-        let card_h = 154.0;
-        let gap = 14.0;
-        let left_w = 242.0;
-        let right_x = margin_x + left_w + gap;
-        let right_w = w - (margin_x * 2.0) - left_w - gap;
-
-        // Left Card: Instant Capture Triggers
-        p.elevated_card(
-            margin_x,
-            card_y,
-            left_w,
-            card_h,
-            16.0,
-            Some((left_w * 0.5, 36.0, 75.0, tok::cyno_violet())),
-        );
-        icons::draw(
-            p,
-            Icon::Video,
-            margin_x + 16.0,
-            card_y + 16.0,
-            18.0,
-            tok::cyno_violet_hi(),
-        );
-        p.text(
-            "Screen Snapshot",
-            margin_x + 42.0,
-            card_y + 27.5,
-            13.0,
-            Weight::Bold,
-            tok::text1(),
-        );
-        let cap_sub = p.ellipsize_cow(
-            "Saves PNG & copies (Ctrl+Shift+S)",
-            9.8,
-            Weight::Regular,
-            left_w - 32.0,
-        );
-        p.text(
-            &cap_sub,
-            margin_x + 16.0,
-            card_y + 45.0,
-            9.8,
-            Weight::Regular,
-            tok::text2(),
-        );
-
-        let btn_w = left_w - 32.0;
-        let b1_x = margin_x + 16.0;
-        let b1_y = card_y + 62.0;
-        let b1_h = 36.0;
-        let b1_ht = p.hot_t(b1_x, b1_y, btn_w, b1_h);
-        p.luminous_pill_button_t(
-            b1_x,
-            b1_y,
-            btn_w,
-            b1_h,
-            11.0,
-            tok::cyno_indigo(),
-            tok::cyno_violet(),
-            tok::cyno_orchid(),
-            b1_ht,
-        );
-        p.text_center_shadow(
-            "Capture Full Screen",
-            b1_x + btn_w / 2.0,
-            b1_y + 22.0 - 0.8 * b1_ht,
-            12.0,
-            Weight::Bold,
-            tok::text1(),
-        );
-        p.hit(b1_x, b1_y, btn_w, b1_h, Action::CaptureScreen);
-
-        let b2_y = card_y + 108.0;
-        let b2_h = 30.0;
-        let b2_ht = p.hot_t(b1_x, b2_y, btn_w, b2_h);
-        p.tactile_surface_pill_t(b1_x, b2_y, btn_w, b2_h, 9.5, b2_ht, None);
-        p.text_center(
-            "Capture Active Window",
-            b1_x + btn_w / 2.0,
-            b2_y + 19.0 - 0.55 * b2_ht,
-            11.0,
-            Weight::Semibold,
-            lerp_color(tok::text_soft(), tok::text1(), b2_ht),
-        );
-        p.hit(b1_x, b2_y, btn_w, b2_h, Action::CaptureWindow);
-
-        // Right Card: Latest Capture Status & Folder Launcher
-        p.elevated_card(
-            right_x,
-            card_y,
-            right_w,
-            card_h,
-            16.0,
-            Some((right_w - 30.0, 24.0, 75.0, tok::cyno_orchid())),
-        );
-        p.dot_matrix(
-            right_x + right_w - 44.0,
-            card_y + 14.0,
-            5,
-            3,
-            5.0,
-            rgba(255, 255, 255, 30),
-        );
-        icons::draw(
-            p,
-            Icon::Folder,
-            right_x + 16.0,
-            card_y + 16.0,
-            18.0,
-            tok::cyno_mist(),
-        );
-        p.text(
-            "Capture Output",
-            right_x + 42.0,
-            card_y + 27.5,
-            13.0,
-            Weight::Bold,
-            tok::text1(),
-        );
-
-        if let Some(ref _path) = state.capture.last_path {
-            let fname = p.ellipsize_cow(
-                &state.capture.last_filename,
-                11.5,
-                Weight::Semibold,
-                right_w - 32.0,
-            );
-            p.text(
-                &fname,
-                right_x + 16.0,
-                card_y + 64.0,
-                11.5,
-                Weight::Semibold,
-                tok::text1(),
-            );
-            let dims = format!(
-                "{} • {}",
-                state.capture.last_dims,
-                if state.capture.clipboard_ok {
-                    "Copied to Clipboard"
-                } else {
-                    "Saved to Disk"
-                }
-            );
-            p.text(
-                &dims,
-                right_x + 16.0,
-                card_y + 82.0,
-                10.5,
-                Weight::Regular,
-                tok::cyno_violet_hi(),
-            );
-        } else {
-            p.text(
-                "No capture taken in this session",
-                right_x + 16.0,
-                card_y + 64.0,
-                11.5,
-                Weight::Semibold,
-                tok::text1(),
-            );
-            p.text(
-                "Output: Pictures\\CyNotch\\*.png",
-                right_x + 16.0,
-                card_y + 82.0,
-                10.5,
-                Weight::Regular,
-                tok::text2(),
-            );
+        // 2. Raycast Tactile drop impact: single crisp 380ms glass refraction hairline ring
+        //    (r: 6px -> 84px, ease-out cubic, alpha -> 0; zero sparks, zero arcs, zero particles)
+        if let Some(t) = plop_t {
+            let ox = state
+                .shelf_fx
+                .plop_origin
+                .0
+                .clamp(card_x + 20.0, card_x + card_w - 20.0);
+            let oy = state
+                .shelf_fx
+                .plop_origin
+                .1
+                .clamp(card_y + 20.0, card_y + card_h - 20.0);
+            let u = (t / crate::models::LIQUID_PLOP_DURATION_SECS).clamp(0.0, 1.0);
+            let ease = crate::models::ease_out_cubic(u);
+            let radius_px = 6.0 + ease * 78.0;
+            let alpha = (1.0 - u).powf(1.6);
+            let stroke_w = (1.25 - u * 0.65).max(0.55);
+            if alpha > 0.01 {
+                p.circle_stroke(
+                    ox,
+                    oy,
+                    radius_px,
+                    stroke_w,
+                    fade(rgba(233, 213, 255, 165), alpha),
+                );
+            }
         }
 
-        let open_w = right_w - 32.0;
-        let open_x = right_x + 16.0;
-        let open_y = card_y + 108.0;
-        let open_h = 30.0;
-        let open_ht = p.hot_t(open_x, open_y, open_w, open_h);
-        p.tactile_surface_pill_t(
-            open_x,
-            open_y,
-            open_w,
-            open_h,
-            9.5,
-            open_ht,
-            Some(tok::cyno_violet()),
-        );
-        p.text_center(
-            "Open Pictures\\CyNotch",
-            open_x + open_w / 2.0,
-            open_y + 19.0 - 0.55 * open_ht,
-            11.0,
-            Weight::Bold,
-            tok::text1(),
-        );
-        p.hit(open_x, open_y, open_w, open_h, Action::OpenCaptureFolder);
+        if clipped {
+            p.pop_clip();
+        }
     }
 
-    // ─────────────────────────────────────────────────────────────────────────────
-    // 9. INLINE SETTINGS VIEW (Quick Controls + Launcher to Advanced Window)
-    // ─────────────────────────────────────────────────────────────────────────────
     pub(super) fn draw_settings_view(p: &mut PainterD2D, state: &AppState, w: f32, card_y: f32) {
         let smooth = state.micro_interactions;
-        let margin_x = 20.0;
-        let card_h = 154.0;
-        let gap = 14.0;
+        let margin_x = 24.0;
+        let card_h = 200.0;
+        let gap = 16.0;
         let card_w = (w - (margin_x * 2.0) - gap) / 2.0;
 
         let left_x = margin_x;
         let right_x = margin_x + card_w + gap;
+        let prev_alpha = p.global_alpha;
+
+        let (dy0, a0, sc0) = Self::mode_stagger(state, 0);
+        p.global_alpha = prev_alpha * a0;
+        let c0_y = card_y + dy0;
+        p.push_scale_about(left_x + card_w * 0.5, c0_y + card_h * 0.5, sc0);
 
         p.elevated_card(
             left_x,
-            card_y,
+            c0_y,
             card_w,
             card_h,
             16.0,
@@ -2616,14 +1794,14 @@ impl Renderer {
             p,
             Icon::Settings,
             left_x + 16.0,
-            card_y + 16.0,
+            c0_y + 16.0,
             18.0,
             tok::cyno_violet_hi(),
         );
         p.text(
             "System Integration",
             left_x + 42.0,
-            card_y + 27.5,
+            c0_y + 27.5,
             13.0,
             Weight::Bold,
             tok::text1(),
@@ -2631,13 +1809,13 @@ impl Renderer {
         p.text(
             "Startup, chime & global hotkeys",
             left_x + 42.0,
-            card_y + 42.0,
+            c0_y + 42.0,
             10.0,
             Weight::Regular,
             tok::text2(),
         );
 
-        let r1_y = card_y + 58.0;
+        let r1_y = c0_y + 58.0;
         let row_hit_w = card_w - 36.0;
         p.text(
             "Launch on Startup",
@@ -2661,7 +1839,7 @@ impl Renderer {
         p.draw_toggle_switch(sw1_x, r1_y, sw_w, sw_h, st1, sw1_ht);
         p.hit(left_x + 18.0, r1_y, row_hit_w, sw_h, Action::ToggleAutostart);
 
-        let r2_y = card_y + 88.0;
+        let r2_y = c0_y + 88.0;
         p.text(
             "Action Audio",
             left_x + 18.0,
@@ -2682,7 +1860,7 @@ impl Renderer {
         p.draw_toggle_switch(sw2_x, r2_y, sw_w, sw_h, st2, sw2_ht);
         p.hit(left_x + 18.0, r2_y, row_hit_w, sw_h, Action::ToggleChime);
 
-        let r3_y = card_y + 118.0;
+        let r3_y = c0_y + 118.0;
         p.text(
             "Hotkeys (C/M/S)",
             left_x + 18.0,
@@ -2706,18 +1884,23 @@ impl Renderer {
             rgba(255, 255, 255, 20),
         );
         p.text_center(
-            "Ctrl+Shift+C/M/S",
+            "Ctrl+Alt+C/M/S",
             badge_x + badge_w / 2.0,
             r3_y + 14.8,
             9.2,
             Weight::Semibold,
             tok::cyno_violet_hi(),
         );
+        p.pop_scale_transform();
 
         // Right Card
+        let (dy1, a1, sc1) = Self::mode_stagger(state, 1);
+        p.global_alpha = prev_alpha * a1;
+        let c1_y = card_y + dy1;
+        p.push_scale_about(right_x + card_w * 0.5, c1_y + card_h * 0.5, sc1);
         p.elevated_card(
             right_x,
-            card_y,
+            c1_y,
             card_w,
             card_h,
             16.0,
@@ -2728,14 +1911,14 @@ impl Renderer {
             p,
             Icon::Settings,
             right_x + 16.0,
-            card_y + 16.0,
+            c1_y + 16.0,
             18.0,
             tok::cyno_violet_hi(),
         );
         p.text(
             "Engine & Lifecycle",
             right_x + 42.0,
-            card_y + 27.5,
+            c1_y + 27.5,
             13.0,
             Weight::Bold,
             tok::text1(),
@@ -2743,22 +1926,24 @@ impl Renderer {
         p.text(
             "Preferences, positioning & exit",
             right_x + 42.0,
-            card_y + 42.0,
+            c1_y + 42.0,
             10.0,
             Weight::Regular,
             tok::text2(),
         );
 
+        let rr1_y = c1_y + 58.0;
+        let rr2_y = c1_y + 88.0;
         let sw_right_x = right_x + card_w - sw_w - 18.0;
         p.text(
             "Frosted Glass",
             right_x + 18.0,
-            r1_y + 15.0,
+            rr1_y + 15.0,
             11.5,
             Weight::Regular,
             tok::text1(),
         );
-        let sw3_ht = p.hot_t(right_x + 18.0, r1_y, row_hit_w, sw_h);
+        let sw3_ht = p.hot_t(right_x + 18.0, rr1_y, row_hit_w, sw_h);
         let st3 = if smooth {
             state.switch_t[ToggleId::FrostedGlass as usize]
         } else if state.frosted_glass_enabled {
@@ -2766,18 +1951,18 @@ impl Renderer {
         } else {
             0.0
         };
-        p.draw_toggle_switch(sw_right_x, r1_y, sw_w, sw_h, st3, sw3_ht);
-        p.hit(right_x + 18.0, r1_y, row_hit_w, sw_h, Action::ToggleFrostedGlass);
+        p.draw_toggle_switch(sw_right_x, rr1_y, sw_w, sw_h, st3, sw3_ht);
+        p.hit(right_x + 18.0, rr1_y, row_hit_w, sw_h, Action::ToggleFrostedGlass);
 
         p.text(
             "Minimize Island",
             right_x + 18.0,
-            r2_y + 15.0,
+            rr2_y + 15.0,
             11.5,
             Weight::Regular,
             tok::text1(),
         );
-        let sw4_ht = p.hot_t(right_x + 18.0, r2_y, row_hit_w, sw_h);
+        let sw4_ht = p.hot_t(right_x + 18.0, rr2_y, row_hit_w, sw_h);
         let st4 = if smooth {
             state.switch_t[ToggleId::MinimizedIsland as usize]
         } else if state.minimized_island {
@@ -2785,16 +1970,16 @@ impl Renderer {
         } else {
             0.0
         };
-        p.draw_toggle_switch(sw_right_x, r2_y, sw_w, sw_h, st4, sw4_ht);
+        p.draw_toggle_switch(sw_right_x, rr2_y, sw_w, sw_h, st4, sw4_ht);
         p.hit(
             right_x + 18.0,
-            r2_y,
+            rr2_y,
             row_hit_w,
             sw_h,
             Action::ToggleMinimizedIsland,
         );
 
-        let bot_y = card_y + 114.0;
+        let bot_y = c1_y + 114.0;
         let bot_h = 28.0;
         let quit_w = 84.0;
         let spec_w = card_w - 36.0 - quit_w - 8.0;
@@ -2845,9 +2030,11 @@ impl Renderer {
             tok::text1(),
         );
         p.hit(quit_x, bot_y, quit_w, bot_h, Action::Quit);
+        p.pop_scale_transform();
+        p.global_alpha = prev_alpha;
     }
 
-    // ─────────────────────────────────────────────────────────────────────────────
-    // VERTICAL EXPANDED SHELL & 10 STACKED CARD VIEWS (316×480 Left/Right edge)
-    // ─────────────────────────────────────────────────────────────────────────────
+    // â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+    // VERTICAL EXPANDED SHELL & 10 STACKED CARD VIEWS (316Ã—480 Left/Right edge)
+    // â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 }

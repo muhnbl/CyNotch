@@ -1,17 +1,16 @@
 mod mascot;
 mod notifications;
-mod vertical;
 mod views;
 
 use crate::font_d2d::{DWriteTextCache, Weight};
 use crate::icons::{self, Icon};
 use crate::models::{
-    Action, AppState, IdleMetric, LyricSize, LyricStyle, MascotMood, NotchMode, NotchPlacement,
+    Action, AppState, IdleMetric, MascotMood, NotchMode, NotchPlacement,
     NotificationKind, ShelfKind, ToggleId, TypeScale,
 };
 use crate::painter_d2d::Hit;
-use crate::painter_d2d::{BlendMode, Color, D2DResourceCache, PainterD2D, StackStr, fade, lerp_color, rgba, tok};
-use crate::telemetry::{format_speed_long, format_speed_short};
+use crate::painter_d2d::{BlendMode, ButtonVariant, Color, D2DResourceCache, PainterD2D, StackStr, fade, lerp_color, rgba, tok};
+use crate::telemetry::format_speed_short;
 use crate::localtime::{format_hhmm, local_now};
 use std::borrow::Cow;
 use std::fmt::Write as _;
@@ -22,21 +21,27 @@ pub struct Renderer {
     pub fonts: DWriteTextCache,
     pub d2d_cache: Option<D2DResourceCache>,
     pub hits: Vec<Hit>,
+    expand_cache_bmp: Option<windows::Win32::Graphics::Direct2D::ID2D1Bitmap1>,
+    expand_cache_size: (u32, u32),
+    expand_cache_key: Option<(NotchMode, bool, u32, u32, bool, TypeScale)>,
 }
 
 impl Renderer {
-    pub fn new(width: u32, height: u32) -> Self {
+    pub fn new(width: u32, height: u32) -> windows::core::Result<Self> {
         let w = width.max(1);
         let h = height.max(1);
-        let fonts = DWriteTextCache::new().expect("DWrite");
-        Self {
+        let fonts = DWriteTextCache::new()?;
+        Ok(Self {
             width: w,
             height: h,
             fonts,
             d2d_cache: None,
             hits: Vec::new(),
-        }
-            }
+            expand_cache_bmp: None,
+            expand_cache_size: (0, 0),
+            expand_cache_key: None,
+        })
+    }
 
             pub fn resize(&mut self, width: u32, height: u32) {
                 let w = width.max(1);
@@ -44,7 +49,6 @@ impl Renderer {
                 if self.width != w || self.height != h {
                     self.width = w;
                     self.height = h;
-                    self.d2d_cache = None;
                     self.hits.clear();
                 }
             }
@@ -52,10 +56,173 @@ impl Renderer {
             /// Drop cached expanded/chrome pixmaps when idle to free heap memory.
             pub fn trim_idle_caches(&mut self) {
                 self.fonts.trim();
+                self.expand_cache_bmp = None;
+                self.expand_cache_size = (0, 0);
+                self.expand_cache_key = None;
             }
 
             pub fn clear_d2d_cache(&mut self) {
                 self.d2d_cache = None;
+                self.expand_cache_bmp = None;
+                self.expand_cache_size = (0, 0);
+                self.expand_cache_key = None;
+            }
+
+            /// Pre-renders the settled expanded panel once into an offscreen GPU
+            /// `ID2D1Bitmap1` before `BeginDraw()`, so every intermediate frame of
+            /// expand/close scales a single textured quad (`~0.1ms`) instead of
+            /// re-rasterizing DirectWrite glyphs at 50 fractional scales (`~10–25ms`).
+            ///
+            /// Must be called OUTSIDE `ctx.BeginDraw()..ctx.EndDraw()`.
+            pub fn prepare_expand_cache(
+                &mut self,
+                ctx: &windows::Win32::Graphics::Direct2D::ID2D1DeviceContext,
+                state: &AppState,
+            ) {
+                let w = state.current_width;
+                let h = state.current_height;
+                let exp_w = state.expanded_width();
+                let exp_h = state.expanded_height();
+                let settled_expanded =
+                    state.is_hovered && (w - exp_w).abs() < 0.5 && (h - exp_h).abs() < 0.5;
+                let t = if settled_expanded {
+                    1.0
+                } else {
+                    state.anim_expand_t.clamp(0.0, 1.0)
+                };
+                let height_only_morph = state.is_hovered
+                    && t > 0.92
+                    && (w - exp_w).abs() < 4.0
+                    && h >= (AppState::EXPANDED_HEIGHT * state.expanded_scale() - 4.0);
+
+                // Pre-warm the offscreen snapshot once during hover dwell (`hover_dwell_t >= 0.25`)
+                // so VRAM is already warm when the expand spring fires (zero mid-animation hitch).
+                let prewarm_during_dwell =
+                    state.is_hover_pending && !state.is_hovered && state.hover_dwell_t >= 0.25;
+
+                // Invalidate only when fully collapsed (outside hover dwell) so closing
+                // reuses the already-warm VRAM snapshot with 0ms frame-0 stall, while the
+                // next hover-expand captures fresh RAM/song/shelf data.
+                if t <= 0.005 && !prewarm_during_dwell {
+                    self.expand_cache_key = None;
+                    return;
+                }
+                if settled_expanded || height_only_morph {
+                    return;
+                }
+                if t < 0.01 && !prewarm_during_dwell {
+                    return;
+                }
+
+                let bw = exp_w.ceil().max(1.0) as u32;
+                let bh = exp_h.ceil().max(1.0) as u32;
+                let frosted = state.is_frosted_active();
+                let key = (
+                    state.mode,
+                    state.show_notif_history,
+                    bw,
+                    bh,
+                    frosted,
+                    state.type_scale,
+                );
+                if self.expand_cache_key == Some(key) && self.expand_cache_bmp.is_some() {
+                    return;
+                }
+
+                if self.d2d_cache.is_none() {
+                    match D2DResourceCache::new(ctx) {
+                        Ok(c) => self.d2d_cache = Some(c),
+                        Err(_) => return,
+                    }
+                }
+                if self.expand_cache_bmp.is_none() || self.expand_cache_size != (bw, bh) {
+                    use windows::Win32::Graphics::Direct2D::Common::{
+                        D2D1_ALPHA_MODE_PREMULTIPLIED, D2D1_PIXEL_FORMAT, D2D_SIZE_U,
+                    };
+                    use windows::Win32::Graphics::Direct2D::{
+                        D2D1_BITMAP_OPTIONS_TARGET, D2D1_BITMAP_PROPERTIES1,
+                    };
+                    use windows::Win32::Graphics::Dxgi::Common::DXGI_FORMAT_B8G8R8A8_UNORM;
+                    let props = D2D1_BITMAP_PROPERTIES1 {
+                        pixelFormat: D2D1_PIXEL_FORMAT {
+                            format: DXGI_FORMAT_B8G8R8A8_UNORM,
+                            alphaMode: D2D1_ALPHA_MODE_PREMULTIPLIED,
+                        },
+                        dpiX: 96.0,
+                        dpiY: 96.0,
+                        bitmapOptions: D2D1_BITMAP_OPTIONS_TARGET,
+                        colorContext: std::mem::ManuallyDrop::new(None),
+                    };
+                    match unsafe {
+                        ctx.CreateBitmap(D2D_SIZE_U { width: bw, height: bh }, None, 0, &props)
+                    } {
+                        Ok(bmp) => {
+                            self.expand_cache_bmp = Some(bmp);
+                            self.expand_cache_size = (bw, bh);
+                        }
+                        Err(_) => return,
+                    }
+                }
+
+                let Some(bmp) = self.expand_cache_bmp.as_ref() else {
+                    return;
+                };
+                let Some(cache) = self.d2d_cache.as_mut() else {
+                    return;
+                };
+
+                // Clone minimal state with anim_mode_t = 1.0 so cards are crisp & settled inside the snapshot.
+                let mut snap = state.clone();
+                snap.anim_mode_t = 1.0;
+                snap.anim_expand_t = 1.0;
+
+                let prev_target = unsafe { ctx.GetTarget().ok() };
+                unsafe {
+                    ctx.SetTarget(bmp);
+                    ctx.BeginDraw();
+                    ctx.SetTransform(&windows::Foundation::Numerics::Matrix3x2::identity());
+                    ctx.Clear(Some(&windows::Win32::Graphics::Direct2D::Common::D2D1_COLOR_F {
+                        r: 0.0,
+                        g: 0.0,
+                        b: 0.0,
+                        a: 0.0,
+                    }));
+                }
+
+                let target_s = snap.expanded_scale();
+                let base_w = snap.base_expanded_width();
+                let base_h = snap.base_expanded_height();
+                let mut dummy_hits = Vec::new();
+                let mut p = PainterD2D::new(
+                    ctx,
+                    cache,
+                    &mut self.fonts,
+                    target_s,
+                    0.0,
+                    0.0,
+                    None,
+                    &mut dummy_hits,
+                    false,
+                    1.0,
+                    snap.hover_slots,
+                    snap.micro_interactions,
+                    frosted,
+                    snap.frosted_opacity_pct,
+                    snap.type_scale,
+                );
+                Self::draw_expanded(&mut p, &snap, base_w, base_h, true);
+
+                let end_ok = unsafe { ctx.EndDraw(None, None).is_ok() };
+                unsafe {
+                    if let Some(t_prev) = prev_target.as_ref() {
+                        ctx.SetTarget(t_prev);
+                    } else {
+                        ctx.SetTarget(None);
+                    }
+                }
+                if end_ok {
+                    self.expand_cache_key = Some(key);
+                }
             }
 
             pub fn render_d2d(&mut self, ctx: &windows::Win32::Graphics::Direct2D::ID2D1DeviceContext, state: &AppState, pointer: Option<(f32, f32)>) {
@@ -82,6 +249,13 @@ impl Renderer {
                 let base_h = state.base_expanded_height();
                 let settled_expanded = state.is_hovered && (w - exp_w).abs() < 0.5 && (h - exp_h).abs() < 0.5;
                 let t = if settled_expanded { 1.0 } else { state.anim_expand_t.clamp(0.0, 1.0) };
+                // Already expanded at full width and only extending/retracting vertically
+                // (e.g. Shelf 4<->5 items or 5-item Shelf > another tab): keep dock/header
+                // locked at full scale and top origin (ox, oy) so nothing pops or jumps.
+                let height_only_morph = state.is_hovered
+                    && t > 0.92
+                    && (w - exp_w).abs() < 4.0
+                    && h >= (AppState::EXPANDED_HEIGHT * state.expanded_scale() - 4.0);
                 let (r_tl, r_tr, r_br, r_bl) = state.corner_radii();
 
                 let mut p = PainterD2D::new(
@@ -102,25 +276,73 @@ impl Renderer {
                     state.type_scale,
                 );
 
-                // 1. Volumetric Obsidian Shell (matching v0.2.4.1 exactly: no permanent outer border)
+                // 1. Borderless Volumetric Obsidian Shell (Box 1 only in Music mode so Box 2 & 3 float independently!)
+                let shell_h = if state.is_hovered && state.mode == NotchMode::Music && !state.show_notif_history {
+                    (164.0 * state.expanded_scale()).min(h)
+                } else {
+                    h
+                };
                 let (shell_top, shell_bot) = if frosted {
-                    (
-                        tok::scale_frosted(tok::obsidian_shell_frosted(), state.frosted_alpha_pct()),
-                        tok::scale_frosted(tok::obsidian_deep_frosted(), state.frosted_alpha_pct()),
-                    )
+                    (tok::obsidian_shell_frosted(), tok::obsidian_deep_frosted())
                 } else {
                     (tok::obsidian_shell(), tok::obsidian_deep())
                 };
-                p.rrect_corners4_vertical_gradient(0.0, 0.0, w, h, (r_tl, r_tr, r_br, r_bl), shell_top, shell_bot);
+                p.rrect_corners4_vertical_gradient(0.0, 0.0, w, shell_h, (r_tl, r_tr, r_br, r_bl), shell_top, shell_bot);
 
-                // 2. Internal Atmospheric Aurora Glows (matching v0.2.4.1)
-                let glow_scale = if frosted {
-                    (state.frosted_alpha_pct() as f32 / 68.0).clamp(0.25, 1.0)
-                } else {
-                    1.0
-                };
+                // Exclusive collapsed-capsule hover-dwell sweep: strictly gated to the
+                // unexpanded capsule (`!is_hovered && anim_expand_t <= 0.005`) so it
+                // never bleeds over the expanding/expanded notch panel.
+                // Smooth 0% -> luminous violet wave -> 0% opacity before the right edge.
+                let sweep_heat = state.hover_dwell_t.max(state.hover_afterglow);
+                if !state.is_hovered && state.anim_expand_t <= 0.005 && sweep_heat > 0.005 {
+                    let cap_h = state.idle_height().min(shell_h);
+                    let x_norm = state.hover_sweep_x.clamp(0.0, 1.0);
+                    let in_t = (x_norm / 0.14).clamp(0.0, 1.0);
+                    let fade_in = in_t * in_t * (3.0 - 2.0 * in_t);
+                    let out_t = ((0.98 - x_norm) / 0.34).clamp(0.0, 1.0);
+                    let fade_out = out_t * out_t * (3.0 - 2.0 * out_t);
+                    let decay_mul = if state.is_hover_pending {
+                        1.0
+                    } else {
+                        state.hover_afterglow.clamp(0.0, 1.0)
+                    };
+                    let boost = match state.hover_dwell_speed {
+                        crate::models::HoverDwellSpeed::Quick => 0.90,
+                        crate::models::HoverDwellSpeed::Normal => 1.0,
+                        crate::models::HoverDwellSpeed::Slow => 1.12,
+                    };
+                    let alpha = (fade_in * fade_out * decay_mul * boost).clamp(0.0, 1.0);
+                    if alpha > 0.004
+                        && p.prepare_corners4_clip(0.0, 0.0, w, cap_h, r_tl, r_tr, r_br, r_bl)
+                    {
+                        // Sub-pixel smooth optical wave (no 3px quantization, no hard 2px bar,
+                        // true 0% opacity at both tail and feathered leading edge).
+                        let band_w = (w * 0.42).max(48.0);
+                        let head = x_norm * (w + band_w * 0.18);
+                        let band_x = head - band_w * 0.85;
+
+                        let c_tail = rgba(124, 58, 237, 0);
+                        let c_crest = fade(rgba(192, 152, 255, 148), alpha);
+                        let c_lead = rgba(233, 213, 255, 0);
+                        p.rrect_horizontal_gradient_3stop(
+                            band_x,
+                            0.0,
+                            band_w,
+                            cap_h,
+                            0.0,
+                            c_tail,
+                            c_crest,
+                            c_lead,
+                            0.82,
+                        );
+                        p.pop_clip();
+                    }
+                }
+
+                // 2. Internal Atmospheric Aurora Glows
+                let glow_scale = if frosted { 0.38 } else { 1.0 };
                 if t > 0.05 {
-                    if p.prepare_corners4_clip(0.0, 0.0, w, h, r_tl, r_tr, r_br, r_bl) {
+                    if p.prepare_corners4_clip(0.0, 0.0, w, shell_h, r_tl, r_tr, r_br, r_bl) {
                         p.radial_glow(
                             48.0,
                             24.0,
@@ -131,7 +353,7 @@ impl Renderer {
                         );
                         p.radial_glow(
                             w - 52.0,
-                            h - 10.0,
+                            shell_h - 10.0,
                             116.0,
                             fade(rgba(124, 58, 237, 48), t * glow_scale),
                             BlendMode::SourceOver,
@@ -139,9 +361,9 @@ impl Renderer {
                         );
                         p.elliptical_glow(
                             w * 0.5,
-                            h + 6.0,
+                            shell_h + 6.0,
                             w * 0.56,
-                            (h * 0.36).max(24.0),
+                            (shell_h * 0.36).max(24.0),
                             fade(rgba(168, 85, 247, 34), t * glow_scale),
                             BlendMode::Plus,
                             true,
@@ -215,93 +437,107 @@ impl Renderer {
                     }
                 }
 
-                let show_idle_content = !settled_expanded && t < 0.32;
+                let show_idle_content = !settled_expanded && t < 0.28;
                 if show_idle_content {
-                    let fade_out = ((0.32 - t) / 0.32).clamp(0.0, 1.0);
+                    let fade_out = ((0.28 - t) / 0.28).clamp(0.0, 1.0);
                     if fade_out > 0.02 {
                         p.global_alpha = fade_out;
                         if state.notification.is_some() && w >= 220.0 && h >= 48.0 {
                             let target_bs = state.banner_scale();
-                            let (base_bw, base_bh) = if state.placement.is_vertical() {
-                                (AppState::VERT_BANNER_WIDTH, AppState::VERT_BANNER_HEIGHT)
+                            let (base_bw, base_bh) = (AppState::BANNER_WIDTH, AppState::BANNER_HEIGHT);
+                            let notif_alpha = if state.are_animations_active() {
+                                crate::models::ease_out_cubic(state.anim_notif_t)
                             } else {
-                                (AppState::BANNER_WIDTH, AppState::BANNER_HEIGHT)
+                                1.0
                             };
+                            p.global_alpha = fade_out * notif_alpha.clamp(0.0, 1.0);
                             let bs = (w / base_bw).min(h / base_bh).min(target_bs).max(0.65);
                             p.s = bs;
                             Self::draw_notification_banner(&mut p, state, w / bs, h / bs);
-                        } else if state.placement.is_vertical() {
-                            if state.minimized_island || w < 36.0 || h < 120.0 {
-                                p.type_scale = TypeScale::Compact;
-                                Self::draw_minimized_idle_vertical(&mut p, state, w, h);
-                            } else {
-                                let target_is = state.type_scale.idle_ui_scale();
-                                let is = (w / state.size_preset.idle_width_vertical())
-                                    .min(h / state.size_preset.idle_height_vertical())
-                                    .min(target_is)
-                                    .max(0.75);
-                                p.s = is;
-                                Self::draw_idle_vertical(&mut p, state, w / is, h / is);
-                            }
-                        } else if state.minimized_island || w < 210.0 || h < 32.0 {
+                        } else if state.minimized_island || w < 48.0 || h < 21.0 {
                             p.type_scale = TypeScale::Compact;
                             Self::draw_minimized_idle_capsule(&mut p, state, w, h);
                         } else {
-                            let target_is = state.type_scale.idle_ui_scale();
-                            let is = (w / state.size_preset.idle_width())
-                                .min(h / state.size_preset.idle_height_horizontal())
-                                .min(target_is)
-                                .max(0.75);
+                            let is = state.type_scale.idle_ui_scale();
                             p.s = is;
                             Self::draw_idle_capsule(&mut p, state, w / is, h / is);
                         }
                     }
                 } else {
-                    let fade_in = if settled_expanded { 1.0 } else { ((t - 0.32) / 0.68).clamp(0.0, 1.0) };
+                    let keep_full_chrome = settled_expanded || height_only_morph;
+                    let fade_in = if keep_full_chrome { 1.0 } else { ((t - 0.26) / 0.74).clamp(0.0, 1.0) };
                     if fade_in > 0.01 {
                         p.global_alpha = fade_in;
                         let target_s = state.expanded_scale();
-                        if settled_expanded {
+                        if keep_full_chrome {
                             p.s = target_s;
+                            let draw_h = (h / target_s).max(AppState::EXPANDED_HEIGHT);
+                            Self::draw_expanded(&mut p, state, base_w, draw_h, true);
                         } else {
                             let scale_fit = (w / base_w).min(h / base_h).min(target_s).max(0.15);
-                            p.s = scale_fit;
-                            p.origin_x = ox + (w - base_w * scale_fit) * 0.5;
-                            p.origin_y = oy + (h - base_h * scale_fit) * 0.5;
-                        }
-                        if state.placement.is_vertical() {
-                            Self::draw_expanded_vertical(&mut p, state, base_w, base_h, settled_expanded);
-                        } else {
-                            Self::draw_expanded(&mut p, state, base_w, base_h, settled_expanded);
+                            let dst_ox = ox + (w - base_w * scale_fit) * 0.5;
+                            let dst_oy = oy + (h - base_h * scale_fit) * 0.5;
+                            if self.expand_cache_key.is_some()
+                                && let Some(bmp) = self.expand_cache_bmp.as_ref()
+                            {
+                                // Fast path: blit the pre-rendered settled panel as a single
+                                // GPU-filtered textured quad (~0.08ms, zero DirectWrite work).
+                                let dst_rect = windows::Win32::Graphics::Direct2D::Common::D2D_RECT_F {
+                                    left: dst_ox,
+                                    top: dst_oy,
+                                    right: dst_ox + base_w * scale_fit,
+                                    bottom: dst_oy + base_h * scale_fit,
+                                };
+                                unsafe {
+                                    ctx.DrawBitmap(
+                                        bmp,
+                                        Some(&dst_rect),
+                                        fade_in,
+                                        windows::Win32::Graphics::Direct2D::D2D1_INTERPOLATION_MODE_LINEAR,
+                                        None,
+                                        None,
+                                    );
+                                }
+                            } else {
+                                // Fallback (e.g. snap_d2d or tests without prepare_expand_cache).
+                                p.s = scale_fit;
+                                p.origin_x = dst_ox;
+                                p.origin_y = dst_oy;
+                                Self::draw_expanded(&mut p, state, base_w, base_h, false);
+                            }
                         }
                     }
                 }
+
+                // 3. Opsi A (Wolf Eyes Micro-Reaction Only): capsule shell stays clean & calm (no rim glow or bounce).
+                p.s = 1.0;
+                p.origin_x = ox;
+                p.origin_y = oy;
+                p.global_alpha = 1.0;
+                Self::draw_clipboard_gold_pulse(&mut p, state, w, h, (r_tl, r_tr, r_br, r_bl));
+            }
+
+            pub(super) fn draw_clipboard_gold_pulse(
+                _p: &mut PainterD2D,
+                _state: &AppState,
+                _w: f32,
+                _h: f32,
+                _radii: (f32, f32, f32, f32),
+            ) {
+                // Opsi A: Copy/Paste & Snipping Tool reactions are rendered directly via
+                // the Purple Wolf Eyes predator squint/flash inside the idle capsule.
             }
 
             pub fn compute_origin(state: &AppState, canvas_w: f32, canvas_h: f32) -> (f32, f32) {
                 let ax = state.anim_anchor_x.clamp(0.0, 1.0);
                 let ay = state.anim_anchor_y.clamp(0.0, 1.0);
-                let (base_x, base_y) = match state.placement {
+                match state.placement {
                     NotchPlacement::Top => (((canvas_w - state.current_width) * ax).max(0.0), 0.0),
                     NotchPlacement::Left => (0.0, ((canvas_h - state.current_height) * ay).max(0.0)),
                     NotchPlacement::Right => (
                         (canvas_w - state.current_width).max(0.0),
                         ((canvas_h - state.current_height) * ay).max(0.0),
                     ),
-                };
-                if state.notification.is_some()
-                    && !state.is_hovered
-                    && state.current_width >= 220.0
-                    && state.current_height >= 48.0
-                {
-                    let hidden = 1.0 - state.anim_notif_t.clamp(0.0, 1.0);
-                    match state.placement {
-                        NotchPlacement::Top => (base_x, -state.current_height * hidden),
-                        NotchPlacement::Left => (-state.current_width * hidden, base_y),
-                        NotchPlacement::Right => (base_x + state.current_width * hidden, base_y),
-                    }
-                } else {
-                    (base_x, base_y)
                 }
             }
 
@@ -372,16 +608,20 @@ impl Renderer {
         match state.mode {
             NotchMode::Home => {
                 if state.show_mascot {
+                    let (dy, alpha, _) = Self::mode_stagger(state, 0);
+                    let prev_alpha = p.global_alpha;
+                    p.global_alpha = prev_alpha * alpha;
                     let margin_x = 20.0;
                     Self::draw_cyno_mascot(
                         p,
                         margin_x + 30.0,
-                        card_y + 30.5,
+                        card_y + dy + 30.5,
                         0.96,
                         state.mascot_mood(),
                         anim_t,
                         false,
                     );
+                    p.global_alpha = prev_alpha;
                 }
             }
             NotchMode::Music => {
@@ -434,7 +674,7 @@ impl Renderer {
     }
 
     pub(super) fn idle_arc_fraction_and_color(state: &AppState) -> (Option<f32>, Color) {
-        if let Some(ref notif) = state.notification {
+        let base = if let Some(ref notif) = state.notification {
             let col = match notif.kind {
                 NotificationKind::SystemToast => tok::cyan_hi(),
                 NotificationKind::MemoryPurge => tok::cyno_mist(),
@@ -442,37 +682,50 @@ impl Renderer {
                 | NotificationKind::Pasted
                 | NotificationKind::General => tok::cyno_violet_hi(),
             };
-            return (Some(1.0), col);
-        }
-        if state.media.is_playing && state.media.duration_ms > 0 {
+            (Some(1.0), col)
+        } else if state.media.is_playing && state.media.duration_ms > 0 {
             let frac =
                 (state.media.position_ms as f32 / state.media.duration_ms as f32).clamp(0.0, 1.0);
-            return (Some(frac), tok::cyno_violet_hi());
-        }
-        match state.idle_metric {
-            IdleMetric::Ram => (
-                Some((state.telemetry.memory_percent / 100.0).clamp(0.0, 1.0)),
-                tok::cyno_mist(),
-            ),
-            IdleMetric::Cpu => (
-                Some((state.telemetry.cpu_usage / 100.0).clamp(0.0, 1.0)),
-                tok::cyno_violet_hi(),
-            ),
-            IdleMetric::NetSpeed => {
-                let kb = (state.telemetry.net_down_kbps + state.telemetry.net_up_kbps).max(0.0);
-                let frac = if kb < 1.0 {
-                    0.05
-                } else {
-                    (kb.log10() / 4.5).clamp(0.08, 1.0)
-                };
-                (Some(frac), tok::cyan_hi())
+            (Some(frac), tok::cyno_violet_hi())
+        } else {
+            match state.idle_metric {
+                IdleMetric::Ram => (
+                    Some((state.telemetry.memory_percent / 100.0).clamp(0.0, 1.0)),
+                    tok::cyno_mist(),
+                ),
+                IdleMetric::Cpu => (
+                    Some((state.telemetry.cpu_usage / 100.0).clamp(0.0, 1.0)),
+                    tok::cyno_violet_hi(),
+                ),
+                IdleMetric::NetSpeed => {
+                    let kb = (state.telemetry.net_down_kbps + state.telemetry.net_up_kbps).max(0.0);
+                    let frac = if kb < 1.0 {
+                        0.05
+                    } else {
+                        (kb.log10() / 4.5).clamp(0.08, 1.0)
+                    };
+                    (Some(frac), tok::cyan_hi())
+                }
+                IdleMetric::Clock => {
+                    let mins = (local_now().minute as f32 / 60.0).clamp(0.04, 1.0);
+                    (Some(mins), tok::cyno_mist())
+                }
+                IdleMetric::Minimal => (None, rgba(255, 255, 255, 36)),
             }
-            IdleMetric::Clock => {
-                let mins = (local_now().minute as f32 / 60.0).clamp(0.04, 1.0);
-                (Some(mins), tok::cyno_mist())
-            }
-            IdleMetric::Minimal => (None, rgba(255, 255, 255, 36)),
+        };
+
+        // During Opsi A Skenario 2 Pulse, surge the idle progress ring & Minimized Idle Island
+        // indicator jewel toward Brushed Metallic Champagne Gold.
+        if let Some((pulse_i, _u)) =
+            state.shelf_fx.clipboard_pulse_curves(std::time::Instant::now())
+            && pulse_i > 0.02
+        {
+            let base_f = base.0.unwrap_or(0.25);
+            let surged_f = (base_f + (1.0 - base_f) * pulse_i).clamp(0.08, 1.0);
+            let surged_col = lerp_color(base.1, tok::gold_champagne(), (pulse_i * 1.15).clamp(0.0, 1.0));
+            return (Some(surged_f), surged_col);
         }
+        base
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -514,14 +767,19 @@ impl Renderer {
     pub(super) fn draw_minimized_idle_capsule(p: &mut PainterD2D, state: &AppState, w: f32, h: f32) {
         let cy = h * 0.5;
         let anim_t = state.anim_time;
-        let mood = state.mascot_mood();
-        let left_x = if state.show_mascot {
-            Self::draw_cyno_mascot(p, 11.5, cy + 0.4, 0.34, mood, anim_t, true);
-            20.0
-        } else {
-            p.circle(10.0, cy, 2.8, tok::cyno_violet_hi());
-            17.5
-        };
+        let pulse_i = state
+            .shelf_fx
+            .clipboard_pulse_curves(std::time::Instant::now())
+            .map(|(i, _)| i)
+            .unwrap_or(0.0);
+        let is_minimal_idle = state.notification.is_none()
+            && !state.media.is_playing
+            && state.idle_metric == IdleMetric::Minimal;
+        if is_minimal_idle {
+            Self::draw_wolf_eyes(p, w * 0.5, cy, 0.46, anim_t, 1.0, pulse_i, 0.0, 0.0);
+            return;
+        }
+        let left_x = 10.0;
 
         let badge_cx = (w - 9.0).max(left_x + 12.0);
         let max_txt_w = (badge_cx - 6.5 - left_x).max(20.0);
@@ -553,22 +811,13 @@ impl Renderer {
             }
             p.circle(badge_cx, cy, 2.4, arc_col);
         } else if state.media.is_playing {
-            let eq_w = if state.equalizer_enabled { 13.0 } else { 0.0 };
             let txt = p.ellipsize_cow(
                 &state.media.title,
-                8.5,
+                8.6,
                 Weight::Semibold,
-                (max_txt_w - eq_w).max(16.0),
+                max_txt_w.max(16.0),
             );
-            p.text(&txt, left_x, cy + 2.9, 8.5, Weight::Semibold, tok::text1());
-            if state.equalizer_enabled {
-                for i in 0..3 {
-                    let wave = (state.anim_time * 9.0 + i as f32 * 0.9).sin() * 0.5 + 0.5;
-                    let bh = (2.8 + wave * 5.2).clamp(2.5, 8.0);
-                    let bx = badge_cx - 14.0 + (i as f32 * 3.4);
-                    p.rrect(bx, cy - bh * 0.5, 1.8, bh, 0.9, tok::cyno_violet_hi());
-                }
-            }
+            p.text(&txt, left_x, cy + 2.9, 8.6, Weight::Semibold, tok::text1());
             p.circle(badge_cx, cy, 2.3, tok::cyno_violet_hi());
         } else {
             let mut buf = StackStr::<64>::new();
@@ -578,7 +827,7 @@ impl Renderer {
                     buf.as_str()
                 }
                 IdleMetric::NetSpeed => {
-                    let _ = write!(buf, "↓{}", format_speed_short(state.telemetry.net_down_kbps));
+                    let _ = write!(buf, "v{}", format_speed_short(state.telemetry.net_down_kbps));
                     buf.as_str()
                 }
                 IdleMetric::Cpu => {
@@ -589,17 +838,19 @@ impl Renderer {
                     let _ = write!(buf, "{}", format_hhmm(local_now()));
                     buf.as_str()
                 }
-                IdleMetric::Minimal => "•••",
+                IdleMetric::Minimal => "",
             };
-            let txt = p.ellipsize_cow(metric_str, 8.8, Weight::Bold, max_txt_w);
-            p.text_center(
-                &txt,
-                (left_x + badge_cx - 5.5) * 0.5,
-                cy + 3.0,
-                8.8,
-                Weight::Bold,
-                tok::text_soft(),
-            );
+            if !metric_str.is_empty() {
+                let txt = p.ellipsize_cow(metric_str, 8.8, Weight::Bold, max_txt_w);
+                p.text_center(
+                    &txt,
+                    (left_x + badge_cx - 5.5) * 0.5,
+                    cy + 3.0,
+                    8.8,
+                    Weight::Bold,
+                    tok::text_soft(),
+                );
+            }
             if state.progress_arc_enabled {
                 p.circle_stroke(badge_cx, cy, 3.8, 1.1, rgba(255, 255, 255, 24));
                 if let Some(frac) = frac_opt
@@ -620,38 +871,158 @@ impl Renderer {
         }
     }
 
+    /// Draws single-line `Judul Lagu - Nama Artis (75% opacity)` with a pure alpha fade-out
+    /// at the trailing edge so the right/bottom Music icon appears to float with depth over the text.
+    #[allow(clippy::too_many_arguments)]
+    pub(super) fn draw_music_inline_text(
+        p: &mut PainterD2D,
+        title: &str,
+        artist: &str,
+        x: f32,
+        baseline: f32,
+        clip_w: f32,
+        clip_h: f32,
+        alpha: f32,
+    ) {
+        if clip_w <= 12.0 || alpha <= 0.02 || title.is_empty() {
+            return;
+        }
+        let fade_w = (clip_w * 0.22).clamp(16.0, 34.0);
+        let masked = p.push_fade_mask(x, 0.0, clip_w, clip_h, fade_w, false, false);
+        let title_w = p.text(title, x, baseline, 12.8, Weight::Bold, fade(tok::text1(), alpha));
+        let artist_trimmed = artist.trim();
+        if !artist_trimmed.is_empty() && title_w + 10.0 < clip_w {
+            let mut sep = StackStr::<128>::new();
+            let _ = write!(sep, " - {}", artist_trimmed);
+            p.text(
+                sep.as_str(),
+                x + title_w,
+                baseline,
+                12.2,
+                Weight::Regular,
+                fade(tok::text1(), alpha * 0.75),
+            );
+        }
+        if masked {
+            p.pop_clip();
+        }
+    }
+
     pub(super) fn draw_idle_capsule(p: &mut PainterD2D, state: &AppState, w: f32, h: f32) {
         let cy = h / 2.0;
+        // Two-line idle layout scales with the actual capsule height. Reference is
+        // h=32 (Standard): title 12.5px @ y=11, subtitle 10.5px @ y=22. Compact
+        // (28px) shrinks slightly; Large / X-Large (up to ~41px) grow with it.
+        let ts = (h / 32.0).clamp(0.86, 1.28);
+        let title_fs = 12.5 * ts;
+        let sub_fs = 10.5 * ts;
+        let title_y = cy - 5.0 * ts;
+        let sub_y = cy + 6.0 * ts;
+        let badge_fs = 11.5 * ts;
         let anim_t = state.anim_time;
-        let mood = state.mascot_mood();
+        let pulse_i = state
+            .shelf_fx
+            .clipboard_pulse_curves(std::time::Instant::now())
+            .map(|(i, _)| i)
+            .unwrap_or(0.0);
 
-        let text_x = if state.show_mascot {
-            Self::draw_cyno_mascot(p, 24.5, cy + 0.5, 0.90, mood, anim_t, false);
-            51.0
+        // Staged gentle state-change transition (`0.0 -> 1.0` over ~650ms)
+        let cap_t = if state.are_animations_active() {
+            state.anim_capsule_t.clamp(0.0, 1.0)
         } else {
-            20.0
+            1.0
         };
-        let badge_cx = w - 24.0;
-        let max_txt_w = (badge_cx - 20.0 - text_x).max(60.0);
+        let ct = crate::models::ease_out_cubic(cap_t);
+        let in_dx = (1.0 - ct) * 7.5;
+        let in_alpha = ct.clamp(0.0, 1.0);
+
+        let is_stealth_target = state.notification.is_none()
+            && !state.media.is_playing
+            && state.idle_metric == IdleMetric::Minimal;
+
+        // Active states (Music / Notification / Metrics) have NO mascot — clean 14px left padding.
+        let text_x = 14.0;
+        let badge_r = (h * 0.36).clamp(9.2, 11.2);
+        let badge_cx = (w - badge_r - 5.5).max(text_x + 4.0);
+        let avail_txt_w = badge_cx - badge_r - 3.0 - text_x;
+        let max_txt_w = avail_txt_w.max(24.0);
         let (frac_opt, arc_col) = Self::idle_arc_fraction_and_color(state);
 
+        // Outgoing content choreography (`0.0..0.42` of 420ms = ~176ms):
+        // - Leaving Stealth Idle: Wolf Eyes blink closed & fade out gently.
+        // - Leaving Music / Switching Song: Previous title - artist rolls DOWNWARD (+15px) & fades out.
+        let out_phase = (cap_t / 0.42).clamp(0.0, 1.0);
+        if out_phase < 1.0 {
+            let smooth = out_phase * out_phase * (3.0 - 2.0 * out_phase);
+            let out_a = (1.0 - smooth).clamp(0.0, 1.0);
+            let out_a2 = out_a * out_a;
+            if !is_stealth_target && state.prev_capsule_title.is_empty() {
+                Self::draw_wolf_eyes(p, w * 0.5, cy, 0.90, anim_t, out_a, pulse_i, 0.0, 0.0);
+            } else if !state.prev_capsule_title.is_empty() && avail_txt_w >= 28.0 {
+                let roll_down_y = 15.0 * smooth;
+                if state.media.is_playing || is_stealth_target {
+                    Self::draw_music_inline_text(
+                        p,
+                        &state.prev_capsule_title,
+                        &state.prev_capsule_sub,
+                        text_x,
+                        cy + 4.3 + roll_down_y,
+                        avail_txt_w.max(24.0),
+                        h,
+                        out_a2,
+                    );
+                } else {
+                    let old_t = p.ellipsize_cow(
+                        &state.prev_capsule_title,
+                        12.5,
+                        Weight::Bold,
+                        max_txt_w,
+                    );
+                    p.text(
+                        &old_t,
+                        text_x,
+                        cy + 4.2 + roll_down_y,
+                        12.5,
+                        Weight::Bold,
+                        fade(tok::text1(), out_a2 * 0.72),
+                    );
+                }
+            }
+        }
+
         if let Some(ref notif) = state.notification {
-            let title_raw: Cow<'_, str> =
-                if notif.kind == NotificationKind::SystemToast && !notif.app_name.is_empty() {
-                    Cow::Owned(format!("[{}] {}", notif.app_name, notif.title))
-                } else {
-                    Cow::Borrowed(notif.title.as_str())
-                };
-            let title = p.ellipsize_cow(&title_raw, 12.2, Weight::Bold, max_txt_w);
-            p.text(&title, text_x, 18.5, 12.2, Weight::Bold, tok::text1());
-            let sub_src =
-                if notif.kind == NotificationKind::SystemToast && notif.subtitle.is_empty() {
-                    "Windows Toast"
-                } else {
-                    notif.subtitle.as_str()
-                };
-            let sub = p.ellipsize_cow(sub_src, 10.5, Weight::Regular, max_txt_w);
-            p.text(&sub, text_x, 33.0, 10.5, Weight::Regular, tok::text2());
+            if avail_txt_w >= 24.0 {
+                let title_raw: Cow<'_, str> =
+                    if notif.kind == NotificationKind::SystemToast && !notif.app_name.is_empty() {
+                        Cow::Owned(format!("[{}] {}", notif.app_name, notif.title))
+                    } else {
+                        Cow::Borrowed(notif.title.as_str())
+                    };
+                let title = p.ellipsize_cow(&title_raw, title_fs - 0.3, Weight::Bold, max_txt_w);
+                p.text(
+                    &title,
+                    text_x + in_dx,
+                    title_y,
+                    title_fs - 0.3,
+                    Weight::Bold,
+                    fade(tok::text1(), in_alpha),
+                );
+                let sub_src =
+                    if notif.kind == NotificationKind::SystemToast && notif.subtitle.is_empty() {
+                        "Windows Toast"
+                    } else {
+                        notif.subtitle.as_str()
+                    };
+                let sub = p.ellipsize_cow(sub_src, sub_fs, Weight::Regular, max_txt_w);
+                p.text(
+                    &sub,
+                    text_x + in_dx,
+                    sub_y,
+                    sub_fs,
+                    Weight::Regular,
+                    fade(tok::text2(), in_alpha),
+                );
+            }
 
             let (icon, ic_col) = match notif.kind {
                 NotificationKind::SystemToast => (Icon::Bell, tok::cyan_hi()),
@@ -666,7 +1037,7 @@ impl Renderer {
                 p,
                 badge_cx,
                 cy,
-                11.5,
+                badge_r,
                 frac_opt,
                 arc_col,
                 badge_bg,
@@ -675,37 +1046,32 @@ impl Renderer {
                 state.progress_arc_enabled,
             );
         } else if state.media.is_playing {
-            let show_eq = state.equalizer_enabled;
-            let music_txt_w = if show_eq {
-                (w - text_x - 68.0).max(55.0)
+            // Music State: Roll-in from top (`0.30..1.00`, 30% overlap), `Judul - Artis (75%)` with right alpha fade-out
+            let roll_in_u = if cap_t < 0.99 {
+                ((cap_t - 0.30) / 0.70).clamp(0.0, 1.0)
             } else {
-                max_txt_w
+                1.0
             };
-            let title = p.ellipsize_cow(&state.media.title, 12.5, Weight::Bold, music_txt_w);
-            p.text(&title, text_x, 18.5, 12.5, Weight::Bold, tok::text1());
-            let sub = p.ellipsize_cow(&state.media.artist, 10.5, Weight::Regular, music_txt_w);
-            p.text(&sub, text_x, 33.0, 10.5, Weight::Regular, tok::text2());
-
-            if show_eq {
-                for i in 0..4 {
-                    let wave = (state.anim_time * 9.0 + i as f32 * 0.9).sin() * 0.5 + 0.5;
-                    let bh = (4.0 + wave * 10.0).clamp(3.0, 14.0);
-                    let bx = w - 58.0 + (i as f32 * 4.5);
-                    let by = cy - bh / 2.0;
-                    let c = if i % 2 == 0 {
-                        tok::cyno_violet_hi()
-                    } else {
-                        tok::cyno_mist()
-                    };
-                    p.rrect(bx, by, 2.5, bh, 1.2, c);
-                }
+            let roll_e = crate::models::ease_out_cubic(roll_in_u);
+            let roll_in_y = -15.0 * (1.0 - roll_e);
+            if avail_txt_w >= 24.0 && roll_e > 0.02 {
+                Self::draw_music_inline_text(
+                    p,
+                    &state.media.title,
+                    &state.media.artist,
+                    text_x,
+                    cy + 4.3 + roll_in_y,
+                    avail_txt_w.max(24.0),
+                    h,
+                    roll_e,
+                );
             }
 
             Self::draw_progress_arc_badge(
                 p,
                 badge_cx,
                 cy,
-                11.5,
+                badge_r,
                 frac_opt,
                 arc_col,
                 tok::cyno_indigo(),
@@ -716,21 +1082,41 @@ impl Renderer {
         } else {
             match state.idle_metric {
                 IdleMetric::Ram => {
-                    p.text("CyNotch", text_x, 18.5, 12.5, Weight::Bold, tok::text1());
-                    let mut raw = StackStr::<64>::new();
-                    let _ = write!(
-                        raw,
-                        "{:.0}% RAM • CPU {:.0}%",
-                        state.telemetry.memory_percent, state.telemetry.cpu_usage
-                    );
-                    let sub = p.ellipsize_cow(raw.as_str(), 10.5, Weight::Regular, max_txt_w);
-                    p.text(&sub, text_x, 33.0, 10.5, Weight::Regular, tok::text2());
+                    if avail_txt_w >= 24.0 && in_alpha > 0.02 {
+                        let mut ram_title = StackStr::<32>::new();
+                        let _ = write!(ram_title, "RAM {:.0}%", state.telemetry.memory_percent);
+                        let title =
+                            p.ellipsize_cow(ram_title.as_str(), title_fs, Weight::Bold, max_txt_w);
+                        p.text(
+                            &title,
+                            text_x + in_dx,
+                            title_y,
+                            title_fs,
+                            Weight::Bold,
+                            fade(tok::text1(), in_alpha),
+                        );
+                        let mut raw = StackStr::<64>::new();
+                        let _ = write!(
+                            raw,
+                            "{:.1} GB  -  CPU {:.0}%",
+                            state.telemetry.memory_used_gb, state.telemetry.cpu_usage
+                        );
+                        let sub = p.ellipsize_cow(raw.as_str(), sub_fs, Weight::Regular, max_txt_w);
+                        p.text(
+                            &sub,
+                            text_x + in_dx,
+                            sub_y,
+                            sub_fs,
+                            Weight::Regular,
+                            fade(tok::text2(), in_alpha),
+                        );
+                    }
                     let badge_bg = p.surface_top_col();
                     Self::draw_progress_arc_badge(
                         p,
                         badge_cx,
                         cy,
-                        11.5,
+                        badge_fs,
                         frac_opt,
                         arc_col,
                         badge_bg,
@@ -740,22 +1126,38 @@ impl Renderer {
                     );
                 }
                 IdleMetric::NetSpeed => {
-                    p.text("Network", text_x, 18.5, 12.5, Weight::Bold, tok::text1());
-                    let mut raw = StackStr::<64>::new();
-                    let _ = write!(
-                        raw,
-                        "↓ {}   ↑ {}",
-                        format_speed_short(state.telemetry.net_down_kbps),
-                        format_speed_short(state.telemetry.net_up_kbps)
-                    );
-                    let sub = p.ellipsize_cow(raw.as_str(), 10.5, Weight::Semibold, max_txt_w);
-                    p.text(&sub, text_x, 33.0, 10.5, Weight::Semibold, tok::cyan_hi());
+                    if avail_txt_w >= 24.0 && in_alpha > 0.02 {
+                        p.text(
+                            "Network",
+                            text_x + in_dx,
+                            title_y,
+                            title_fs,
+                            Weight::Bold,
+                            fade(tok::text1(), in_alpha),
+                        );
+                        let mut raw = StackStr::<64>::new();
+                        let _ = write!(
+                            raw,
+                            "v {}   ^ {}",
+                            format_speed_short(state.telemetry.net_down_kbps),
+                            format_speed_short(state.telemetry.net_up_kbps)
+                        );
+                        let sub = p.ellipsize_cow(raw.as_str(), sub_fs, Weight::Semibold, max_txt_w);
+                        p.text(
+                            &sub,
+                            text_x + in_dx,
+                            sub_y,
+                            sub_fs,
+                            Weight::Semibold,
+                            fade(tok::cyan_hi(), in_alpha),
+                        );
+                    }
                     let badge_bg = p.surface_top_col();
                     Self::draw_progress_arc_badge(
                         p,
                         badge_cx,
                         cy,
-                        11.5,
+                        badge_fs,
                         frac_opt,
                         arc_col,
                         badge_bg,
@@ -765,24 +1167,42 @@ impl Renderer {
                     );
                 }
                 IdleMetric::Cpu => {
-                    let mut cpu_buf = StackStr::<32>::new();
-                    let _ = write!(cpu_buf, "CPU {:.0}%", state.telemetry.cpu_usage);
-                    let title = p.ellipsize_cow(cpu_buf.as_str(), 12.5, Weight::Bold, max_txt_w);
-                    p.text(&title, text_x, 18.5, 12.5, Weight::Bold, tok::text1());
-                    let mut ram_buf = StackStr::<64>::new();
-                    let _ = write!(
-                        ram_buf,
-                        "RAM {:.0}% ({:.1}G)",
-                        state.telemetry.memory_percent, state.telemetry.memory_used_gb
-                    );
-                    let sub = p.ellipsize_cow(ram_buf.as_str(), 10.5, Weight::Regular, max_txt_w);
-                    p.text(&sub, text_x, 33.0, 10.5, Weight::Regular, tok::text2());
+                    if avail_txt_w >= 24.0 && in_alpha > 0.02 {
+                        let mut cpu_buf = StackStr::<32>::new();
+                        let _ = write!(cpu_buf, "CPU {:.0}%", state.telemetry.cpu_usage);
+                        let title =
+                            p.ellipsize_cow(cpu_buf.as_str(), title_fs, Weight::Bold, max_txt_w);
+                        p.text(
+                            &title,
+                            text_x + in_dx,
+                            title_y,
+                            title_fs,
+                            Weight::Bold,
+                            fade(tok::text1(), in_alpha),
+                        );
+                        let mut ram_buf = StackStr::<64>::new();
+                        let _ = write!(
+                            ram_buf,
+                            "RAM {:.0}% ({:.1}G)",
+                            state.telemetry.memory_percent, state.telemetry.memory_used_gb
+                        );
+                        let sub =
+                            p.ellipsize_cow(ram_buf.as_str(), sub_fs, Weight::Regular, max_txt_w);
+                        p.text(
+                            &sub,
+                            text_x + in_dx,
+                            sub_y,
+                            sub_fs,
+                            Weight::Regular,
+                            fade(tok::text2(), in_alpha),
+                        );
+                    }
                     let badge_bg = p.surface_top_col();
                     Self::draw_progress_arc_badge(
                         p,
                         badge_cx,
                         cy,
-                        11.5,
+                        badge_fs,
                         frac_opt,
                         arc_col,
                         badge_bg,
@@ -792,25 +1212,47 @@ impl Renderer {
                     );
                 }
                 IdleMetric::Clock => {
-                    let now = local_now();
-                    let mut clk_buf = StackStr::<48>::new();
-                    let _ = write!(clk_buf, "{:02}:{:02} • {:02}/{:02}", now.hour, now.minute, now.month, now.day);
-                    let title = p.ellipsize_cow(clk_buf.as_str(), 12.5, Weight::Bold, max_txt_w);
-                    p.text(&title, text_x, 18.5, 12.5, Weight::Bold, tok::text1());
-                    let mut sub_buf = StackStr::<64>::new();
-                    let _ = write!(
-                        sub_buf,
-                        "RAM {:.0}% • CPU {:.0}%",
-                        state.telemetry.memory_percent, state.telemetry.cpu_usage
-                    );
-                    let sub = p.ellipsize_cow(sub_buf.as_str(), 10.5, Weight::Regular, max_txt_w);
-                    p.text(&sub, text_x, 33.0, 10.5, Weight::Regular, tok::text2());
+                    if avail_txt_w >= 24.0 && in_alpha > 0.02 {
+                        let now = local_now();
+                        let mut clk_buf = StackStr::<48>::new();
+                        let _ = write!(
+                            clk_buf,
+                            "{:02}:{:02}  -  {:02}/{:02}",
+                            now.hour, now.minute, now.month, now.day
+                        );
+                        let title =
+                            p.ellipsize_cow(clk_buf.as_str(), title_fs, Weight::Bold, max_txt_w);
+                        p.text(
+                            &title,
+                            text_x + in_dx,
+                            title_y,
+                            title_fs,
+                            Weight::Bold,
+                            fade(tok::text1(), in_alpha),
+                        );
+                        let mut sub_buf = StackStr::<64>::new();
+                        let _ = write!(
+                            sub_buf,
+                            "RAM {:.0}%  -  CPU {:.0}%",
+                            state.telemetry.memory_percent, state.telemetry.cpu_usage
+                        );
+                        let sub =
+                            p.ellipsize_cow(sub_buf.as_str(), sub_fs, Weight::Regular, max_txt_w);
+                        p.text(
+                            &sub,
+                            text_x + in_dx,
+                            sub_y,
+                            sub_fs,
+                            Weight::Regular,
+                            fade(tok::text2(), in_alpha),
+                        );
+                    }
                     let badge_bg = p.surface_top_col();
                     Self::draw_progress_arc_badge(
                         p,
                         badge_cx,
                         cy,
-                        11.5,
+                        badge_fs,
                         frac_opt,
                         arc_col,
                         badge_bg,
@@ -820,51 +1262,34 @@ impl Renderer {
                     );
                 }
                 IdleMetric::Minimal => {
-                    p.text(
-                        "CyNotch",
-                        text_x,
-                        cy + 4.2,
-                        12.5,
-                        Weight::Bold,
-                        tok::text1(),
-                    );
-                    let badge_bg = p.surface_top_col();
-                    Self::draw_progress_arc_badge(
-                        p,
-                        badge_cx,
-                        cy,
-                        11.5,
-                        None,
-                        rgba(255, 255, 255, 36),
-                        badge_bg,
-                        Icon::Zap,
-                        tok::cyno_mist(),
-                        false,
-                    );
+                    // Pure Stealth Mode: 2 Glowing Purple Wolf Eyes appear gently after outgoing text rolls down.
+                    let eye_open = if cap_t < 0.99 && !state.prev_capsule_title.is_empty() {
+                        crate::models::ease_out_cubic(((cap_t - 0.30) / 0.70).clamp(0.0, 1.0))
+                    } else {
+                        ct
+                    };
+                    Self::draw_wolf_eyes(p, w * 0.5, cy, 0.90, anim_t, eye_open, pulse_i, 0.0, 0.0);
                 }
             }
 
-            // First-run subtle onboarding hint pill (`Ctrl+Shift+C`) until user presses hotkey or expands 3x
-            if !state.seen_hotkey_hint {
+            // First-run subtle onboarding hint pill (`Ctrl+Alt+C`) until user presses hotkey or expands 3x
+            if !state.seen_hotkey_hint && state.idle_metric != IdleMetric::Minimal {
                 let title_w = match state.idle_metric {
-                    IdleMetric::Ram | IdleMetric::Minimal => p.measure("CyNotch", 12.5, Weight::Bold),
-                    IdleMetric::NetSpeed => p.measure("Network", 12.5, Weight::Bold),
+                    IdleMetric::Ram => p.measure("RAM 100%", title_fs, Weight::Bold),
+                    IdleMetric::Minimal => 0.0,
+                    IdleMetric::NetSpeed => p.measure("Network", title_fs, Weight::Bold),
                     IdleMetric::Cpu => {
                         let mut b = StackStr::<32>::new();
                         let _ = write!(b, "CPU {:.0}%", state.telemetry.cpu_usage);
-                        p.measure(b.as_str(), 12.5, Weight::Bold)
+                        p.measure(b.as_str(), title_fs, Weight::Bold)
                     }
-                    IdleMetric::Clock => p.measure("00:00 • 00/00", 12.5, Weight::Bold),
+                    IdleMetric::Clock => p.measure("00:00  -  00/00", title_fs, Weight::Bold),
                 };
-                let hint_txt = "Ctrl+Shift+C";
+                let hint_txt = "Ctrl+Alt+C";
                 let pill_w = (p.measure(hint_txt, 8.2, Weight::Semibold) + 12.0).clamp(58.0, 86.0);
                 let pill_h = 14.0;
                 let pill_x = badge_cx - 18.0 - pill_w;
-                let pill_y = if state.idle_metric == IdleMetric::Minimal {
-                    cy - pill_h * 0.5
-                } else {
-                    7.5
-                };
+                let pill_y = 7.5;
                 if pill_x >= text_x + title_w + 10.0 {
                     p.rrect(pill_x, pill_y, pill_w, pill_h, 5.0, rgba(168, 85, 247, 34));
                     p.rrect_stroke(
@@ -890,49 +1315,44 @@ impl Renderer {
         }
     }
 
+    /// Unified **Blur-Fade Rise** staggered entrance (`480ms` Fluid Luxury timeline, `~45ms` stagger/item):
+    /// rises `+12px -> 0`, fades `0.0 -> 1.0`, and subtly scales `0.96 -> 1.0` with quartic ease-out.
+    /// Respects `SPI_GETCLIENTAREAANIMATION` via `state.are_animations_active()`, settling cleanly to `(0.0, 1.0, 1.0)` at `0Hz` idle.
+    pub(super) fn mode_stagger(state: &AppState, idx: usize) -> (f32, f32, f32) {
+        if !state.are_animations_active() || state.anim_mode_t >= 0.999 {
+            return (0.0, 1.0, 1.0);
+        }
+        let delay = (idx as f32 * 0.095).min(0.45);
+        let span = (1.0 - delay).max(0.42);
+        let local_t = ((state.anim_mode_t - delay) / span).clamp(0.0, 1.0);
+        let eased = 1.0 - (1.0 - local_t).powi(4);
+        let dy = (1.0 - eased) * 12.0;
+        let alpha = eased;
+        // Keep scale at 1.0 (pure Y-slide + fade) so Direct2D never re-rasterizes
+        // DirectWrite glyph runs on every frame of tab switches.
+        let scale = 1.0;
+        (dy, alpha, scale)
+    }
+
     // ─────────────────────────────────────────────────────────────────────────────
-    // VERTICAL IDLE CAPSULE (52 × 168/204/248 for Left / Right Edges)
+    // VERTICAL IDLE CAPSULE (52 x 168/204/248 for Left / Right Edges)
     // ─────────────────────────────────────────────────────────────────────────────
     pub(super) fn draw_expanded(p: &mut PainterD2D, state: &AppState, w: f32, h: f32, settled: bool) {
-        if state.notification.is_none() {
-            Self::draw_expanded_header(p, state, w);
-        }
-        let prev_ox = p.origin_x;
-        let prev_alpha = p.global_alpha;
-        if state.are_animations_active() && state.anim_mode_t < 0.995 {
-            let me = crate::models::ease_out_cubic(state.anim_mode_t);
-            p.origin_x = prev_ox + (1.0 - me) * 12.0 * state.anim_mode_dir * p.s;
-            p.global_alpha = prev_alpha * (0.18 + 0.82 * me);
-        }
+        Self::draw_expanded_header(p, state, w);
         Self::draw_expanded_body(p, state, w, h, settled);
-        p.origin_x = prev_ox;
-        p.global_alpha = prev_alpha;
     }
 
     fn draw_expanded_header(p: &mut PainterD2D, state: &AppState, w: f32) {
-        let dock_x = 20.0;
-        let dock_y = 14.0;
+        let dock_x = 24.0;
+        let dock_y = 16.0;
         let dock_h = 34.0;
 
         let dock_modes = state.visible_dock_modes();
         let (dock_w, item_w) = AppState::dock_metrics(dock_modes.len());
 
-        let well_col = if state.is_frosted_active() {
-            tok::scale_frosted(tok::surface_well_frosted(), state.frosted_alpha_pct())
-        } else {
-            tok::surface_well()
-        };
-        p.rrect(dock_x, dock_y, dock_w, dock_h, 11.5, well_col);
-        p.rrect_bevel_stroke(
-            dock_x,
-            dock_y,
-            dock_w,
-            dock_h,
-            11.5,
-            1.0,
-            rgba(0, 0, 0, 120),
-            rgba(255, 255, 255, 26),
-        );
+        let well_col = p.well_col();
+        // Borderless recessed glass capsule for Mode Dock (DESIGN_SYSTEM.md §2 Molecule #2)
+        p.rrect(dock_x, dock_y, dock_w, dock_h, 17.0, well_col);
 
         let active_visible = dock_modes.contains(&state.mode);
         let (target_dock_x, target_dock_w) = state.active_dock_target();
@@ -961,16 +1381,14 @@ impl Renderer {
             } else {
                 0.0
             };
-            p.luminous_pill_button_t(
+            p.button_pill_variant(
                 pill_x,
                 dock_y + 4.0,
                 pill_w,
                 26.0,
-                8.0,
-                tok::cyno_lavender_white(),
-                tok::cyno_mist(),
-                tok::cyno_violet_hi(),
+                13.0,
                 active_ht,
+                ButtonVariant::PrimaryFill,
             );
         }
 
@@ -980,10 +1398,7 @@ impl Renderer {
                 NotchMode::Music => Icon::Music,
                 NotchMode::Volume => Icon::Volume,
                 NotchMode::MemReduct => Icon::Wave,
-                NotchMode::Tasks => Icon::List,
                 NotchMode::Shelf => Icon::Clipboard,
-                NotchMode::Capture => Icon::Video,
-                NotchMode::Telemetry => Icon::Display,
                 NotchMode::Settings => Icon::Settings,
             };
             let ix = dock_x + 4.0 + (i as f32 * item_w);
@@ -996,24 +1411,18 @@ impl Renderer {
             };
 
             if under_pill < 0.5 && ht > 0.02 {
-                p.rrect(ix, iy, item_w, 26.0, 8.0, fade(rgba(255, 255, 255, 22), ht));
+                p.button_pill_variant(ix, iy, item_w, 26.0, 13.0, ht, ButtonVariant::TextOnly);
             }
-            let inactive_col = lerp_color(rgba(148, 163, 184, 165), rgba(255, 255, 255, 245), ht);
-            let col = lerp_color(inactive_col, rgba(17, 17, 23, 255), under_pill);
+            let inactive_col = lerp_color(tok::text3(), tok::text1(), ht);
+            let col = lerp_color(inactive_col, tok::text1(), under_pill);
             icons::draw(p, icon, ix + (item_w - 14.0) / 2.0, iy + 6.0, 14.0, col);
 
             p.hit(ix, iy, item_w, 26.0, Action::SetMode(*mode));
         }
 
-        // Right Actions: [Lyrics Pill] [Pin Lock] [Settings Gear] [Grip]
-        let right_x = w - 20.0;
-        let grip_x = right_x - 18.0;
-        let grip_ht = p.hot_t(grip_x - 4.0, dock_y, 26.0, dock_h);
-        let grip_col = lerp_color(rgba(148, 163, 184, 115), tok::text1(), grip_ht);
-        icons::draw(p, Icon::Grip, grip_x, dock_y + 9.0, 16.0, grip_col);
-        p.hit(grip_x - 4.0, dock_y, 26.0, dock_h, Action::StartGripDrag);
-
-        let gear_x = grip_x - 38.0;
+        // Right Actions: [Bell] [Pin Lock] [Settings Gear]
+        let right_x = w - 24.0;
+        let gear_x = right_x - 28.0;
         let is_settings_active = state.settings_open || state.mode == NotchMode::Settings;
         let gear_ht = p.hot_t(gear_x, dock_y + 3.0, 28.0, 28.0);
         if is_settings_active {
@@ -1099,8 +1508,19 @@ impl Renderer {
             let bc = lerp_color(tok::text2(), tok::text1(), bell_ht);
             icons::draw(p, Icon::Bell, bell_x + 7.0, dock_y + 10.0, 14.0, bc);
         }
-        if !state.notif_history.is_empty() && !state.show_notif_history {
-            p.circle(bell_x + 21.0, dock_y + 9.0, 2.7, tok::cyno_orchid());
+        if state.is_notification_stashed() {
+            // Auto-Stash active notification pip: amber #FBBF24 with soft halo (click Bell to peek/restore)
+            p.radial_glow(
+                bell_x + 22.5,
+                dock_y + 7.5,
+                7.0,
+                fade(tok::amber_glow(), 0.48),
+                BlendMode::Plus,
+                false,
+            );
+            p.circle(bell_x + 22.5, dock_y + 7.5, 3.2, tok::amber_glow());
+        } else if !state.notif_history.is_empty() && !state.show_notif_history {
+            p.circle(bell_x + 21.0, dock_y + 9.0, 2.5, tok::cyno_orchid());
         }
         p.hit(bell_x, dock_y + 3.0, 28.0, 28.0, Action::ToggleNotifHistory);
 
@@ -1120,77 +1540,17 @@ impl Renderer {
         } else {
             match state.mode {
                 NotchMode::Home => draw_title(p, "Command Hub"),
-                NotchMode::Music => {
-                    let tab_y = dock_y + 4.0;
-                    let lyrics_pill_w = 58.0;
-                    let lyrics_pill_x = bell_x - lyrics_pill_w - 8.0;
-                    let music_max = (lyrics_pill_x - title_x - 8.0).max(0.0);
-                    if music_max >= 26.0 {
-                        let s = p.ellipsize("Music", 13.0, Weight::Bold, music_max);
-                        p.text(&s, title_x, title_y, 13.0, Weight::Bold, tok::text1());
-                    }
-
-                    let lyrics_ht = p.hot_t(lyrics_pill_x, tab_y, lyrics_pill_w, 26.0);
-                    if state.show_lyrics {
-                        p.luminous_pill_button_t(
-                            lyrics_pill_x,
-                            tab_y,
-                            lyrics_pill_w,
-                            26.0,
-                            13.0,
-                            tok::cyno_indigo(),
-                            tok::cyno_violet(),
-                            tok::cyno_orchid(),
-                            lyrics_ht,
-                        );
-                        p.text_center_shadow(
-                            "Lyrics",
-                            lyrics_pill_x + lyrics_pill_w / 2.0,
-                            tab_y + 17.0,
-                            11.0,
-                            Weight::Bold,
-                            tok::text1(),
-                        );
-                    } else {
-                        p.tactile_surface_pill_t(
-                            lyrics_pill_x,
-                            tab_y,
-                            lyrics_pill_w,
-                            26.0,
-                            13.0,
-                            lyrics_ht,
-                            None,
-                        );
-                        p.text_center(
-                            "Lyrics",
-                            lyrics_pill_x + lyrics_pill_w / 2.0,
-                            tab_y + 17.0,
-                            11.0,
-                            Weight::Semibold,
-                            tok::text_soft(),
-                        );
-                    }
-                    p.hit(
-                        lyrics_pill_x,
-                        tab_y,
-                        lyrics_pill_w,
-                        26.0,
-                        Action::ToggleLyrics,
-                    );
-                }
+                NotchMode::Music => draw_title(p, "Music"),
                 NotchMode::Volume => draw_title(p, "Volume Master"),
                 NotchMode::MemReduct => draw_title(p, "Mem Reduct"),
-                NotchMode::Tasks => draw_title(p, "Tasks"),
                 NotchMode::Shelf => draw_title(p, "Quick Shelf"),
-                NotchMode::Capture => draw_title(p, "Quick Capture"),
-                NotchMode::Telemetry => draw_title(p, "Screen Time"),
                 NotchMode::Settings => draw_title(p, "Quick Settings"),
             }
         }
     }
 
     fn draw_expanded_body(p: &mut PainterD2D, state: &AppState, w: f32, h: f32, _settled: bool) {
-        let card_y = 60.0;
+        let card_y = 68.0;
         if state.show_notif_history {
             Self::draw_notif_history_view(p, state, w, h, card_y);
         } else {
@@ -1199,20 +1559,13 @@ impl Renderer {
                     Self::draw_home_view(p, state, w, card_y);
                     Self::draw_expanded_anim_overlay(p, state);
                 }
-                NotchMode::Music => {
-                    Self::draw_music_view(p, state, w, card_y);
-                    Self::draw_expanded_anim_overlay(p, state);
-                }
+                NotchMode::Music => Self::draw_music_view(p, state, w, card_y),
                 NotchMode::Volume => Self::draw_volume_view(p, state, w, card_y),
                 NotchMode::MemReduct => Self::draw_memreduct_view(p, state, w, card_y),
-                NotchMode::Tasks => Self::draw_tasks_view(p, state, w, card_y),
-                NotchMode::Shelf => Self::draw_shelf_view(p, state, w, card_y),
-                NotchMode::Capture => Self::draw_capture_view(p, state, w, card_y),
-                NotchMode::Telemetry => Self::draw_screentime_view(p, state, w, card_y),
+                NotchMode::Shelf => Self::draw_shelf_view(p, state, w, h, card_y),
                 NotchMode::Settings => Self::draw_settings_view(p, state, w, card_y),
             }
         }
-        Self::draw_expanded_toast_overlay(p, state, w);
     }
 
     // ─────────────────────────────────────────────────────────────────────────────

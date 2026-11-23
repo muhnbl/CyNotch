@@ -1,4 +1,4 @@
-//! Stroke icons drawn as vector paths on a 24×24 grid (Lucide-style geometry).
+//! Stroke icons drawn as vector paths on a 24x24 grid (Lucide-style geometry).
 //! Segoe UI has no emoji/symbol glyphs, so text icons rendered as tofu boxes.
 
 use crate::painter_d2d::{PainterD2D, Color, Path, PathBuilder, rrect_path};
