@@ -12,8 +12,8 @@
 <meta property="og:image" content="https://raw.githubusercontent.com/muhnbl/CyNotch/main/assets/cynotch_icon.png">
 <meta name="twitter:card" content="summary_large_image">
 <link rel="canonical" href="https://muhnbl.github.io/CyNotch/">
-<link rel="icon" href="./assets/cynotch-icon-64.png?v=1.0.0" sizes="64x64" type="image/png">
-<link rel="apple-touch-icon" href="./assets/cynotch-icon-192.png?v=1.0.0">
+<link rel="icon" href="./assets/cynotch-icon-64.png?v=1.0.1" sizes="64x64" type="image/png">
+<link rel="apple-touch-icon" href="./assets/cynotch-icon-192.png?v=1.0.1">
 <link rel="preconnect" href="https://api.fontshare.com" crossorigin>
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
@@ -275,10 +275,10 @@ body::after{
 .hero{
   position:relative;
   min-height:100dvh;
-  padding:112px 0 88px;
+  padding:120px 0 96px;
   display:flex;
   flex-direction:column;
-  justify-content:space-between;
+  justify-content:center;
   overflow:hidden;
 }
 #starfield{
@@ -293,186 +293,12 @@ body::after{
   position:relative;
   z-index:2;
   max-width:980px;
-  margin:clamp(24px,4vh,48px) auto 0;
+  margin:0 auto;
   display:flex;
   flex-direction:column;
   align-items:center;
   text-align:center;
 }
-
-/* Interactive Top-Bezel CyNotch Live Demo (Real v1.0.0 Transparent Renders) */
-.bezel-stage{
-  position:relative;
-  z-index:3;
-  display:flex;
-  flex-direction:column;
-  align-items:center;
-  gap:12px;
-  margin-bottom:clamp(24px,4vh,42px);
-}
-.bezel-hint{
-  font-family:var(--mono);
-  font-size:0.75rem;
-  letter-spacing:0.08em;
-  text-transform:uppercase;
-  color:var(--gold);
-  opacity:0.88;
-}
-.live-notch{
-  position:relative;
-  width:248px;
-  height:40px;
-  border-radius:999px;
-  background:linear-gradient(180deg,#161422 0%,#0E0D16 100%);
-  border:1px solid rgba(245,243,255,0.14);
-  overflow:hidden;
-  cursor:pointer;
-  transition:width 420ms var(--ease),height 420ms var(--ease),border-radius 420ms var(--ease),background 280ms var(--ease),border-color 280ms var(--ease),box-shadow 320ms var(--ease);
-  box-shadow:0 18px 48px rgba(0,0,0,0.55);
-}
-.live-notch:hover{
-  border-color:rgba(167,139,250,0.42);
-}
-.live-notch .sweep{
-  position:absolute;
-  inset:0;
-  pointer-events:none;
-  opacity:0;
-  background:linear-gradient(90deg,rgba(124,58,237,0) 0%,rgba(192,152,255,0.52) 78%,rgba(233,213,255,0) 100%);
-  transform:translateX(-110%);
-}
-.live-notch:not(.expanded):hover .sweep{
-  animation:capsuleSweep 650ms var(--ease) forwards;
-}
-@keyframes capsuleSweep{
-  0%{opacity:0;transform:translateX(-85%)}
-  20%{opacity:1}
-  75%{opacity:0.95}
-  100%{opacity:0;transform:translateX(105%)}
-}
-.notch-idle{
-  position:absolute;
-  inset:0;
-  display:flex;
-  align-items:center;
-  justify-content:space-between;
-  padding:0 18px;
-  transition:opacity 180ms var(--ease);
-}
-.wolf-eyes{
-  display:inline-flex;
-  align-items:center;
-  gap:10px;
-}
-.wolf-eye{
-  width:13px;
-  height:5px;
-  border-radius:999px 999px 2px 2px;
-  background:linear-gradient(90deg,#A855F7,#E9D5FF);
-  animation:eyeBreath 4s ease-in-out infinite;
-}
-.wolf-eye.r{transform:scaleX(-1)}
-@keyframes eyeBreath{
-  0%,100%{opacity:0.78;transform:scaleY(1)}
-  50%{opacity:1;transform:scaleY(1.12)}
-  92%{transform:scaleY(0.15)}
-  96%{transform:scaleY(1)}
-}
-.idle-stat{
-  font-family:var(--mono);
-  font-size:0.72rem;
-  color:var(--muted);
-  letter-spacing:0.02em;
-}
-.idle-stat strong{color:var(--ink);font-weight:600}
-
-.live-notch.expanded{
-  width:min(680px,calc(100vw - 32px));
-  height:auto;
-  min-height:312px;
-  border-radius:28px;
-  background:transparent;
-  border-color:transparent;
-  box-shadow:none;
-  overflow:visible;
-  cursor:default;
-}
-.live-notch.expanded .notch-idle{opacity:0;pointer-events:none}
-.notch-panel{
-  position:relative;
-  display:none;
-  flex-direction:column;
-  align-items:center;
-  gap:12px;
-  opacity:0;
-  transform:translateY(8px);
-  transition:opacity 240ms var(--ease),transform 320ms var(--ease);
-}
-.live-notch.expanded .notch-panel{
-  display:flex;
-  opacity:1;
-  transform:translateY(0);
-}
-.notch-real-frame{
-  width:100%;
-  display:flex;
-  justify-content:center;
-  align-items:center;
-}
-.notch-real-img{
-  width:100%;
-  max-width:680px;
-  height:auto;
-  filter:drop-shadow(0 26px 56px rgba(0,0,0,0.68));
-  transition:opacity 200ms var(--ease),transform 240ms var(--ease);
-}
-.notch-real-img.pref{
-  max-width:540px;
-}
-.notch-controls{
-  display:flex;
-  flex-wrap:wrap;
-  align-items:center;
-  justify-content:center;
-  gap:8px;
-}
-.notch-tabs{
-  display:inline-flex;
-  flex-wrap:wrap;
-  justify-content:center;
-  gap:4px;
-  padding:4px;
-  border-radius:999px;
-  background:var(--glass);
-  border:1px solid var(--line-hi);
-  backdrop-filter:blur(14px);
-  -webkit-backdrop-filter:blur(14px);
-}
-.notch-tab{
-  padding:6px 14px;
-  min-height:34px;
-  border-radius:999px;
-  font-family:var(--mono);
-  font-size:0.74rem;
-  color:var(--muted);
-  transition:background 180ms var(--ease),color 180ms var(--ease);
-}
-.notch-tab:hover{color:var(--ink)}
-.notch-tab.active{
-  background:var(--violet);
-  color:var(--ink);
-}
-.notch-close{
-  padding:6px 14px;
-  min-height:38px;
-  border-radius:999px;
-  background:var(--glass);
-  border:1px solid var(--line-hi);
-  font-family:var(--mono);
-  font-size:0.74rem;
-  color:var(--muted);
-}
-.notch-close:hover{color:var(--ink);border-color:var(--violet-soft)}
 
 /* Hero Copy & Inline Visual Punctuation (Centered Monumental) */
 .hero-kicker{
@@ -1057,7 +883,7 @@ footer{
 <header class="nav-wrap">
   <nav class="nav" aria-label="Primary">
     <a class="brand" href="#top">
-      <img src="./assets/cynotch-icon-64.png?v=1.0.0" alt="CyNotch emblem" width="28" height="28">
+      <img src="./assets/cynotch-icon-64.png?v=1.0.1" alt="CyNotch emblem" width="28" height="28">
       <span class="brand-word">CY<span>/</span>NOTCH</span>
     </a>
 
@@ -1089,36 +915,6 @@ footer{
     <canvas id="starfield" aria-hidden="true"></canvas>
 
     <div class="wrap">
-      <!-- Live Interactive CyNotch Top-Bezel Preview (Real Transparent v1.0.0 Renders) -->
-      <div class="bezel-stage">
-        <div class="bezel-hint" id="bezelHint">Hover or click the live bezel capsule to preview real CyNotch v1.0.0</div>
-        <div class="live-notch" id="liveNotch" role="button" tabindex="0" aria-expanded="false" aria-label="Interactive CyNotch capsule preview">
-          <div class="sweep" aria-hidden="true"></div>
-          <div class="notch-idle">
-            <div class="wolf-eyes" aria-hidden="true">
-              <span class="wolf-eye"></span>
-              <span class="wolf-eye r"></span>
-            </div>
-            <div class="idle-stat"><strong>v1.0.0</strong> &middot; 144Hz GPU</div>
-          </div>
-          <div class="notch-panel">
-            <div class="notch-real-frame">
-              <img class="notch-real-img" id="notchRealImg" src="./assets/real/cynotch-home.png?v=1.0.0" alt="Real CyNotch v1.0.0 Command Hub render">
-            </div>
-            <div class="notch-controls">
-              <div class="notch-tabs" role="tablist" aria-label="Real CyNotch mode renders">
-                <button class="notch-tab active" data-mode="home" type="button" role="tab" aria-selected="true">Home</button>
-                <button class="notch-tab" data-mode="music" type="button" role="tab" aria-selected="false">Music</button>
-                <button class="notch-tab" data-mode="ram" type="button" role="tab" aria-selected="false">MemReduct</button>
-                <button class="notch-tab" data-mode="shelf" type="button" role="tab" aria-selected="false">Shelf</button>
-                <button class="notch-tab" data-mode="prefs" type="button" role="tab" aria-selected="false">Preferences</button>
-              </div>
-              <button class="notch-close" id="notchClose" type="button">Collapse</button>
-            </div>
-          </div>
-        </div>
-      </div>
-
       <!-- Centered Monumental Editorial Hero -->
       <div class="hero-inner">
         <div class="hero-kicker"><i></i>General Mahamatra Edition &middot; Final Stable v1.0.0<i></i></div>
@@ -1223,8 +1019,8 @@ footer{
         <!-- Pillar 01 -->
         <article class="pillar-card">
           <div class="pillar-media">
-            <img src="./assets/real/cynotch-home.png?v=1.0.0" alt="CyNotch Command Hub screenshot">
-            <img class="idle-strip" src="./assets/real/cynotch-idle.png?v=1.0.0" alt="CyNotch collapsed idle capsule">
+            <img src="./assets/real/cynotch-home.png?v=1.0.1" alt="CyNotch Command Hub screenshot">
+            <img class="idle-strip" src="./assets/real/cynotch-idle.png?v=1.0.1" alt="CyNotch collapsed idle capsule">
           </div>
           <div class="pillar-copy">
             <div>
@@ -1243,7 +1039,7 @@ footer{
         <!-- Pillar 02 -->
         <article class="pillar-card">
           <div class="pillar-media">
-            <img src="./assets/real/cynotch-music.png?v=1.0.0" alt="CyNotch 3-box floating Music player screenshot">
+            <img src="./assets/real/cynotch-music.png?v=1.0.1" alt="CyNotch 3-box floating Music player screenshot">
           </div>
           <div class="pillar-copy">
             <div>
@@ -1262,7 +1058,7 @@ footer{
         <!-- Pillar 03 -->
         <article class="pillar-card">
           <div class="pillar-media">
-            <img src="./assets/real/cynotch-memreduct.png?v=1.0.0" alt="CyNotch Safe Trim Memory Reduct screenshot">
+            <img src="./assets/real/cynotch-memreduct.png?v=1.0.1" alt="CyNotch Safe Trim Memory Reduct screenshot">
           </div>
           <div class="pillar-copy">
             <div>
@@ -1281,7 +1077,7 @@ footer{
         <!-- Pillar 04 -->
         <article class="pillar-card">
           <div class="pillar-media">
-            <img src="./assets/real/cynotch-shelf.png?v=1.0.0" alt="CyNotch Native OLE Quick Shelf screenshot">
+            <img src="./assets/real/cynotch-shelf.png?v=1.0.1" alt="CyNotch Native OLE Quick Shelf screenshot">
           </div>
           <div class="pillar-copy">
             <div>
@@ -1300,7 +1096,7 @@ footer{
         <!-- Pillar 05 -->
         <article class="pillar-card">
           <div class="pillar-media">
-            <img src="./assets/real/cynotch-settings-general.png?v=1.0.0" alt="CyNotch v1.0.0 Graphite Obsidian Preferences screenshot">
+            <img src="./assets/real/cynotch-settings-general.png?v=1.0.1" alt="CyNotch v1.0.0 Graphite Obsidian Preferences screenshot">
           </div>
           <div class="pillar-copy">
             <div>
@@ -1499,78 +1295,7 @@ footer{
     }));
   }
 
-  // 2. Interactive Top-Bezel Live CyNotch Capsule (Real Transparent v1.0.0 Renders)
-  const notch = document.getElementById('liveNotch');
-  const notchClose = document.getElementById('notchClose');
-  const notchRealImg = document.getElementById('notchRealImg');
-  const bezelHint = document.getElementById('bezelHint');
-  const realModes = {
-    home: { src: './assets/real/cynotch-home.png?v=1.0.0', alt: 'Real CyNotch v1.0.0 Command Hub render', pref: false },
-    music: { src: './assets/real/cynotch-music.png?v=1.0.0', alt: 'Real CyNotch v1.0.0 3-box floating Music render', pref: false },
-    ram: { src: './assets/real/cynotch-memreduct.png?v=1.0.0', alt: 'Real CyNotch v1.0.0 Safe Trim Memory Reduct render', pref: false },
-    shelf: { src: './assets/real/cynotch-shelf.png?v=1.0.0', alt: 'Real CyNotch v1.0.0 Native OLE Quick Shelf render', pref: false },
-    prefs: { src: './assets/real/cynotch-settings-general.png?v=1.0.0', alt: 'Real CyNotch v1.0.0 Graphite Obsidian Preferences render', pref: true }
-  };
-
-  let dwellTimer = null;
-  function setExpanded(on) {
-    if (!notch) return;
-    notch.classList.toggle('expanded', on);
-    notch.setAttribute('aria-expanded', String(on));
-    if (bezelHint) {
-      bezelHint.textContent = on
-        ? 'Real CyNotch v1.0.0 Direct2D render — switch modes or click Collapse'
-        : 'Hover or click the live bezel capsule to preview real CyNotch v1.0.0';
-    }
-  }
-  if (notch) {
-    notch.addEventListener('mouseenter', () => {
-      if (notch.classList.contains('expanded')) return;
-      clearTimeout(dwellTimer);
-      dwellTimer = setTimeout(() => setExpanded(true), 650);
-    });
-    notch.addEventListener('mouseleave', () => {
-      clearTimeout(dwellTimer);
-    });
-    notch.addEventListener('click', (e) => {
-      if (e.target.closest('button')) return;
-      clearTimeout(dwellTimer);
-      if (!notch.classList.contains('expanded')) setExpanded(true);
-    });
-    notch.addEventListener('keydown', (e) => {
-      if ((e.key === 'Enter' || e.key === ' ') && !notch.classList.contains('expanded')) {
-        e.preventDefault();
-        setExpanded(true);
-      }
-    });
-  }
-  if (notchClose) {
-    notchClose.addEventListener('click', (e) => {
-      e.stopPropagation();
-      clearTimeout(dwellTimer);
-      setExpanded(false);
-    });
-  }
-  document.querySelectorAll('.notch-tab').forEach(btn => {
-    btn.addEventListener('click', (e) => {
-      e.stopPropagation();
-      document.querySelectorAll('.notch-tab').forEach(b => {
-        b.classList.remove('active');
-        b.setAttribute('aria-selected', 'false');
-      });
-      btn.classList.add('active');
-      btn.setAttribute('aria-selected', 'true');
-      const m = btn.getAttribute('data-mode');
-      const cfg = realModes[m];
-      if (notchRealImg && cfg) {
-        notchRealImg.src = cfg.src;
-        notchRealImg.alt = cfg.alt;
-        notchRealImg.classList.toggle('pref', cfg.pref);
-      }
-    });
-  });
-
-  // 3. Kinetic Scroll-Reveal Manifesto (Made to Disrupt character/word highlight)
+  // 2. Kinetic Scroll-Reveal Manifesto (Made to Disrupt character/word highlight)
   const kinetic = document.getElementById('kineticCopy');
   if (kinetic && !reduced) {
     const goldWords = new Set(['Rust', 'Direct2D,', 'DirectComposition', 'milliseconds', 'CyNotch']);
