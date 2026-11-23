@@ -12,7 +12,8 @@
 <meta property="og:image" content="https://raw.githubusercontent.com/muhnbl/CyNotch/main/assets/cynotch_icon.png">
 <meta name="twitter:card" content="summary_large_image">
 <link rel="canonical" href="https://muhnbl.github.io/CyNotch/">
-<link rel="icon" href="./assets/cynotch-icon-64.png" sizes="64x64" type="image/png">
+<link rel="icon" href="./assets/cynotch-icon-64.png?v=1.0.0" sizes="64x64" type="image/png">
+<link rel="apple-touch-icon" href="./assets/cynotch-icon-192.png?v=1.0.0">
 <link rel="preconnect" href="https://api.fontshare.com" crossorigin>
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
@@ -291,22 +292,23 @@ body::after{
 .hero-inner{
   position:relative;
   z-index:2;
-  display:grid;
-  grid-template-columns:minmax(0,1.18fr) minmax(0,0.82fr);
-  gap:clamp(32px,5vw,68px);
+  max-width:980px;
+  margin:clamp(24px,4vh,48px) auto 0;
+  display:flex;
+  flex-direction:column;
   align-items:center;
-  margin-top:clamp(20px,3vh,42px);
+  text-align:center;
 }
 
-/* Interactive Top-Bezel CyNotch Live Demo */
+/* Interactive Top-Bezel CyNotch Live Demo (Real v1.0.0 Transparent Renders) */
 .bezel-stage{
   position:relative;
   z-index:3;
   display:flex;
   flex-direction:column;
   align-items:center;
-  gap:10px;
-  margin-bottom:clamp(24px,4vh,44px);
+  gap:12px;
+  margin-bottom:clamp(24px,4vh,42px);
 }
 .bezel-hint{
   font-family:var(--mono);
@@ -325,7 +327,7 @@ body::after{
   border:1px solid rgba(245,243,255,0.14);
   overflow:hidden;
   cursor:pointer;
-  transition:width 420ms var(--ease),height 420ms var(--ease),border-radius 420ms var(--ease),border-color 280ms var(--ease);
+  transition:width 420ms var(--ease),height 420ms var(--ease),border-radius 420ms var(--ease),background 280ms var(--ease),border-color 280ms var(--ease),box-shadow 320ms var(--ease);
   box-shadow:0 18px 48px rgba(0,0,0,0.55);
 }
 .live-notch:hover{
@@ -385,140 +387,121 @@ body::after{
 .idle-stat strong{color:var(--ink);font-weight:600}
 
 .live-notch.expanded{
-  width:min(620px,calc(100vw - 32px));
-  height:256px;
+  width:min(680px,calc(100vw - 32px));
+  height:auto;
+  min-height:312px;
   border-radius:28px;
+  background:transparent;
+  border-color:transparent;
+  box-shadow:none;
+  overflow:visible;
   cursor:default;
 }
 .live-notch.expanded .notch-idle{opacity:0;pointer-events:none}
 .notch-panel{
-  position:absolute;
-  inset:0;
-  padding:16px 18px;
-  display:flex;
+  position:relative;
+  display:none;
   flex-direction:column;
+  align-items:center;
   gap:12px;
   opacity:0;
-  pointer-events:none;
   transform:translateY(8px);
-  transition:opacity 240ms var(--ease) 100ms,transform 320ms var(--ease) 80ms;
+  transition:opacity 240ms var(--ease),transform 320ms var(--ease);
 }
 .live-notch.expanded .notch-panel{
+  display:flex;
   opacity:1;
-  pointer-events:auto;
   transform:translateY(0);
 }
-.notch-head{
+.notch-real-frame{
+  width:100%;
   display:flex;
+  justify-content:center;
   align-items:center;
-  justify-content:space-between;
-  gap:10px;
+}
+.notch-real-img{
+  width:100%;
+  max-width:680px;
+  height:auto;
+  filter:drop-shadow(0 26px 56px rgba(0,0,0,0.68));
+  transition:opacity 200ms var(--ease),transform 240ms var(--ease);
+}
+.notch-real-img.pref{
+  max-width:540px;
+}
+.notch-controls{
+  display:flex;
+  flex-wrap:wrap;
+  align-items:center;
+  justify-content:center;
+  gap:8px;
 }
 .notch-tabs{
   display:inline-flex;
+  flex-wrap:wrap;
+  justify-content:center;
   gap:4px;
-  padding:3px;
+  padding:4px;
   border-radius:999px;
-  background:rgba(255,255,255,0.04);
-  border:1px solid var(--line);
+  background:var(--glass);
+  border:1px solid var(--line-hi);
+  backdrop-filter:blur(14px);
+  -webkit-backdrop-filter:blur(14px);
 }
 .notch-tab{
-  padding:5px 12px;
+  padding:6px 14px;
+  min-height:34px;
   border-radius:999px;
   font-family:var(--mono);
-  font-size:0.72rem;
+  font-size:0.74rem;
   color:var(--muted);
   transition:background 180ms var(--ease),color 180ms var(--ease);
 }
+.notch-tab:hover{color:var(--ink)}
 .notch-tab.active{
   background:var(--violet);
   color:var(--ink);
 }
 .notch-close{
-  padding:4px 10px;
+  padding:6px 14px;
+  min-height:38px;
   border-radius:999px;
-  border:1px solid var(--line);
+  background:var(--glass);
+  border:1px solid var(--line-hi);
   font-family:var(--mono);
-  font-size:0.72rem;
+  font-size:0.74rem;
   color:var(--muted);
 }
-.notch-close:hover{color:var(--ink);border-color:var(--line-hi)}
-.notch-body{
-  flex:1;
-  display:grid;
-  grid-template-columns:1.1fr 1fr;
-  gap:12px;
-  align-items:stretch;
-}
-.notch-card{
-  background:rgba(255,255,255,0.035);
-  border:1px solid rgba(245,243,255,0.07);
-  border-radius:16px;
-  padding:14px 16px;
-  display:flex;
-  flex-direction:column;
-  justify-content:space-between;
-  text-align:left;
-}
-.notch-card-label{
-  font-family:var(--mono);
-  font-size:0.7rem;
-  text-transform:uppercase;
-  letter-spacing:0.08em;
-  color:var(--violet-soft);
-}
-.notch-card-title{
-  font-family:var(--display);
-  font-size:1.15rem;
-  font-weight:600;
-  color:var(--ink);
-  margin-top:4px;
-}
-.notch-card-sub{
-  font-size:0.82rem;
-  color:var(--muted);
-}
-.notch-bar{
-  height:6px;
-  border-radius:999px;
-  background:rgba(255,255,255,0.08);
-  overflow:hidden;
-  margin-top:8px;
-}
-.notch-bar span{
-  display:block;
-  height:100%;
-  width:57%;
-  border-radius:999px;
-  background:linear-gradient(90deg,var(--violet),var(--gold));
-}
+.notch-close:hover{color:var(--ink);border-color:var(--violet-soft)}
 
-/* Hero Copy & Inline Visual Punctuation */
+/* Hero Copy & Inline Visual Punctuation (Centered Monumental) */
 .hero-kicker{
   display:inline-flex;
   align-items:center;
+  justify-content:center;
   gap:10px;
   font-family:var(--mono);
   font-size:0.8125rem;
   letter-spacing:0.12em;
   text-transform:uppercase;
   color:var(--gold);
-  margin-bottom:20px;
+  margin-bottom:22px;
 }
 .hero-kicker i{
   display:inline-block;
-  width:26px;
+  width:24px;
   height:1px;
   background:var(--gold);
 }
 .hero-title{
   font-family:var(--display);
   font-weight:700;
-  font-size:clamp(2.85rem,6.4vw,5.8rem);
-  line-height:0.96;
+  font-size:clamp(3.1rem,7.8vw,6.8rem);
+  line-height:0.95;
   letter-spacing:-0.03em;
   text-transform:uppercase;
   color:var(--ink);
+  text-align:center;
 }
 .hero-title .inline-chip{
   display:inline-flex;
@@ -540,16 +523,18 @@ body::after{
 }
 .hero-title .accent-word{color:var(--violet-soft)}
 .hero-lead{
-  margin-top:24px;
-  max-width:52ch;
-  font-size:1.125rem;
+  margin:26px auto 0;
+  max-width:58ch;
+  font-size:1.15rem;
   color:var(--muted);
+  text-align:center;
 }
 .hero-actions{
-  margin-top:32px;
+  margin-top:34px;
   display:flex;
   flex-wrap:wrap;
   align-items:center;
+  justify-content:center;
   gap:16px;
 }
 .hero-meta{
@@ -558,82 +543,27 @@ body::after{
   color:var(--muted);
   display:flex;
   flex-wrap:wrap;
+  justify-content:center;
   gap:14px;
-  margin-top:22px;
+  margin-top:24px;
 }
 .hero-meta span{
   padding-right:14px;
   border-right:1px solid var(--line);
 }
-.hero-meta span:last-child{border-right:0}
+.hero-meta span:last-child{border-right:0;padding-right:0}
 
-/* Hero Visual Stage (Asymmetric Orbital Frame + Cyno Accent) */
-.hero-stage{
-  position:relative;
-  display:grid;
-  gap:16px;
-}
-.stage-card{
-  position:relative;
-  border-radius:24px;
-  padding:18px;
-  background:var(--panel);
-  border:1px solid var(--line);
-  overflow:hidden;
-  transition:transform 420ms var(--ease),border-color 280ms var(--ease);
-}
-.stage-card:hover{
-  transform:translateY(-4px);
-  border-color:rgba(167,139,250,0.34);
-}
-.stage-card img{
-  width:100%;
-  border-radius:14px;
-}
-.stage-row{
-  display:grid;
-  grid-template-columns:1.2fr 0.8fr;
-  gap:16px;
-}
-.cyno-frame{
-  position:relative;
-  border-radius:24px;
-  background:linear-gradient(160deg,#1B142C 0%,#121218 100%);
-  border:1px solid rgba(244,235,181,0.22);
-  overflow:hidden;
-  display:flex;
-  flex-direction:column;
-  justify-content:space-between;
-  padding:16px;
-  min-height:190px;
-}
-.cyno-frame img{
-  width:100%;
-  height:142px;
-  object-fit:cover;
-  object-position:center 18%;
-  border-radius:14px;
-}
-.cyno-caption{
-  margin-top:10px;
-  font-family:var(--mono);
-  font-size:0.72rem;
-  letter-spacing:0.06em;
-  text-transform:uppercase;
-  color:var(--gold);
-  display:flex;
-  justify-content:space-between;
-}
-
-/* ── Tilted Diagonal Marquee Ribbons (Signature Made to Disrupt) ────────── */
+/* ── Tilted Diagonal Marquee Ribbons (Full Edge-to-Edge Bleed, Zero Clip) ─ */
 .ribbon-band{
   position:relative;
-  padding:28px 0;
+  padding:34px 0;
   overflow:hidden;
 }
 .ribbon{
-  display:flex;
-  width:max-content;
+  position:relative;
+  width:112vw;
+  margin-left:-6vw;
+  overflow:hidden;
   background:var(--ribbon-bg);
   color:var(--ribbon-ink);
   transform:rotate(-1.4deg);
@@ -650,6 +580,7 @@ body::after{
 }
 .ribbon-track{
   display:flex;
+  width:max-content;
   align-items:center;
   gap:36px;
   padding-right:36px;
@@ -838,13 +769,13 @@ body::after{
   border-right:1px solid var(--line);
 }
 .pillar-media img{
-  border-radius:16px;
-  border:1px solid rgba(245,243,255,0.12);
-  box-shadow:0 20px 50px rgba(0,0,0,0.45);
+  border-radius:0;
+  border:0;
+  box-shadow:none;
+  filter:drop-shadow(0 24px 48px rgba(0,0,0,0.62));
 }
 .pillar-media .idle-strip{
-  max-width:340px;
-  border-radius:999px;
+  max-width:300px;
 }
 .pillar-copy{
   padding:clamp(28px,4vw,52px);
@@ -1126,7 +1057,7 @@ footer{
 <header class="nav-wrap">
   <nav class="nav" aria-label="Primary">
     <a class="brand" href="#top">
-      <img src="./assets/cynotch-icon-64.png" alt="CyNotch emblem" width="28" height="28">
+      <img src="./assets/cynotch-icon-64.png?v=1.0.0" alt="CyNotch emblem" width="28" height="28">
       <span class="brand-word">CY<span>/</span>NOTCH</span>
     </a>
 
@@ -1158,9 +1089,9 @@ footer{
     <canvas id="starfield" aria-hidden="true"></canvas>
 
     <div class="wrap">
-      <!-- Live Interactive CyNotch Top-Bezel Preview -->
+      <!-- Live Interactive CyNotch Top-Bezel Preview (Real Transparent v1.0.0 Renders) -->
       <div class="bezel-stage">
-        <div class="bezel-hint" id="bezelHint">Hover or click the live bezel capsule to inspect v1.0.0</div>
+        <div class="bezel-hint" id="bezelHint">Hover or click the live bezel capsule to preview real CyNotch v1.0.0</div>
         <div class="live-notch" id="liveNotch" role="button" tabindex="0" aria-expanded="false" aria-label="Interactive CyNotch capsule preview">
           <div class="sweep" aria-hidden="true"></div>
           <div class="notch-idle">
@@ -1171,76 +1102,42 @@ footer{
             <div class="idle-stat"><strong>v1.0.0</strong> &middot; 144Hz GPU</div>
           </div>
           <div class="notch-panel">
-            <div class="notch-head">
-              <div class="notch-tabs" role="tablist" aria-label="Notch preview modes">
+            <div class="notch-real-frame">
+              <img class="notch-real-img" id="notchRealImg" src="./assets/real/cynotch-home.png?v=1.0.0" alt="Real CyNotch v1.0.0 Command Hub render">
+            </div>
+            <div class="notch-controls">
+              <div class="notch-tabs" role="tablist" aria-label="Real CyNotch mode renders">
                 <button class="notch-tab active" data-mode="home" type="button" role="tab" aria-selected="true">Home</button>
                 <button class="notch-tab" data-mode="music" type="button" role="tab" aria-selected="false">Music</button>
                 <button class="notch-tab" data-mode="ram" type="button" role="tab" aria-selected="false">MemReduct</button>
                 <button class="notch-tab" data-mode="shelf" type="button" role="tab" aria-selected="false">Shelf</button>
+                <button class="notch-tab" data-mode="prefs" type="button" role="tab" aria-selected="false">Preferences</button>
               </div>
               <button class="notch-close" id="notchClose" type="button">Collapse</button>
-            </div>
-            <div class="notch-body" id="notchBody">
-              <div class="notch-card">
-                <div>
-                  <div class="notch-card-label">General Cyno &middot; Command Hub</div>
-                  <div class="notch-card-title">RAM 57% &middot; 18.2 GB</div>
-                  <div class="notch-card-sub">Safe Trim ready &middot; zero app stutter</div>
-                </div>
-                <div class="notch-bar"><span></span></div>
-              </div>
-              <div class="notch-card">
-                <div>
-                  <div class="notch-card-label">Now Playing &middot; SMTC</div>
-                  <div class="notch-card-title">Golden Hour Drive</div>
-                  <div class="notch-card-sub">Northbound &middot; LRCLIB synced</div>
-                </div>
-                <div class="notch-card-sub" style="font-family:var(--mono);color:var(--gold)">3 parked on Quick Shelf</div>
-              </div>
             </div>
           </div>
         </div>
       </div>
 
-      <!-- Asymmetric Editorial Hero Grid -->
+      <!-- Centered Monumental Editorial Hero -->
       <div class="hero-inner">
-        <div>
-          <div class="hero-kicker"><i></i>General Mahamatra Edition &middot; Final Stable v1.0.0</div>
-          <h1 class="hero-title">
-            The <span class="accent-word">Notch</span>
-            <span class="inline-chip" aria-hidden="true"><img src="./assets/cyno/cyno-icon.webp" alt=""></span>
-            Windows Deserved.
-          </h1>
-          <p class="hero-lead">
-            A 1.70 MB Rust-native Dynamic Island and ambient command hub for Windows 10 &amp; 11. Built directly on Direct2D, DirectWrite, and triple-buffered DirectComposition with zero Electron, zero WebView2, and 144Hz GPU-cached transitions.
-          </p>
-          <div class="hero-actions">
-            <a class="btn-pill" href="https://github.com/muhnbl/CyNotch/releases/tag/v1.0.0" target="_blank" rel="noopener">Download v1.0.0 Portable</a>
-            <a class="btn-outline" href="https://github.com/muhnbl/CyNotch" target="_blank" rel="noopener">Source on GitHub &nearr;</a>
-          </div>
-          <div class="hero-meta">
-            <span>1.70 MB single .exe</span>
-            <span>Windows 10 / 11 x64</span>
-            <span>147 / 147 tests passing</span>
-          </div>
+        <div class="hero-kicker"><i></i>General Mahamatra Edition &middot; Final Stable v1.0.0<i></i></div>
+        <h1 class="hero-title">
+          The <span class="accent-word">Notch</span>
+          <span class="inline-chip" aria-hidden="true"><img src="./assets/cyno/cyno-icon.webp" alt=""></span>
+          <br>Windows Deserved.
+        </h1>
+        <p class="hero-lead">
+          A 1.70 MB Rust-native Dynamic Island and ambient command hub for Windows 10 &amp; 11. Built directly on Direct2D, DirectWrite, and triple-buffered DirectComposition with zero Electron, zero WebView2, and 144Hz GPU-cached transitions.
+        </p>
+        <div class="hero-actions">
+          <a class="btn-pill" href="https://github.com/muhnbl/CyNotch/releases/tag/v1.0.0" target="_blank" rel="noopener">Download v1.0.0 Portable</a>
+          <a class="btn-outline" href="https://github.com/muhnbl/CyNotch" target="_blank" rel="noopener">Source on GitHub &nearr;</a>
         </div>
-
-        <div class="hero-stage">
-          <div class="stage-card">
-            <img src="./assets/real/cynotch-home.png" alt="CyNotch v1.0.0 Command Hub rendered with Direct2D Obsidian Liquid Glass">
-          </div>
-          <div class="stage-row">
-            <div class="stage-card">
-              <img src="./assets/real/cynotch-music.png" alt="CyNotch v1.0.0 3-box floating Music mode with synced lyrics">
-            </div>
-            <div class="cyno-frame">
-              <img src="./assets/cyno/cyno-wish.webp" alt="Cyno Electro Violet visual inspiration">
-              <div class="cyno-caption">
-                <span>Electro Obsidian</span>
-                <span>#7C3AED</span>
-              </div>
-            </div>
-          </div>
+        <div class="hero-meta">
+          <span>1.70 MB single .exe</span>
+          <span>Windows 10 / 11 x64</span>
+          <span>147 / 147 tests passing</span>
         </div>
       </div>
     </div>
@@ -1326,8 +1223,8 @@ footer{
         <!-- Pillar 01 -->
         <article class="pillar-card">
           <div class="pillar-media">
-            <img src="./assets/real/cynotch-home.png" alt="CyNotch Command Hub screenshot">
-            <img class="idle-strip" src="./assets/real/cynotch-idle.png" alt="CyNotch collapsed idle capsule">
+            <img src="./assets/real/cynotch-home.png?v=1.0.0" alt="CyNotch Command Hub screenshot">
+            <img class="idle-strip" src="./assets/real/cynotch-idle.png?v=1.0.0" alt="CyNotch collapsed idle capsule">
           </div>
           <div class="pillar-copy">
             <div>
@@ -1346,7 +1243,7 @@ footer{
         <!-- Pillar 02 -->
         <article class="pillar-card">
           <div class="pillar-media">
-            <img src="./assets/real/cynotch-music.png" alt="CyNotch 3-box floating Music player screenshot">
+            <img src="./assets/real/cynotch-music.png?v=1.0.0" alt="CyNotch 3-box floating Music player screenshot">
           </div>
           <div class="pillar-copy">
             <div>
@@ -1365,7 +1262,7 @@ footer{
         <!-- Pillar 03 -->
         <article class="pillar-card">
           <div class="pillar-media">
-            <img src="./assets/real/cynotch-memreduct.png" alt="CyNotch Safe Trim Memory Reduct screenshot">
+            <img src="./assets/real/cynotch-memreduct.png?v=1.0.0" alt="CyNotch Safe Trim Memory Reduct screenshot">
           </div>
           <div class="pillar-copy">
             <div>
@@ -1384,7 +1281,7 @@ footer{
         <!-- Pillar 04 -->
         <article class="pillar-card">
           <div class="pillar-media">
-            <img src="./assets/real/cynotch-shelf.png" alt="CyNotch Native OLE Quick Shelf screenshot">
+            <img src="./assets/real/cynotch-shelf.png?v=1.0.0" alt="CyNotch Native OLE Quick Shelf screenshot">
           </div>
           <div class="pillar-copy">
             <div>
@@ -1403,7 +1300,7 @@ footer{
         <!-- Pillar 05 -->
         <article class="pillar-card">
           <div class="pillar-media">
-            <img src="./assets/real/cynotch-settings-general.png" alt="CyNotch v1.0.0 Graphite Obsidian Preferences screenshot">
+            <img src="./assets/real/cynotch-settings-general.png?v=1.0.0" alt="CyNotch v1.0.0 Graphite Obsidian Preferences screenshot">
           </div>
           <div class="pillar-copy">
             <div>
@@ -1602,80 +1499,17 @@ footer{
     }));
   }
 
-  // 2. Interactive Top-Bezel Live CyNotch Capsule
+  // 2. Interactive Top-Bezel Live CyNotch Capsule (Real Transparent v1.0.0 Renders)
   const notch = document.getElementById('liveNotch');
   const notchClose = document.getElementById('notchClose');
-  const notchBody = document.getElementById('notchBody');
+  const notchRealImg = document.getElementById('notchRealImg');
   const bezelHint = document.getElementById('bezelHint');
-  const modeTemplates = {
-    home: `
-      <div class="notch-card">
-        <div>
-          <div class="notch-card-label">General Cyno &middot; Command Hub</div>
-          <div class="notch-card-title">RAM 57% &middot; 18.2 GB</div>
-          <div class="notch-card-sub">Safe Trim ready &middot; zero app stutter</div>
-        </div>
-        <div class="notch-bar"><span style="width:57%"></span></div>
-      </div>
-      <div class="notch-card">
-        <div>
-          <div class="notch-card-label">Now Playing &middot; SMTC</div>
-          <div class="notch-card-title">Golden Hour Drive</div>
-          <div class="notch-card-sub">Northbound &middot; LRCLIB synced</div>
-        </div>
-        <div class="notch-card-sub" style="font-family:var(--mono);color:var(--gold)">3 parked on Quick Shelf</div>
-      </div>`,
-    music: `
-      <div class="notch-card">
-        <div>
-          <div class="notch-card-label">Synced Lyrics &middot; LRCLIB</div>
-          <div class="notch-card-title">Nowhere else we need to go</div>
-          <div class="notch-card-sub">Chasing golden horizons through the midnight glow</div>
-        </div>
-        <div class="notch-bar"><span style="width:42%"></span></div>
-      </div>
-      <div class="notch-card">
-        <div>
-          <div class="notch-card-label">WinRT SMTC Controls</div>
-          <div class="notch-card-title">Golden Hour Drive</div>
-          <div class="notch-card-sub">Northbound &middot; 1:03 / -2:31</div>
-        </div>
-        <div class="notch-card-sub" style="font-family:var(--mono);color:var(--violet-soft)">3-Box Floating Glass</div>
-      </div>`,
-    ram: `
-      <div class="notch-card">
-        <div>
-          <div class="notch-card-label">Safe Trim Profile</div>
-          <div class="notch-card-title">18.2 GB / 32.0 GB</div>
-          <div class="notch-card-sub">Working Sets + File Cache + Low-Priority Standby</div>
-        </div>
-        <div class="notch-bar"><span style="width:48%"></span></div>
-      </div>
-      <div class="notch-card">
-        <div>
-          <div class="notch-card-label">Last Trim Result</div>
-          <div class="notch-card-title">3,042 MB Freed</div>
-          <div class="notch-card-sub">70% &rarr; 48% &middot; apps &amp; tabs intact</div>
-        </div>
-        <div class="notch-card-sub" style="font-family:var(--mono);color:var(--gold)">Hotkey: Ctrl+Alt+M</div>
-      </div>`,
-    shelf: `
-      <div class="notch-card">
-        <div>
-          <div class="notch-card-label">Native OLE Quick Shelf</div>
-          <div class="notch-card-title">3 Items Parked</div>
-          <div class="notch-card-sub">screenshot_v1.png &middot; release_notes.md &middot; URL</div>
-        </div>
-        <div class="notch-card-sub" style="font-family:var(--mono);color:var(--gold)">8s Undo &middot; Password-Manager Safe</div>
-      </div>
-      <div class="notch-card">
-        <div>
-          <div class="notch-card-label">Drag Out Anywhere</div>
-          <div class="notch-card-title">IDropTarget / IDropSource</div>
-          <div class="notch-card-sub">Drop files, CF_DIB snips, or links directly onto bezel</div>
-        </div>
-        <div class="notch-card-sub" style="font-family:var(--mono);color:var(--violet-soft)">Hotkey: Ctrl+Alt+S</div>
-      </div>`
+  const realModes = {
+    home: { src: './assets/real/cynotch-home.png?v=1.0.0', alt: 'Real CyNotch v1.0.0 Command Hub render', pref: false },
+    music: { src: './assets/real/cynotch-music.png?v=1.0.0', alt: 'Real CyNotch v1.0.0 3-box floating Music render', pref: false },
+    ram: { src: './assets/real/cynotch-memreduct.png?v=1.0.0', alt: 'Real CyNotch v1.0.0 Safe Trim Memory Reduct render', pref: false },
+    shelf: { src: './assets/real/cynotch-shelf.png?v=1.0.0', alt: 'Real CyNotch v1.0.0 Native OLE Quick Shelf render', pref: false },
+    prefs: { src: './assets/real/cynotch-settings-general.png?v=1.0.0', alt: 'Real CyNotch v1.0.0 Graphite Obsidian Preferences render', pref: true }
   };
 
   let dwellTimer = null;
@@ -1685,8 +1519,8 @@ footer{
     notch.setAttribute('aria-expanded', String(on));
     if (bezelHint) {
       bezelHint.textContent = on
-        ? 'Live preview expanded — switch modes or click Collapse'
-        : 'Hover or click the live bezel capsule to inspect v1.0.0';
+        ? 'Real CyNotch v1.0.0 Direct2D render — switch modes or click Collapse'
+        : 'Hover or click the live bezel capsule to preview real CyNotch v1.0.0';
     }
   }
   if (notch) {
@@ -1727,7 +1561,12 @@ footer{
       btn.classList.add('active');
       btn.setAttribute('aria-selected', 'true');
       const m = btn.getAttribute('data-mode');
-      if (notchBody && modeTemplates[m]) notchBody.innerHTML = modeTemplates[m];
+      const cfg = realModes[m];
+      if (notchRealImg && cfg) {
+        notchRealImg.src = cfg.src;
+        notchRealImg.alt = cfg.alt;
+        notchRealImg.classList.toggle('pref', cfg.pref);
+      }
     });
   });
 
