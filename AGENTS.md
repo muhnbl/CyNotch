@@ -26,4 +26,4 @@ Strict invariants for any future change to **CyNotch**:
 ## 4. Mandatory Verification Gate (Before Reporting Done)
 1. Run `cargo test` (must exit `0`, 100% pass).
 2. For any UI/layout/shader change, run `cargo run --example snap_d2d -- snap_test`, visually inspect the affected PNGs (`read_file`), and delete `snap_test/` afterward.
-3. Run `cargo build --release`, deploy `target\release\cynotch.exe` to `C:\Users\muhna\.local\bin\cynotch.exe`, and keep `git status` clean.
+3. Run `cargo build --release`, deploy `target\release\cynotch.exe` to `%USERPROFILE%\.local\bin\cynotch.exe`, and keep `git status` clean.

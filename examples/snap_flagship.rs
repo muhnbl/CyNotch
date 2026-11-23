@@ -126,16 +126,16 @@ fn main() -> Result<()> {
     let (w, h) = (ms.current_width.round() as u32, ms.current_height.round() as u32);
     let mut r = Renderer::new(w, h).unwrap();
 
-    let p1 = std::path::PathBuf::from(r"C:\Users\muhna\.gemini\antigravity\scratch\CyNotch-v0.3.1\cynotch_flagship_music.png");
-    let p2 = std::path::PathBuf::from(r"C:\Users\muhna\.gemini\antigravity\brain\78655c5b-3932-4943-ac62-62da1685b003\cynotch_flagship_music.png");
+    let out_dir = std::env::args()
+        .nth(1)
+        .map(std::path::PathBuf::from)
+        .unwrap_or_else(|| std::path::PathBuf::from("."));
+    let p1 = out_dir.join("cynotch_flagship_music.png");
 
     snap_transparent(&ctx, &p1, w, h, |c| {
         r.render_d2d(c, &ms, None);
     })?;
-    snap_transparent(&ctx, &p2, w, h, |c| {
-        r.render_d2d(c, &ms, None);
-    })?;
 
-    println!("Flagship Music rendered directly from engine ({}x{}): {:?} and {:?}", w, h, p1, p2);
+    println!("Flagship Music rendered directly from engine ({}x{}): {:?}", w, h, p1);
     Ok(())
 }

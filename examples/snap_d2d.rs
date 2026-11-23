@@ -416,7 +416,7 @@ fn main() -> Result<()> {
             ws.is_pinned = name == "cynotch-home";
             ws.media.is_playing = true;
             ws.anim_time = 0.42;
-            ws.capture.last_path = Some("C:\\Users\\muhna\\Pictures\\CyNotch\\cyshot_desktop_20261120.png".to_string());
+            ws.capture.last_path = Some("C:\\Users\\user\\Pictures\\CyNotch\\cyshot_desktop_20261120.png".to_string());
             ws.capture.last_filename = "cyshot_desktop_20261120.png".to_string();
             ws.capture.last_dims = "1920 × 1080".to_string();
             ws.capture.clipboard_ok = true;

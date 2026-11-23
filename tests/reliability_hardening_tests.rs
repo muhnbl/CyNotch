@@ -311,9 +311,11 @@ fn bh09_persistence_stress_and_screentime_recovery() {
 fn bh08_bh13_bh14_bh22_security_and_state_stress_invariants() {
     // BH-08: Zero developer personal paths in preview/default state
     let preview = AppState::new_for_preview();
+    let active_user = std::env::var("USERNAME").unwrap_or_default().to_ascii_lowercase();
     for item in &preview.shelf_items {
+        let lower = item.payload.to_ascii_lowercase();
         assert!(
-            !item.payload.to_ascii_lowercase().contains("muhna"),
+            !lower.contains(r"\users\") && (active_user.is_empty() || !lower.contains(&active_user)),
             "personal path leaked in shelf preview: {}",
             item.payload
         );

@@ -39,7 +39,7 @@
 - **Vertical Quick Shelf & Staggered Mode Motion**: Converted `Quick Shelf` to a 3-visible-row vertical stacked list (`draw_shelf_item_row` with kind icon, ellipsized label, hover highlight, `✕` remove button, and vertical scroll), and upgraded all 5 modes (`Home`, `Music`, `Volume`, `MemReduct`, `Shelf`) to `--ray-fast` (`120ms`, `+6px → 0` + fade) per-card/per-box staggered entrances respecting `SPI_GETCLIENTAREAANIMATION`.
 - **Streamlined 4-Section Preferences**: Consolidated Settings into `General & Notch` (including Background Listeners), `Motion & Perf`, `Notifications`, and `Memory & System`, with card stagger on category switch.
 - **Click-Through, Fullscreen Auto-Suppress & Clipboard Privacy (`src/window.rs`)**: `WS_EX_LAYERED | WS_EX_TRANSPARENT` when collapsed (`click_to_open` OFF), `HoverDwellSpeed` defaulting to `Normal (650ms)` (`300ms / 650ms / 1000ms`), conflict-free global hotkeys (`Ctrl+Alt+C` / `Ctrl+Alt+M` / `Ctrl+Alt+S`), `SHQueryUserNotificationState` fullscreen auto-suppress over games/videos, and Windows clipboard privacy format checks (`ExcludeClipboardContentFromMonitorProcessing` & `CanIncludeInClipboardHistory`) skipping password managers.
-- **Verified**: All test suites passing (`cargo test`), visual D2D snapshots verified (`snap_d2d`), and release build deployed to `C:\Users\muhna\.local\bin\cynotch.exe`.
+- **Verified**: All test suites passing (`cargo test`), visual D2D snapshots verified (`snap_d2d`), and release build deployed to `%USERPROFILE%\.local\bin\cynotch.exe`.
 
 ## v0.3.0 (2026-11-20)
 ### 1. GPU Direct2D + DirectWrite Renderer & 55.9% Binary Size Reduction
