@@ -45,14 +45,14 @@ fn create_ctx() -> Result<ID2D1DeviceContext> {
     }
 }
 
-fn bitmap(ctx: &ID2D1DeviceContext, w: u32, h: u32, cpu: bool) -> Result<ID2D1Bitmap1> {
+fn bitmap_dpi(ctx: &ID2D1DeviceContext, w: u32, h: u32, dpi: f32, cpu: bool) -> Result<ID2D1Bitmap1> {
     let props = D2D1_BITMAP_PROPERTIES1 {
         pixelFormat: D2D1_PIXEL_FORMAT {
             format: DXGI_FORMAT_B8G8R8A8_UNORM,
             alphaMode: D2D1_ALPHA_MODE_PREMULTIPLIED,
         },
-        dpiX: 96.0,
-        dpiY: 96.0,
+        dpiX: dpi,
+        dpiY: dpi,
         bitmapOptions: if cpu {
             D2D1_BITMAP_OPTIONS_CPU_READ | D2D1_BITMAP_OPTIONS_CANNOT_DRAW
         } else {
@@ -61,6 +61,10 @@ fn bitmap(ctx: &ID2D1DeviceContext, w: u32, h: u32, cpu: bool) -> Result<ID2D1Bi
         colorContext: ManuallyDrop::new(None),
     };
     unsafe { ctx.CreateBitmap(D2D_SIZE_U { width: w, height: h }, None, 0, &props) }
+}
+
+fn bitmap(ctx: &ID2D1DeviceContext, w: u32, h: u32, cpu: bool) -> Result<ID2D1Bitmap1> {
+    bitmap_dpi(ctx, w, h, 96.0, cpu)
 }
 
 /// Renders via `draw` with transparent (or custom) backdrop, saves PNG.
@@ -73,10 +77,19 @@ fn snap_transparent(
     pad: u32,
     draw: impl FnOnce(&ID2D1DeviceContext),
 ) -> Result<()> {
-    let target = bitmap(ctx, w, h, false)?;
-    let readback = bitmap(ctx, w, h, true)?;
+    let scale: u32 = std::env::var("SNAP_DPI_SCALE")
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(1)
+        .clamp(1, 3);
+    let pw = w * scale;
+    let ph = h * scale;
+    let dpi = 96.0 * scale as f32;
+    let target = bitmap_dpi(ctx, pw, ph, dpi, false)?;
+    let readback = bitmap_dpi(ctx, pw, ph, dpi, true)?;
     unsafe {
         ctx.SetTarget(&target);
+        ctx.SetDpi(dpi, dpi);
         ctx.BeginDraw();
         ctx.SetTransform(&windows::Foundation::Numerics::Matrix3x2::identity());
         ctx.Clear(None);
@@ -84,16 +97,17 @@ fn snap_transparent(
         if let Err(e) = ctx.EndDraw(None, None) {
             eprintln!("{name}: EndDraw failed: {e:?}");
         }
+        ctx.SetDpi(96.0, 96.0);
         readback.CopyFromBitmap(None, &target, None)?;
         let mapped = readback.Map(D2D1_MAP_OPTIONS_READ)?;
-        let (ow, oh) = (w + pad * 2, h + pad * 2);
+        let (ow, oh) = (pw + pad * 2, ph + pad * 2);
         let mut out = vec![0u8; (ow * oh * 4) as usize];
-        for y in 0..h {
+        for y in 0..ph {
             let src = std::slice::from_raw_parts(
                 mapped.bits.add((y * mapped.pitch) as usize),
-                (w * 4) as usize,
+                (pw * 4) as usize,
             );
-            for x in 0..w {
+            for x in 0..pw {
                 let s = &src[(x * 4) as usize..(x * 4 + 4) as usize];
                 let o = (((y + pad) * ow + x + pad) * 4) as usize;
                 // Convert premultiplied BGRA to straight BGRA for PNG saving
