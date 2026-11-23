@@ -124,6 +124,9 @@ fn snap(
     h: u32,
     draw: impl FnOnce(&ID2D1DeviceContext),
 ) -> Result<()> {
+    if std::env::var_os("SNAP_TRANSPARENT").is_some() {
+        return snap_transparent(ctx, dir, name, w, h, 0, draw);
+    }
     snap_bg(ctx, dir, name, w, h, [248, 233, 236, 255], draw)
 }
 
