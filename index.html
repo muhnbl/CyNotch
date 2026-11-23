@@ -3,19 +3,21 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>CyNotch v0.3.0 — Judgment at the top of your screen</title>
-<meta name="description" content="CyNotch v0.3.0 is a GPU-accelerated Dynamic Island for Windows 10/11 in Rust (~1.74 MB). Direct2D/DirectWrite engine, corner & edge portal glow, synced lyrics, telemetry, and Memory Reduct.">
-<meta name="theme-color" content="#0A0712">
+<title>CY/NOTCH v1.0.0 — Judgment at the Top of Your Screen</title>
+<meta name="description" content="CyNotch v1.0.0 is an ultra-lightweight, GPU-accelerated Dynamic Island and Ambient Command Hub for Windows 10 & 11 written in Rust (1.70 MB). Direct2D + DirectComposition, 144Hz-ready, 3-box floating Music, Safe Trim Memory Reduct, and Native OLE Quick Shelf.">
+<meta name="theme-color" content="#0D0D10">
 <meta property="og:type" content="website">
-<meta property="og:title" content="CyNotch v0.3.0 — Judgment at the top of your screen">
-<meta property="og:description" content="A GPU-accelerated Dynamic Island for Windows 10/11 in 1.74 MB of Rust. Direct2D engine, corner & edge portal glow, media, synced lyrics, telemetry and RAM judgment.">
+<meta property="og:title" content="CY/NOTCH v1.0.0 — Judgment at the Top of Your Screen">
+<meta property="og:description" content="1.70 MB Rust-native Dynamic Island for Windows 10 & 11. Hardware Direct2D + triple-buffered DirectComposition, 144Hz GPU-cached transitions, Glowing Wolf Eyes stealth idle, and Safe Trim RAM optimization.">
 <meta property="og:image" content="https://raw.githubusercontent.com/muhnbl/CyNotch/main/assets/cynotch_icon.png">
-<meta name="twitter:card" content="summary">
+<meta name="twitter:card" content="summary_large_image">
 <link rel="canonical" href="https://muhnbl.github.io/CyNotch/">
 <link rel="icon" href="./assets/cynotch-icon-64.png" sizes="64x64" type="image/png">
+<link rel="preconnect" href="https://api.fontshare.com" crossorigin>
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-<link href="https://fonts.googleapis.com/css2?family=Chakra+Petch:wght@500;600;700&family=Instrument+Sans:wght@400..700&family=Instrument+Serif:ital@0;1&display=swap" rel="stylesheet">
+<link href="https://api.fontshare.com/v2/css?f[]=clash-display@500,600,700&display=swap" rel="stylesheet">
+<link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;600&family=Outfit:wght@400;500;600;700&display=swap" rel="stylesheet">
 <script type="application/ld+json">
 {
   "@context":"https://schema.org",
@@ -23,966 +25,1799 @@
   "name":"CyNotch",
   "operatingSystem":"Windows 10, Windows 11 (x64)",
   "applicationCategory":"UtilitiesApplication",
-  "softwareVersion":"0.3.0",
-  "description":"Ultra-lightweight GPU-accelerated Dynamic Island and ambient command hub for Windows, written in Rust (1.74 MB), with Direct2D/DirectWrite rendering, screen-edge and corner portal glow, built-in Memory Reduct engine, GSMTC media, LRCLIB lyrics and hardware telemetry.",
-  "downloadUrl":"https://github.com/muhnbl/CyNotch/releases/download/v0.3.0/CyNotch-v0.3.0-portable.exe",
+  "softwareVersion":"1.0.0",
+  "fileSize":"1.70 MB",
+  "description":"Ultra-lightweight GPU-accelerated Dynamic Island and ambient command hub for Windows 10/11 written from scratch in Rust with Direct2D, DirectWrite, triple-buffered DirectComposition, 3-box floating Music with WinRT SMTC and LRCLIB lyrics, Safe Trim Memory Reduct, and Native OLE Quick Shelf.",
+  "downloadUrl":"https://github.com/muhnbl/CyNotch/releases/tag/v1.0.0",
   "offers":{"@type":"Offer","price":"0","priceCurrency":"USD"},
   "author":{"@type":"Person","name":"muhnbl","url":"https://github.com/muhnbl"}
 }
 </script>
 <style>
 :root{
-  --ink:#0A0712;
-  --obsidian:#0D0A18;
-  --surface:#130D22;
-  --line:rgba(216,180,254,.13);
-  --line-2:rgba(216,180,254,.25);
-  --violet:#9333EA;
-  --violet-2:#A855F7;
-  --accent:#C77DFF;
-  --accent-hi:#E2B6FF;
-  --text:#F4EFFC;
-  --muted:#ADA2C4;
-  --dim:#9B90B4;
-  --paper:#F2ECF9;
-  --paper-ink:#160F22;
-  --paper-accent:#6D28D9;
-  --mono:ui-monospace,"Cascadia Code","Cascadia Mono","SFMono-Regular",Consolas,monospace;
-  --sans:"Instrument Sans","Segoe UI Variable Text","Segoe UI",system-ui,sans-serif;
-  --display:"Chakra Petch","Bahnschrift SemiCondensed","Segoe UI Variable Display",system-ui,sans-serif;
-  --serif:"Instrument Serif",Georgia,serif;
+  --bg:#0D0D10;
+  --panel:#121218;
+  --panel-hi:#181822;
+  --glass:rgba(18,18,26,0.78);
+  --ink:#F5F3FF;
+  --ink-80:rgba(245,243,255,0.82);
+  --muted:#A19EB0;
+  --dim:#5A5868;
+  --line:rgba(245,243,255,0.11);
+  --line-hi:rgba(245,243,255,0.22);
+  --violet:#7C3AED;
+  --violet-soft:#A78BFA;
+  --violet-deep:#3E188A;
+  --gold:#F4EBB5;
+  --ribbon-bg:#F5F3FF;
+  --ribbon-ink:#0D0D10;
+  --display:"Clash Display","Outfit",system-ui,sans-serif;
+  --sans:"Outfit","Segoe UI Variable Text","Segoe UI",system-ui,sans-serif;
+  --mono:"JetBrains Mono",ui-monospace,"Cascadia Code",Consolas,monospace;
+  --ease:cubic-bezier(0.22,1,0.36,1);
+  --maxw:1360px;
 }
+
 *,*::before,*::after{box-sizing:border-box}
-html{scroll-behavior:smooth;-webkit-text-size-adjust:100%;scroll-padding-top:96px;color-scheme:dark}
-body{margin:0;background:var(--ink);color:var(--text);font-family:var(--sans);font-size:1.0625rem;line-height:1.6;-webkit-font-smoothing:antialiased;overflow-x:hidden}
+html{
+  scroll-behavior:smooth;
+  -webkit-text-size-adjust:100%;
+  scroll-padding-top:96px;
+  color-scheme:dark;
+  background:var(--bg);
+}
+body{
+  margin:0;
+  background:var(--bg);
+  color:var(--ink);
+  font-family:var(--sans);
+  font-size:1.0625rem;
+  line-height:1.62;
+  -webkit-font-smoothing:antialiased;
+  overflow-x:clip;
+}
 img,svg{display:block;max-width:100%}
 a{color:inherit;text-decoration:none}
-button,input,textarea{font:inherit;color:inherit}
-button{cursor:pointer;touch-action:manipulation;-webkit-tap-highlight-color:transparent}
-h1,h2,h3,h4,p,dl,dd,figure,blockquote{margin:0}
+button{
+  font:inherit;
+  color:inherit;
+  background:none;
+  border:0;
+  cursor:pointer;
+  touch-action:manipulation;
+}
+h1,h2,h3,h4,p,figure,blockquote,dl,dd{margin:0}
 ul,ol{margin:0;padding:0;list-style:none}
-fieldset{margin:0;padding:0;border:0}
-::selection{background:var(--accent);color:#16071F}
-:focus-visible{outline:2px solid var(--accent-hi);outline-offset:3px;border-radius:4px}
-[hidden]{display:none!important}
-.sr-only{position:absolute;width:1px;height:1px;padding:0;margin:-1px;overflow:hidden;clip:rect(0,0,0,0);white-space:nowrap;border:0}
-.skip-link{position:fixed;top:-60px;left:16px;z-index:200;background:var(--accent);color:#16071F;padding:10px 16px;border-radius:10px;font-weight:600;transition:top .2s}
-.skip-link:focus{top:12px}
-.grain{position:fixed;inset:0;z-index:90;pointer-events:none;opacity:.038;mix-blend-mode:overlay;background-image:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='160' height='160'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.85' numOctaves='3' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)' opacity='0.55'/%3E%3C/svg%3E")}
-.wrap{width:min(1180px,calc(100% - 48px));margin-inline:auto}
-.mono{font-family:var(--mono)}
-.dim{color:var(--dim)}
+::selection{background:var(--violet);color:var(--ink)}
+:focus-visible{outline:2px solid var(--violet-soft);outline-offset:3px;border-radius:6px}
 
-.kicker{display:flex;align-items:center;gap:11px;font-family:var(--mono);font-size:.67rem;letter-spacing:.19em;text-transform:uppercase;color:var(--dim);margin-bottom:20px}
-.kicker span{color:var(--accent);font-weight:700}
-.kicker::after{content:"";width:30px;height:1px;background:linear-gradient(90deg,var(--violet-2),transparent)}
-.sec-h2{font-family:var(--display);font-weight:700;font-size:clamp(2.1rem,3.9vw,3.4rem);line-height:1.02;letter-spacing:-.018em;max-width:18ch;text-wrap:balance}
-.sec-lede{color:var(--muted);font-size:1.02rem;line-height:1.65;max-width:58ch;margin-top:20px;text-wrap:pretty}
-.section{position:relative;padding-block:clamp(76px,9.5vw,132px)}
-.section--line{border-top:1px solid var(--line)}
-
-.btn{display:inline-flex;align-items:center;justify-content:center;gap:10px;min-height:50px;padding:0 21px;border-radius:12px;border:1px solid transparent;font-size:.94rem;font-weight:600;letter-spacing:-.005em;transition:background .2s,border-color .2s,transform .18s,box-shadow .2s;white-space:nowrap}
-.btn svg{width:16px;height:16px;flex:none}
-.btn-primary{background:var(--accent);color:#170722;box-shadow:0 14px 34px -14px rgba(199,125,255,.72),inset 0 1px 0 rgba(255,255,255,.28)}
-.btn-primary:hover{background:#D9A3FF;transform:translateY(-2px)}
-.btn-ghost{border-color:var(--line-2);color:var(--text);background:rgba(255,255,255,.018)}
-.btn-ghost:hover{border-color:rgba(199,125,255,.6);background:rgba(199,125,255,.07);transform:translateY(-2px)}
-.btn-block{width:100%}
-.btn-lg{min-height:56px;font-size:1rem;border-radius:14px}
-.text-link{font-size:.87rem;color:var(--muted);border-bottom:1px solid var(--line-2);padding-bottom:2px}
-.text-link:hover{color:var(--accent-hi)}
-kbd{display:inline-flex;align-items:center;justify-content:center;min-width:26px;height:24px;padding:0 6px;border-radius:6px;border:1px solid var(--line-2);border-bottom-width:2px;background:var(--surface);color:var(--text);font-family:var(--mono);font-size:.69rem;line-height:1}
-
-/* nav */
-.rail{position:fixed;top:12px;left:0;right:0;z-index:70;display:flex;justify-content:center;padding-inline:16px;pointer-events:none}
-.rail-inner{pointer-events:auto;width:min(1180px,100%);display:flex;align-items:center;gap:8px;padding:7px;border-radius:999px;border:1px solid var(--line);background:rgba(13,10,24,.58);backdrop-filter:blur(20px) saturate(150%);-webkit-backdrop-filter:blur(20px) saturate(150%);transition:background .25s,border-color .25s,box-shadow .25s}
-.rail[data-scrolled="true"] .rail-inner{background:rgba(10,7,18,.9);border-color:var(--line-2);box-shadow:0 20px 50px -28px rgba(0,0,0,.95)}
-.brand{display:flex;align-items:center;gap:10px;flex:none;min-height:44px;padding:3px 12px 3px 5px;border-radius:999px}
-.brand img{width:28px;height:28px;border-radius:9px;box-shadow:0 0 0 1px rgba(255,255,255,.1)}
-.brand-name{font-family:var(--display);font-weight:650;font-size:1.02rem;letter-spacing:-.025em}
-.brand-tag{font-family:var(--mono);font-size:.59rem;color:var(--dim);border:1px solid var(--line);border-radius:999px;padding:2px 6px}
-.rail-nav{display:flex;align-items:center;gap:2px;margin-inline:auto}
-.rail-nav a{display:inline-flex;align-items:center;min-height:44px;padding:0 12px;border-radius:999px;font-size:.83rem;color:var(--muted);transition:color .2s,background .2s}
-.rail-nav a:hover{color:var(--text);background:rgba(255,255,255,.045)}
-.rail-nav a[aria-current="true"]{color:var(--accent-hi)}
-.rail-actions{display:flex;align-items:center;gap:6px;flex:none}
-.rail-actions .btn{min-height:44px;padding:0 16px;font-size:.81rem;border-radius:999px}
-.menu-btn{display:none;align-items:center;justify-content:center;width:44px;height:44px;border-radius:999px;border:1px solid var(--line-2);background:rgba(255,255,255,.02)}
-.menu-btn span,.menu-btn span::before,.menu-btn span::after{display:block;width:15px;height:1.5px;background:var(--text);border-radius:2px;transition:transform .2s,opacity .2s}
-.menu-btn span{position:relative}
-.menu-btn span::before,.menu-btn span::after{content:"";position:absolute;left:0}
-.menu-btn span::before{top:-5px}
-.menu-btn span::after{top:5px}
-.menu-btn[aria-expanded="true"] span{background:transparent}
-.menu-btn[aria-expanded="true"] span::before{transform:translateY(5px) rotate(45deg)}
-.menu-btn[aria-expanded="true"] span::after{transform:translateY(-5px) rotate(-45deg)}
-.rail-menu{position:fixed;top:70px;left:16px;right:16px;z-index:69;padding:12px;border-radius:18px;border:1px solid var(--line-2);background:rgba(13,10,24,.97);backdrop-filter:blur(20px);box-shadow:0 30px 70px -30px rgba(0,0,0,.95);display:grid;gap:2px}
-.rail-menu a{padding:12px 14px;border-radius:10px;color:var(--muted);font-size:.95rem}
-.rail-menu a:hover{background:rgba(199,125,255,.08);color:var(--text)}
-.rail-menu .btn{margin-top:6px}
-.rail-menu a.btn-primary,.rail-menu a.btn-primary:hover{color:#170722}
-
-/* real screenshot treatment — seamless transparent-edge CyNotch renders */
-.shot-frame{display:block;position:relative;padding:0;background:transparent;border:0;border-radius:0;box-shadow:none}
-.shot-frame img{width:100%;height:auto;display:block;filter:drop-shadow(0 24px 48px rgba(0,0,0,.78)) drop-shadow(0 0 36px rgba(147,51,234,.22));transition:transform .28s cubic-bezier(.2,.8,.2,1),filter .28s ease}
-.real-note{margin-top:10px;font-family:var(--mono);font-size:.6rem;letter-spacing:.08em;color:var(--dim)}
-
-/* hero */
-.hero{position:relative;padding-top:clamp(108px,13vh,152px);padding-bottom:clamp(48px,6vw,80px);overflow:hidden}
-.hero::before{content:"";position:absolute;z-index:0;pointer-events:none;top:-22%;left:36%;width:80%;height:105%;background:radial-gradient(ellipse at 50% 42%,rgba(147,51,234,.26),rgba(147,51,234,.07) 42%,transparent 68%)}
-.hero::after{content:"";position:absolute;z-index:0;pointer-events:none;inset:0;background-image:radial-gradient(rgba(216,180,254,.2) 1px,transparent 1px);background-size:28px 28px;-webkit-mask-image:radial-gradient(ellipse 70% 60% at 66% 38%,#000 0%,transparent 78%);mask-image:radial-gradient(ellipse 70% 60% at 66% 38%,#000 0%,transparent 78%);opacity:.55}
-.hero-inner{position:relative;z-index:1;display:grid;grid-template-columns:minmax(0,.96fr) minmax(0,1.06fr);gap:clamp(34px,5vw,74px);align-items:center}
-.chips{display:flex;flex-wrap:wrap;gap:8px}
-.chip{display:inline-flex;align-items:center;gap:8px;padding:6px 11px;border-radius:999px;border:1px solid var(--line);background:rgba(255,255,255,.02);font-family:var(--mono);font-size:.64rem;letter-spacing:.13em;text-transform:uppercase;color:var(--muted)}
-.chip i{width:5px;height:5px;border-radius:50%;background:var(--accent);box-shadow:0 0 10px var(--accent);flex:none}
-.hero h1{font-family:var(--display);font-weight:700;font-size:clamp(3.35rem,6.4vw,5.5rem);line-height:.96;letter-spacing:-.02em;margin-top:24px;max-width:11ch}
-.hero h1 .judge{color:var(--accent)}
-.hero-lede{color:var(--muted);font-size:1.05rem;line-height:1.66;max-width:35rem;margin-top:24px;text-wrap:pretty}
-.hero-cta{display:flex;flex-wrap:wrap;gap:12px;margin-top:32px}
-.hero-micro{display:flex;flex-wrap:wrap;align-items:center;gap:8px 13px;margin-top:20px;font-family:var(--mono);font-size:.68rem;color:var(--dim)}
-.hero-micro span{display:inline-flex;align-items:center;gap:8px}
-.hero-micro span+span::before{content:"";width:3px;height:3px;border-radius:50%;background:#4B3A68;margin-right:5px}
-.hero-shot{position:relative}
-.hero-shot::before{content:"";position:absolute;inset:-14% -6%;z-index:-1;pointer-events:none;background:radial-gradient(ellipse at 50% 45%,rgba(168,85,247,.26),rgba(147,51,234,.08) 45%,transparent 72%)}
-.hero-shot .shot-frame img{filter:drop-shadow(0 36px 72px rgba(0,0,0,.85)) drop-shadow(0 0 54px rgba(147,51,234,.36))}
-.hero-tabs{display:flex;flex-wrap:wrap;justify-content:center;gap:6px;margin-top:14px}
-.hero-tab{min-height:44px;padding:0 14px;border-radius:999px;border:1px solid var(--line);background:rgba(19,13,34,.7);font-family:var(--mono);font-size:.63rem;letter-spacing:.08em;text-transform:uppercase;color:var(--muted);transition:border-color .2s,color .2s,background .2s}
-.hero-tab:hover{border-color:var(--line-2);color:var(--text)}
-.hero-tab[aria-pressed="true"]{border-color:rgba(199,125,255,.65);background:rgba(147,51,234,.22);color:var(--accent-hi)}
-.hero-shot p{margin-top:10px;font-family:var(--mono);font-size:.62rem;letter-spacing:.11em;text-transform:uppercase;color:var(--dim);text-align:center}
-
-.specs{display:grid;grid-template-columns:repeat(5,1fr);gap:1px;margin-top:clamp(48px,6vw,76px);background:var(--line);border-block:1px solid var(--line)}
-.spec{background:var(--ink);padding:18px 18px 20px}
-.spec dt{font-family:var(--mono);font-size:.58rem;letter-spacing:.16em;text-transform:uppercase;color:var(--dim);margin-bottom:8px}
-.spec dd{font-family:var(--display);font-weight:600;font-size:1.28rem;letter-spacing:-.025em;line-height:1.15;font-variant-numeric:tabular-nums}
-.spec dd small{font-family:var(--mono);font-size:.62rem;font-weight:400;color:var(--muted)}
-.spec-note{margin-top:11px;text-align:right;font-family:var(--mono);font-size:.59rem;color:var(--dim)}
-.spec-note a{display:inline-flex;align-items:center;min-height:44px;padding:3px 2px;border-bottom:1px solid var(--line-2)}
-.spec-note a:hover{color:var(--accent-hi)}
-
-/* gallery */
-.gallery{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:20px;margin-top:52px}
-.shot{display:flex;flex-direction:column;width:100%;padding:20px;border-radius:22px;border:1px solid var(--line);background:radial-gradient(ellipse at 50% 25%,rgba(147,51,234,.11),transparent 68%),linear-gradient(180deg,#120D21,#0B0815);text-align:left;transition:border-color .2s,transform .2s}
-.shot:hover{border-color:var(--line-2);transform:translateY(-2px)}
-.shot>button{display:block;width:100%;padding:0;border:0;background:transparent;text-align:left}
-.shot>button:hover .shot-frame img,.shot>button:focus-visible .shot-frame img{transform:translateY(-2px) scale(1.015);filter:drop-shadow(0 30px 56px rgba(0,0,0,.85)) drop-shadow(0 0 42px rgba(199,125,255,.35))}
-.shot figcaption{display:flex;align-items:center;gap:10px;padding:14px 2px 4px}
-.shot figcaption strong{font-family:var(--display);font-size:1.05rem;font-weight:600;letter-spacing:-.02em}
-.shot figcaption span{margin-left:auto;font-family:var(--mono);font-size:.58rem;letter-spacing:.1em;color:var(--accent)}
-.shot p{padding:0 2px 2px;font-size:.86rem;line-height:1.52;color:var(--muted)}
-.gallery-note{margin-top:18px;font-family:var(--mono);font-size:.62rem;line-height:1.6;color:var(--dim)}
-
-/* lightbox */
-.lightbox{position:fixed;inset:0;z-index:150;display:grid;place-items:center;padding:24px;background:rgba(5,3,10,.9);backdrop-filter:blur(10px)}
-.lightbox-inner{width:min(840px,100%)}
-.lightbox img{width:100%;height:auto;filter:drop-shadow(0 36px 80px rgba(0,0,0,.95)) drop-shadow(0 0 60px rgba(147,51,234,.3))}
-.lightbox-bar{display:flex;align-items:center;gap:12px;margin-top:14px}
-.lightbox-bar p{font-family:var(--mono);font-size:.72rem;color:var(--muted)}
-.lightbox-bar button{margin-left:auto;display:inline-flex;align-items:center;justify-content:center;min-height:44px;min-width:44px;padding:0 16px;border-radius:10px;border:1px solid var(--line-2);background:rgba(255,255,255,.03);font-family:var(--mono);font-size:.66rem;letter-spacing:.1em;color:var(--text)}
-.lightbox-bar button:hover{border-color:var(--accent)}
-
-/* memory */
-.mem-grid{display:grid;grid-template-columns:minmax(0,.9fr) minmax(0,1.1fr);gap:clamp(34px,5vw,72px);align-items:center;margin-top:52px}
-.mem-details{margin-top:30px;border-top:1px solid var(--line)}
-.mem-details div{display:grid;grid-template-columns:108px 1fr;gap:16px;padding:14px 0;border-bottom:1px solid var(--line)}
-.mem-details dt{font-family:var(--mono);font-size:.6rem;letter-spacing:.13em;text-transform:uppercase;color:var(--accent);padding-top:2px}
-.mem-details dd{font-size:.92rem;color:var(--muted);line-height:1.55}
-.mem-quote{margin-top:24px;font-family:var(--serif);font-style:italic;font-size:1.15rem;color:var(--accent-hi)}
-.mem-quote small{display:block;margin-top:6px;font-family:var(--mono);font-style:normal;font-size:.56rem;letter-spacing:.14em;text-transform:uppercase;color:var(--dim)}
-.cyno-stage{position:relative;display:grid;gap:14px}
-.cyno-wish-wrap{position:relative;display:flex;justify-content:center;pointer-events:none;margin-bottom:-24px}
-.cyno-wish-wrap::before{content:"";position:absolute;inset:-6% -6% 0;background:radial-gradient(circle at 50% 52%,rgba(168,85,247,.26),rgba(147,51,234,.07) 48%,transparent 72%)}
-.cyno-wish{position:relative;width:min(340px,80%);height:auto;-webkit-mask-image:radial-gradient(ellipse 74% 74% at 50% 48%,#000 56%,transparent 94%);mask-image:radial-gradient(ellipse 74% 74% at 50% 48%,#000 56%,transparent 94%);will-change:transform}
-.cyno-portrait{width:64px;height:64px;border-radius:16px;object-fit:cover;border:1px solid rgba(199,125,255,.32);box-shadow:0 12px 28px -12px rgba(147,51,234,.55);flex:none}
-
-/* media */
-.media-band{position:relative;background:#0C0817;border-block:1px solid var(--line);overflow:hidden}
-.media-band::before{content:"";position:absolute;top:-30%;left:-12%;width:62%;height:120%;background:radial-gradient(ellipse at 50% 50%,rgba(147,51,234,.17),transparent 65%)}
-.media-grid{position:relative;display:grid;grid-template-columns:minmax(0,.85fr) minmax(0,1.15fr);gap:clamp(34px,5vw,76px);align-items:center}
-.mascot-card{display:flex;align-items:center;gap:18px;padding:22px;border:1px solid var(--line-2);border-radius:20px;background:linear-gradient(160deg,#181029,#0B0815)}
-.mascot-card img{width:86px;height:86px;border-radius:20px;box-shadow:0 0 0 1px rgba(199,125,255,.2),0 20px 40px -18px rgba(199,125,255,.5)}
-.mascot-card p{font-family:var(--serif);font-style:italic;font-size:clamp(1.15rem,1.9vw,1.5rem);line-height:1.3;color:var(--text)}
-.mascot-card small{display:block;margin-top:8px;font-family:var(--mono);font-style:normal;font-size:.56rem;letter-spacing:.12em;text-transform:uppercase;color:var(--dim)}
-.spec-list{margin-top:30px;border-top:1px solid var(--line)}
-.spec-list div{display:grid;grid-template-columns:94px 1fr;gap:16px;padding:14px 0;border-bottom:1px solid var(--line)}
-.spec-list dt{font-family:var(--mono);font-size:.59rem;letter-spacing:.14em;text-transform:uppercase;color:var(--accent);padding-top:2px}
-.spec-list dd{font-size:.92rem;color:var(--muted);line-height:1.5}
-.media-note{margin-top:22px;font-family:var(--mono);font-size:.66rem;line-height:1.7;color:var(--dim)}
-
-/* hub */
-.hub-shots{display:grid;grid-template-columns:1fr 1fr;gap:20px;margin-top:52px}
-.feature-strip{display:flex;flex-wrap:wrap;gap:8px;margin-top:30px}
-.feature-strip span{padding:7px 11px;border-radius:8px;border:1px solid var(--line);font-family:var(--mono);font-size:.57rem;letter-spacing:.08em;color:var(--muted)}
-
-/* benchmark v0.2.4.1 vs v0.3.0 */
-.bench-sec{position:relative;background:radial-gradient(ellipse at 50% 0%,rgba(147,51,234,.14),transparent 65%),#090611;border-top:1px solid var(--line)}
-.bench-kpi-grid{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:16px;margin-top:44px}
-.bench-kpi{padding:20px;border-radius:18px;border:1px solid var(--line-2);background:linear-gradient(180deg,rgba(24,15,43,.85),rgba(12,8,23,.92))}
-.bench-kpi-tag{font-family:var(--mono);font-size:.57rem;letter-spacing:.14em;text-transform:uppercase;color:var(--accent);margin-bottom:8px}
-.bench-kpi strong{display:block;font-family:var(--display);font-size:clamp(1.75rem,2.7vw,2.35rem);font-weight:700;letter-spacing:-.03em;line-height:1.05;color:var(--text)}
-.bench-kpi-sub{margin-top:8px;font-family:var(--mono);font-size:.63rem;line-height:1.55;color:var(--muted)}
-.bench-bars{margin-top:14px;display:grid;gap:7px}
-.bench-bar-row{display:grid;grid-template-columns:56px 1fr auto;align-items:center;gap:8px;font-family:var(--mono);font-size:.58rem;color:var(--dim)}
-.bench-bar-track{height:7px;border-radius:999px;background:rgba(255,255,255,.06);overflow:hidden}
-.bench-bar-fill{height:100%;border-radius:999px;background:rgba(173,162,196,.4)}
-.bench-bar-fill--hi{background:linear-gradient(90deg,var(--violet),var(--accent-hi));box-shadow:0 0 12px rgba(199,125,255,.55)}
-.bench-split{display:grid;grid-template-columns:minmax(0,1.12fr) minmax(0,.88fr);gap:24px;margin-top:28px;align-items:start}
-.bench-card{padding:24px;border-radius:20px;border:1px solid var(--line);background:linear-gradient(180deg,#120D21,#0B0815)}
-.bench-card h3{font-family:var(--display);font-size:1.22rem;font-weight:650;letter-spacing:-.02em;margin-bottom:6px}
-.bench-card-sub{font-size:.86rem;color:var(--muted);margin-bottom:18px}
-.bench-table{width:100%;border-collapse:collapse;font-size:.83rem}
-.bench-table th,.bench-table td{padding:11px 8px;text-align:left;border-bottom:1px solid var(--line);vertical-align:top}
-.bench-table th{font-family:var(--mono);font-size:.57rem;letter-spacing:.13em;text-transform:uppercase;color:var(--dim)}
-.bench-table td:first-child{font-weight:600;color:var(--text)}
-.bench-table .v-old{font-family:var(--mono);font-size:.75rem;color:var(--dim)}
-.bench-table .v-new{font-family:var(--mono);font-size:.76rem;color:var(--accent-hi);font-weight:600}
-.bench-badge{display:inline-block;padding:2px 7px;border-radius:999px;background:rgba(199,125,255,.14);border:1px solid rgba(199,125,255,.35);font-family:var(--mono);font-size:.58rem;color:var(--accent-hi);margin-left:4px}
-.visual-diff-list{display:grid;gap:12px}
-.visual-diff-item{padding:13px 15px;border-radius:14px;border:1px solid var(--line);background:rgba(255,255,255,.018)}
-.visual-diff-item strong{display:flex;align-items:center;justify-content:space-between;font-family:var(--display);font-size:.98rem;color:var(--text)}
-.visual-diff-item strong span{font-family:var(--mono);font-size:.56rem;letter-spacing:.1em;text-transform:uppercase;color:var(--accent)}
-.visual-diff-item p{margin-top:5px;font-size:.83rem;line-height:1.5;color:var(--muted)}
-.bench-shots{display:grid;grid-template-columns:1fr 1fr;gap:20px;margin-top:24px}
-
-/* dossier */
-.dossier{position:relative;background:var(--paper);color:var(--paper-ink);padding-block:clamp(80px,10vw,130px);overflow:hidden}
-.dossier::before{content:"";position:absolute;top:-30%;right:-10%;width:65%;height:100%;background:radial-gradient(ellipse at 50% 50%,rgba(109,40,217,.1),transparent 65%)}
-.dossier .wrap{position:relative;display:grid;grid-template-columns:minmax(0,.85fr) minmax(0,1.15fr);gap:clamp(36px,6vw,86px);align-items:start}
-.dossier .kicker{color:#6E5C84}
-.dossier .kicker span{color:var(--paper-accent)}
-.dossier .kicker::after{background:linear-gradient(90deg,var(--paper-accent),transparent)}
-.dossier .sec-h2{color:var(--paper-ink);max-width:14ch}
-.dossier .sec-lede{color:#57496A}
-.paper-statement{font-family:var(--display);font-weight:700;font-size:clamp(1.7rem,2.7vw,2.45rem);line-height:1.12;letter-spacing:-.02em;margin-top:40px}
-.dossier-links{display:flex;flex-wrap:wrap;gap:12px 20px;margin-top:28px}
-.dossier-links a{display:inline-flex;align-items:center;min-height:44px;padding:4px 0;font-family:var(--mono);font-size:.68rem;color:var(--paper-accent);border-bottom:1px solid rgba(109,40,217,.35)}
-.dtable{border-top:1px solid rgba(22,15,34,.18)}
-.drow{display:grid;grid-template-columns:150px 1fr;gap:18px;padding:12px 0;border-bottom:1px solid rgba(22,15,34,.14)}
-.drow dt{font-family:var(--mono);font-size:.58rem;letter-spacing:.13em;text-transform:uppercase;color:#6E5C84;padding-top:3px}
-.drow dd{font-size:.88rem;color:var(--paper-ink);line-height:1.45}
-.drow dd code{font-family:var(--mono);font-size:.78rem;background:rgba(109,40,217,.08);padding:1px 5px;border-radius:4px}
-.quote-card{margin-top:24px;padding:18px 20px;border:1px solid rgba(22,15,34,.16);border-radius:12px;background:rgba(255,255,255,.48)}
-.quote-card blockquote{font-family:var(--serif);font-style:italic;font-size:1.2rem;line-height:1.35;color:#3B2B52}
-.quote-card cite{display:block;margin-top:10px;font-family:var(--mono);font-style:normal;font-size:.57rem;letter-spacing:.1em;color:#6E5C84}
-.terminal{margin-top:24px;max-width:100%;min-width:0;border-radius:13px;overflow:hidden;background:#0C0916;color:var(--text);box-shadow:0 26px 56px -28px rgba(29,12,58,.65)}
-.terminal-bar{display:flex;align-items:center;gap:10px;padding:10px 14px;border-bottom:1px solid rgba(216,180,254,.12);background:rgba(255,255,255,.03)}
-.terminal-bar span{font-family:var(--mono);font-size:.58rem;letter-spacing:.15em;color:var(--muted)}
-.copy-btn{display:inline-flex;align-items:center;justify-content:center;min-height:44px;min-width:44px;padding:0 14px;border-radius:8px;border:1px solid var(--line-2);background:transparent;font-family:var(--mono);font-size:.58rem;letter-spacing:.1em;color:var(--muted);transition:background .18s,border-color .18s,color .18s,transform .18s}
-.terminal-bar .copy-btn{margin-left:auto}
-.copy-btn:hover{color:var(--accent-hi);border-color:var(--accent);background:rgba(199,125,255,.1);transform:translateY(-1px)}
-.terminal pre{margin:0;padding:16px 16px 18px;overflow-x:auto;font-family:var(--mono);font-size:.74rem;line-height:1.9;color:#D9CDEB}
-.terminal .prompt{color:var(--accent);user-select:none}
-.terminal-note{padding:0 16px 16px;font-family:var(--mono);font-size:.56rem;color:var(--dim)}
-.dossier-fine{margin-top:12px;font-family:var(--mono);font-size:.57rem;line-height:1.6;color:#6E5C84}
-
-/* install */
-.install{position:relative;overflow:hidden}
-.install::before{content:"";position:absolute;bottom:-40%;left:22%;width:80%;height:100%;background:radial-gradient(ellipse at 50% 50%,rgba(147,51,234,.24),transparent 66%)}
-.install-grid{position:relative;display:grid;grid-template-columns:minmax(0,1.05fr) minmax(0,.95fr);gap:clamp(36px,5vw,76px);align-items:start}
-.install-grid .sec-h2{max-width:15ch}
-.steps{margin-top:36px;border-top:1px solid var(--line)}
-.steps li{display:grid;grid-template-columns:42px 1fr;gap:16px;padding:18px 0;border-bottom:1px solid var(--line)}
-.steps .num{font-family:var(--mono);font-size:.72rem;color:var(--accent);padding-top:3px}
-.steps strong{display:block;font-family:var(--display);font-size:1.05rem;font-weight:600;letter-spacing:-.02em}
-.steps p{margin-top:5px;font-size:.89rem;line-height:1.55;color:var(--muted)}
-.steps code{font-family:var(--mono);font-size:.8rem;color:var(--accent-hi);white-space:nowrap}
-.keys{margin-top:28px;display:grid;gap:8px}
-.key-row{display:flex;align-items:center;gap:6px;padding:10px 12px;border:1px solid var(--line);border-radius:10px;background:rgba(255,255,255,.016)}
-.key-row span{font-size:.82rem;color:var(--muted);margin-right:auto}
-.req{margin-top:20px;font-family:var(--mono);font-size:.62rem;line-height:1.7;color:var(--dim)}
-.star-line{margin-top:26px;font-family:var(--serif);font-style:italic;font-size:1.05rem;color:var(--muted)}
-.star-line a{display:inline-flex;align-items:center;min-height:44px;padding:2px 0;color:var(--accent-hi);border-bottom:1px solid var(--line-2)}
-.get{border:1px solid var(--line-2);border-radius:20px;padding:22px;background:linear-gradient(180deg,#180F2B,#0C0817);box-shadow:0 44px 100px -46px rgba(0,0,0,.9)}
-.get-top{display:flex;align-items:center;gap:10px;font-family:var(--mono);font-size:.58rem;letter-spacing:.13em;text-transform:uppercase;color:var(--dim)}
-.get-ver{margin-left:auto;padding:4px 9px;border-radius:999px;border:1px solid rgba(199,125,255,.32);background:rgba(199,125,255,.1);color:var(--accent-hi);font-size:.62rem}
-.get-size{display:flex;align-items:baseline;gap:8px;margin:18px 0 20px}
-.get-size strong{font-family:var(--display);font-weight:680;font-size:3.1rem;letter-spacing:-.055em;line-height:1}
-.get-size span{font-family:var(--mono);font-size:.7rem;color:var(--muted)}
-.get .btn+.btn{margin-top:10px}
-.get-links{display:flex;flex-wrap:wrap;gap:9px 18px;margin-top:18px}
-.get-links a{display:inline-flex;align-items:center;min-height:44px;padding:4px 0;font-family:var(--mono);font-size:.62rem;color:var(--muted);border-bottom:1px solid var(--line-2)}
-.get-links a:hover{color:var(--accent-hi)}
-.hash{margin-top:22px;padding-top:18px;border-top:1px solid var(--line)}
-.hash-head{display:flex;align-items:center;justify-content:space-between;font-family:var(--mono);font-size:.56rem;letter-spacing:.14em;text-transform:uppercase;color:var(--dim)}
-.hash code{display:block;margin-top:8px;font-family:var(--mono);font-size:.58rem;line-height:1.7;color:var(--muted);overflow-wrap:anywhere}
-.get-note{margin-top:16px;font-family:var(--mono);font-size:.56rem;line-height:1.7;color:var(--dim);overflow-wrap:anywhere}
-
-/* footer */
-.foot{position:relative;border-top:1px solid var(--line);padding-top:clamp(64px,8vw,96px);overflow:hidden}
-.foot-sign{display:flex;align-items:center;gap:18px;flex-wrap:wrap;padding-bottom:48px;border-bottom:1px solid var(--line)}
-.foot-sign img{width:54px;height:54px;border-radius:14px;box-shadow:0 0 0 1px rgba(199,125,255,.2)}
-.foot-sign p{font-family:var(--serif);font-style:italic;font-size:clamp(1.4rem,2.6vw,2.15rem);line-height:1.2}
-.foot-sign .foot-cta{margin-left:auto;display:flex;flex-wrap:wrap;gap:10px}
-.foot-grid{display:grid;grid-template-columns:1.4fr repeat(3,1fr);gap:36px;padding-block:46px}
-.foot-brand p{margin-top:14px;font-size:.85rem;line-height:1.6;color:var(--muted);max-width:32ch}
-.foot h3{font-family:var(--mono);font-size:.58rem;letter-spacing:.16em;text-transform:uppercase;color:var(--dim);margin-bottom:14px}
-.foot-col a,.foot-col span{display:flex;align-items:center;min-height:44px;padding:4px 0;font-size:.85rem;color:var(--muted)}
-.foot-col a:hover{color:var(--accent-hi)}
-.foot-legal{padding:22px 0 0;border-top:1px solid var(--line);font-size:.74rem;line-height:1.7;color:var(--dim)}
-.foot-legal a{display:inline-flex;align-items:center;min-height:44px;padding:2px 0;border-bottom:1px solid var(--line-2)}
-.foot-legal a:hover{color:var(--accent-hi)}
-.foot-bottom{display:flex;flex-wrap:wrap;gap:10px 24px;justify-content:space-between;margin-top:14px;font-family:var(--mono);font-size:.6rem;letter-spacing:.08em;text-transform:uppercase;color:var(--dim)}
-.foot-word{font-family:var(--display);font-weight:700;font-size:clamp(4rem,13vw,12rem);line-height:.82;letter-spacing:-.04em;color:#473663;text-align:center;user-select:none;margin-bottom:-1.6vw;pointer-events:none}
-
-.reveal{opacity:0;transform:translateY(16px);transition:opacity .7s cubic-bezier(.2,.7,.2,1),transform .7s cubic-bezier(.2,.7,.2,1)}
-.reveal.is-in{opacity:1;transform:none}
-@media (max-width:1080px){
-  .hero-inner{grid-template-columns:minmax(0,1fr);gap:52px}
-  .hero-copy{max-width:680px}
-  .hero h1{max-width:14ch}
-  .hero-shot{width:min(720px,100%);margin-inline:auto}
-  .mem-grid,.media-grid,.install-grid,.bench-split{grid-template-columns:minmax(0,1fr)}
-  .bench-kpi-grid{grid-template-columns:repeat(2,minmax(0,1fr))}
-  .dossier .wrap{grid-template-columns:minmax(0,1fr)}
-  .specs{grid-template-columns:repeat(6,1fr)}
-  .spec{grid-column:span 2}
-  .spec:nth-child(4),.spec:nth-child(5){grid-column:span 3}
+/* Subtle fixed noise grain */
+body::after{
+  content:"";
+  position:fixed;
+  inset:0;
+  pointer-events:none;
+  z-index:90;
+  opacity:0.032;
+  background-image:url("data:image/svg+xml,%3Csvg viewBox='0 0 200 200' xmlns='http://www.w3.org/2000/svg'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.85' numOctaves='3' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)'/%3E%3C/svg%3E");
 }
-@media (max-width:860px){
-  .rail-nav{display:none}
-  .rail-actions{margin-left:auto}
-  .menu-btn{display:flex}
-  .rail-actions .btn{display:none}
-  .gallery,.hub-shots,.bench-shots{grid-template-columns:minmax(0,1fr)}
+
+.wrap{
+  width:100%;
+  max-width:var(--maxw);
+  margin:0 auto;
+  padding:0 clamp(20px,4vw,48px);
 }
-@media (max-width:680px){
-  .bench-kpi-grid{grid-template-columns:minmax(0,1fr)}
-  .bench-table th:nth-child(2),.bench-table td:nth-child(2){display:none}
-  .wrap{width:calc(100% - 32px)}
-  .hero{padding-top:86px}
-  .hero-inner{gap:26px}
-  .hero h1{font-size:clamp(2.45rem,10vw,3.4rem);max-width:11ch;margin-top:16px}
-  .hero-lede{margin-top:14px;font-size:.96rem}
-  .hero-cta{margin-top:20px}
-  .hero-cta .btn{flex:1 1 100%}
-  .hero-tabs{gap:5px}
-  .hero-tab{min-height:44px;padding:0 12px;font-size:.58rem}
-  .specs{grid-template-columns:repeat(2,1fr)}
-  .spec{grid-column:span 1}
-  .spec:nth-child(4){grid-column:span 1}
-  .spec:nth-child(5){grid-column:span 2}
-  .spec dd{font-size:1.1rem}
-  .spec-note{text-align:left}
-  .mem-details div{grid-template-columns:1fr;gap:4px}
-  .spec-list div{grid-template-columns:1fr;gap:4px}
-  .foot-sign .foot-cta{margin-left:0}
-  .foot-grid{grid-template-columns:1fr 1fr;gap:28px 18px}
-  .drow{grid-template-columns:110px 1fr;gap:12px}
-  .get-size strong{font-size:2.7rem}
-  .lightbox{padding:12px}
+
+/* ── Sticky 3-Part Editorial Nav (Made to Disrupt DNA) ──────────────────── */
+.nav-wrap{
+  position:fixed;
+  top:0;
+  left:0;
+  right:0;
+  z-index:60;
+  padding:16px clamp(16px,3.5vw,40px);
+  pointer-events:none;
 }
-@media (max-width:420px){
-  .foot-grid{grid-template-columns:1fr}
-  .drow{grid-template-columns:1fr;gap:4px}
+.nav{
+  max-width:var(--maxw);
+  margin:0 auto;
+  display:grid;
+  grid-template-columns:1fr auto 1fr;
+  align-items:center;
+  gap:16px;
+}
+.nav > *{pointer-events:auto}
+.brand{
+  display:inline-flex;
+  align-items:center;
+  gap:10px;
+  min-height:44px;
+  justify-self:start;
+}
+.brand img{
+  width:28px;
+  height:28px;
+  border-radius:8px;
+  border:1px solid var(--line-hi);
+}
+.brand-word{
+  font-family:var(--display);
+  font-weight:700;
+  font-size:1.15rem;
+  letter-spacing:0.06em;
+  text-transform:uppercase;
+  color:var(--ink);
+}
+.brand-word span{color:var(--violet-soft)}
+
+.nav-pill{
+  display:inline-flex;
+  align-items:center;
+  gap:4px;
+  padding:5px;
+  border-radius:999px;
+  background:var(--glass);
+  border:1px solid var(--line);
+  backdrop-filter:blur(16px);
+  -webkit-backdrop-filter:blur(16px);
+}
+.nav-pill a{
+  padding:8px 16px;
+  min-height:36px;
+  display:inline-flex;
+  align-items:center;
+  border-radius:999px;
+  font-size:0.875rem;
+  font-weight:500;
+  color:var(--muted);
+  transition:color 200ms var(--ease),background 200ms var(--ease);
+}
+.nav-pill a:hover{color:var(--ink);background:rgba(245,243,255,0.06)}
+
+.nav-right{
+  justify-self:end;
+  display:inline-flex;
+  align-items:center;
+  gap:10px;
+}
+.btn-pill{
+  display:inline-flex;
+  align-items:center;
+  justify-content:center;
+  gap:8px;
+  min-height:44px;
+  padding:0 22px;
+  border-radius:999px;
+  font-family:var(--display);
+  font-weight:600;
+  font-size:0.875rem;
+  letter-spacing:0.04em;
+  text-transform:uppercase;
+  background:var(--ink);
+  color:var(--bg);
+  transition:transform 220ms var(--ease),background 220ms var(--ease),color 220ms var(--ease);
+}
+.btn-pill:hover{
+  transform:translateY(-1px);
+  background:var(--violet);
+  color:var(--ink);
+}
+.btn-pill:active{transform:translateY(0)}
+
+.btn-outline{
+  display:inline-flex;
+  align-items:center;
+  justify-content:center;
+  gap:8px;
+  min-height:44px;
+  padding:0 22px;
+  border-radius:999px;
+  font-family:var(--display);
+  font-weight:600;
+  font-size:0.875rem;
+  letter-spacing:0.04em;
+  text-transform:uppercase;
+  border:1px solid var(--line-hi);
+  background:rgba(18,18,26,0.7);
+  color:var(--ink);
+  transition:transform 220ms var(--ease),border-color 220ms var(--ease),background 220ms var(--ease);
+}
+.btn-outline:hover{
+  transform:translateY(-1px);
+  border-color:var(--violet-soft);
+  background:rgba(124,58,237,0.14);
+}
+
+.menu-btn{
+  display:none;
+  min-width:44px;
+  min-height:44px;
+  padding:0 16px;
+  border-radius:999px;
+  border:1px solid var(--line-hi);
+  background:var(--glass);
+  backdrop-filter:blur(14px);
+  font-family:var(--mono);
+  font-size:0.8125rem;
+  color:var(--ink);
+}
+.mobile-drawer{
+  display:none;
+  position:fixed;
+  inset:74px 16px auto 16px;
+  z-index:70;
+  padding:18px;
+  border-radius:20px;
+  background:#14141C;
+  border:1px solid var(--line-hi);
+  flex-direction:column;
+  gap:6px;
+}
+.mobile-drawer.open{display:flex}
+.mobile-drawer a{
+  padding:12px 14px;
+  min-height:44px;
+  display:flex;
+  align-items:center;
+  justify-content:space-between;
+  border-radius:12px;
+  font-family:var(--display);
+  font-size:1.05rem;
+  text-transform:uppercase;
+  letter-spacing:0.04em;
+  color:var(--ink);
+}
+.mobile-drawer a:hover{background:rgba(124,58,237,0.14)}
+
+/* ── 100dvh Kinetic Hero ─────────────────────────────────────────────────── */
+.hero{
+  position:relative;
+  min-height:100dvh;
+  padding:112px 0 88px;
+  display:flex;
+  flex-direction:column;
+  justify-content:space-between;
+  overflow:hidden;
+}
+#starfield{
+  position:absolute;
+  inset:0;
+  width:100%;
+  height:100%;
+  pointer-events:none;
+  opacity:0.55;
+}
+.hero-inner{
+  position:relative;
+  z-index:2;
+  display:grid;
+  grid-template-columns:minmax(0,1.18fr) minmax(0,0.82fr);
+  gap:clamp(32px,5vw,68px);
+  align-items:center;
+  margin-top:clamp(20px,3vh,42px);
+}
+
+/* Interactive Top-Bezel CyNotch Live Demo */
+.bezel-stage{
+  position:relative;
+  z-index:3;
+  display:flex;
+  flex-direction:column;
+  align-items:center;
+  gap:10px;
+  margin-bottom:clamp(24px,4vh,44px);
+}
+.bezel-hint{
+  font-family:var(--mono);
+  font-size:0.75rem;
+  letter-spacing:0.08em;
+  text-transform:uppercase;
+  color:var(--gold);
+  opacity:0.88;
+}
+.live-notch{
+  position:relative;
+  width:248px;
+  height:40px;
+  border-radius:999px;
+  background:linear-gradient(180deg,#161422 0%,#0E0D16 100%);
+  border:1px solid rgba(245,243,255,0.14);
+  overflow:hidden;
+  cursor:pointer;
+  transition:width 420ms var(--ease),height 420ms var(--ease),border-radius 420ms var(--ease),border-color 280ms var(--ease);
+  box-shadow:0 18px 48px rgba(0,0,0,0.55);
+}
+.live-notch:hover{
+  border-color:rgba(167,139,250,0.42);
+}
+.live-notch .sweep{
+  position:absolute;
+  inset:0;
+  pointer-events:none;
+  opacity:0;
+  background:linear-gradient(90deg,rgba(124,58,237,0) 0%,rgba(192,152,255,0.52) 78%,rgba(233,213,255,0) 100%);
+  transform:translateX(-110%);
+}
+.live-notch:not(.expanded):hover .sweep{
+  animation:capsuleSweep 650ms var(--ease) forwards;
+}
+@keyframes capsuleSweep{
+  0%{opacity:0;transform:translateX(-85%)}
+  20%{opacity:1}
+  75%{opacity:0.95}
+  100%{opacity:0;transform:translateX(105%)}
+}
+.notch-idle{
+  position:absolute;
+  inset:0;
+  display:flex;
+  align-items:center;
+  justify-content:space-between;
+  padding:0 18px;
+  transition:opacity 180ms var(--ease);
+}
+.wolf-eyes{
+  display:inline-flex;
+  align-items:center;
+  gap:10px;
+}
+.wolf-eye{
+  width:13px;
+  height:5px;
+  border-radius:999px 999px 2px 2px;
+  background:linear-gradient(90deg,#A855F7,#E9D5FF);
+  animation:eyeBreath 4s ease-in-out infinite;
+}
+.wolf-eye.r{transform:scaleX(-1)}
+@keyframes eyeBreath{
+  0%,100%{opacity:0.78;transform:scaleY(1)}
+  50%{opacity:1;transform:scaleY(1.12)}
+  92%{transform:scaleY(0.15)}
+  96%{transform:scaleY(1)}
+}
+.idle-stat{
+  font-family:var(--mono);
+  font-size:0.72rem;
+  color:var(--muted);
+  letter-spacing:0.02em;
+}
+.idle-stat strong{color:var(--ink);font-weight:600}
+
+.live-notch.expanded{
+  width:min(620px,calc(100vw - 32px));
+  height:256px;
+  border-radius:28px;
+  cursor:default;
+}
+.live-notch.expanded .notch-idle{opacity:0;pointer-events:none}
+.notch-panel{
+  position:absolute;
+  inset:0;
+  padding:16px 18px;
+  display:flex;
+  flex-direction:column;
+  gap:12px;
+  opacity:0;
+  pointer-events:none;
+  transform:translateY(8px);
+  transition:opacity 240ms var(--ease) 100ms,transform 320ms var(--ease) 80ms;
+}
+.live-notch.expanded .notch-panel{
+  opacity:1;
+  pointer-events:auto;
+  transform:translateY(0);
+}
+.notch-head{
+  display:flex;
+  align-items:center;
+  justify-content:space-between;
+  gap:10px;
+}
+.notch-tabs{
+  display:inline-flex;
+  gap:4px;
+  padding:3px;
+  border-radius:999px;
+  background:rgba(255,255,255,0.04);
+  border:1px solid var(--line);
+}
+.notch-tab{
+  padding:5px 12px;
+  border-radius:999px;
+  font-family:var(--mono);
+  font-size:0.72rem;
+  color:var(--muted);
+  transition:background 180ms var(--ease),color 180ms var(--ease);
+}
+.notch-tab.active{
+  background:var(--violet);
+  color:var(--ink);
+}
+.notch-close{
+  padding:4px 10px;
+  border-radius:999px;
+  border:1px solid var(--line);
+  font-family:var(--mono);
+  font-size:0.72rem;
+  color:var(--muted);
+}
+.notch-close:hover{color:var(--ink);border-color:var(--line-hi)}
+.notch-body{
+  flex:1;
+  display:grid;
+  grid-template-columns:1.1fr 1fr;
+  gap:12px;
+  align-items:stretch;
+}
+.notch-card{
+  background:rgba(255,255,255,0.035);
+  border:1px solid rgba(245,243,255,0.07);
+  border-radius:16px;
+  padding:14px 16px;
+  display:flex;
+  flex-direction:column;
+  justify-content:space-between;
+  text-align:left;
+}
+.notch-card-label{
+  font-family:var(--mono);
+  font-size:0.7rem;
+  text-transform:uppercase;
+  letter-spacing:0.08em;
+  color:var(--violet-soft);
+}
+.notch-card-title{
+  font-family:var(--display);
+  font-size:1.15rem;
+  font-weight:600;
+  color:var(--ink);
+  margin-top:4px;
+}
+.notch-card-sub{
+  font-size:0.82rem;
+  color:var(--muted);
+}
+.notch-bar{
+  height:6px;
+  border-radius:999px;
+  background:rgba(255,255,255,0.08);
+  overflow:hidden;
+  margin-top:8px;
+}
+.notch-bar span{
+  display:block;
+  height:100%;
+  width:57%;
+  border-radius:999px;
+  background:linear-gradient(90deg,var(--violet),var(--gold));
+}
+
+/* Hero Copy & Inline Visual Punctuation */
+.hero-kicker{
+  display:inline-flex;
+  align-items:center;
+  gap:10px;
+  font-family:var(--mono);
+  font-size:0.8125rem;
+  letter-spacing:0.12em;
+  text-transform:uppercase;
+  color:var(--gold);
+  margin-bottom:20px;
+}
+.hero-kicker i{
+  display:inline-block;
+  width:26px;
+  height:1px;
+  background:var(--gold);
+}
+.hero-title{
+  font-family:var(--display);
+  font-weight:700;
+  font-size:clamp(2.85rem,6.4vw,5.8rem);
+  line-height:0.96;
+  letter-spacing:-0.03em;
+  text-transform:uppercase;
+  color:var(--ink);
+}
+.hero-title .inline-chip{
+  display:inline-flex;
+  align-items:center;
+  vertical-align:middle;
+  height:0.78em;
+  padding:0.08em 0.14em;
+  margin:0 0.08em 0.1em;
+  border-radius:999px;
+  background:var(--panel-hi);
+  border:1px solid rgba(167,139,250,0.38);
+  overflow:hidden;
+}
+.hero-title .inline-chip img{
+  height:100%;
+  width:auto;
+  border-radius:999px;
+  object-fit:cover;
+}
+.hero-title .accent-word{color:var(--violet-soft)}
+.hero-lead{
+  margin-top:24px;
+  max-width:52ch;
+  font-size:1.125rem;
+  color:var(--muted);
+}
+.hero-actions{
+  margin-top:32px;
+  display:flex;
+  flex-wrap:wrap;
+  align-items:center;
+  gap:16px;
+}
+.hero-meta{
+  font-family:var(--mono);
+  font-size:0.8rem;
+  color:var(--muted);
+  display:flex;
+  flex-wrap:wrap;
+  gap:14px;
+  margin-top:22px;
+}
+.hero-meta span{
+  padding-right:14px;
+  border-right:1px solid var(--line);
+}
+.hero-meta span:last-child{border-right:0}
+
+/* Hero Visual Stage (Asymmetric Orbital Frame + Cyno Accent) */
+.hero-stage{
+  position:relative;
+  display:grid;
+  gap:16px;
+}
+.stage-card{
+  position:relative;
+  border-radius:24px;
+  padding:18px;
+  background:var(--panel);
+  border:1px solid var(--line);
+  overflow:hidden;
+  transition:transform 420ms var(--ease),border-color 280ms var(--ease);
+}
+.stage-card:hover{
+  transform:translateY(-4px);
+  border-color:rgba(167,139,250,0.34);
+}
+.stage-card img{
+  width:100%;
+  border-radius:14px;
+}
+.stage-row{
+  display:grid;
+  grid-template-columns:1.2fr 0.8fr;
+  gap:16px;
+}
+.cyno-frame{
+  position:relative;
+  border-radius:24px;
+  background:linear-gradient(160deg,#1B142C 0%,#121218 100%);
+  border:1px solid rgba(244,235,181,0.22);
+  overflow:hidden;
+  display:flex;
+  flex-direction:column;
+  justify-content:space-between;
+  padding:16px;
+  min-height:190px;
+}
+.cyno-frame img{
+  width:100%;
+  height:142px;
+  object-fit:cover;
+  object-position:center 18%;
+  border-radius:14px;
+}
+.cyno-caption{
+  margin-top:10px;
+  font-family:var(--mono);
+  font-size:0.72rem;
+  letter-spacing:0.06em;
+  text-transform:uppercase;
+  color:var(--gold);
+  display:flex;
+  justify-content:space-between;
+}
+
+/* ── Tilted Diagonal Marquee Ribbons (Signature Made to Disrupt) ────────── */
+.ribbon-band{
+  position:relative;
+  padding:28px 0;
+  overflow:hidden;
+}
+.ribbon{
+  display:flex;
+  width:max-content;
+  background:var(--ribbon-bg);
+  color:var(--ribbon-ink);
+  transform:rotate(-1.4deg);
+  padding:16px 0;
+  border-top:1px solid rgba(13,13,16,0.12);
+  border-bottom:1px solid rgba(13,13,16,0.12);
+}
+.ribbon.alt{
+  background:var(--panel-hi);
+  color:var(--gold);
+  transform:rotate(1.4deg);
+  border-top:1px solid var(--line-hi);
+  border-bottom:1px solid var(--line-hi);
+}
+.ribbon-track{
+  display:flex;
+  align-items:center;
+  gap:36px;
+  padding-right:36px;
+  animation:marquee 28s linear infinite;
+  will-change:transform;
+}
+.ribbon.alt .ribbon-track{animation-direction:reverse;animation-duration:34s}
+.ribbon-item{
+  font-family:var(--display);
+  font-weight:700;
+  font-size:clamp(1rem,1.8vw,1.35rem);
+  letter-spacing:0.06em;
+  text-transform:uppercase;
+  white-space:nowrap;
+  display:inline-flex;
+  align-items:center;
+  gap:36px;
+}
+.ribbon-dot{
+  width:8px;
+  height:8px;
+  border-radius:999px;
+  background:var(--violet);
+  display:inline-block;
+}
+.ribbon.alt .ribbon-dot{background:var(--gold)}
+@keyframes marquee{
+  from{transform:translateX(0)}
+  to{transform:translateX(-50%)}
+}
+
+/* ── 01 / Editorial Manifesto (Scroll-Reveal Typography) ────────────────── */
+.section{
+  padding:clamp(76px,10vw,136px) 0;
+}
+.eyebrow{
+  font-family:var(--mono);
+  font-size:0.8rem;
+  letter-spacing:0.12em;
+  text-transform:uppercase;
+  color:var(--gold);
+  display:inline-flex;
+  align-items:center;
+  gap:10px;
+}
+.eyebrow::before{
+  content:"";
+  width:18px;
+  height:1px;
+  background:var(--gold);
+}
+.manifesto-grid{
+  display:grid;
+  grid-template-columns:minmax(200px,0.34fr) minmax(0,0.66fr);
+  gap:clamp(28px,5vw,72px);
+  align-items:start;
+}
+.manifesto-aside{
+  position:sticky;
+  top:110px;
+  display:flex;
+  flex-direction:column;
+  gap:18px;
+}
+.manifesto-badge{
+  display:inline-flex;
+  align-items:center;
+  gap:12px;
+  padding:10px 14px;
+  border-radius:16px;
+  background:var(--panel);
+  border:1px solid var(--line);
+  width:fit-content;
+}
+.manifesto-badge img{
+  width:36px;
+  height:36px;
+  border-radius:10px;
+  object-fit:cover;
+}
+.manifesto-badge div{
+  font-family:var(--mono);
+  font-size:0.75rem;
+  line-height:1.35;
+  color:var(--muted);
+}
+.manifesto-badge strong{display:block;color:var(--ink)}
+
+.kinetic-copy{
+  font-family:var(--display);
+  font-weight:600;
+  font-size:clamp(1.75rem,3.4vw,3rem);
+  line-height:1.18;
+  letter-spacing:-0.02em;
+}
+.kinetic-copy .kw{
+  color:var(--dim);
+  transition:color 260ms var(--ease);
+}
+.kinetic-copy .kw.lit{color:var(--ink)}
+.kinetic-copy .kw.gold.lit{color:var(--gold)}
+
+.principles{
+  margin-top:52px;
+  border-top:1px solid var(--line);
+}
+.principle-row{
+  display:grid;
+  grid-template-columns:64px minmax(0,1fr) minmax(0,1.15fr);
+  gap:20px;
+  padding:22px 0;
+  border-bottom:1px solid var(--line);
+  align-items:baseline;
+  transition:background 220ms var(--ease);
+}
+.principle-row:hover{background:rgba(245,243,255,0.025)}
+.principle-num{
+  font-family:var(--mono);
+  font-size:0.82rem;
+  color:var(--violet-soft);
+}
+.principle-title{
+  font-family:var(--display);
+  font-weight:600;
+  font-size:1.2rem;
+  text-transform:uppercase;
+  letter-spacing:0.02em;
+}
+.principle-desc{
+  font-size:0.98rem;
+  color:var(--muted);
+}
+
+/* ── 02 / Sticky-Stacking 50/50 Feature Pillars ─────────────────────────── */
+.section-head{
+  display:flex;
+  flex-wrap:wrap;
+  justify-content:space-between;
+  align-items:flex-end;
+  gap:24px;
+  margin-bottom:clamp(40px,6vw,68px);
+}
+.section-title{
+  font-family:var(--display);
+  font-weight:700;
+  font-size:clamp(2.2rem,5vw,4.2rem);
+  line-height:0.98;
+  letter-spacing:-0.03em;
+  text-transform:uppercase;
+  margin-top:14px;
+}
+.section-sub{
+  max-width:42ch;
+  color:var(--muted);
+}
+
+.pillars-stack{
+  display:flex;
+  flex-direction:column;
+  gap:32px;
+}
+.pillar-card{
+  position:sticky;
+  top:96px;
+  display:grid;
+  grid-template-columns:1.08fr 0.92fr;
+  border-radius:26px;
+  overflow:hidden;
+  background:var(--panel);
+  border:1px solid var(--line-hi);
+  box-shadow:0 28px 70px rgba(0,0,0,0.55);
+}
+.pillar-card:nth-child(2){top:110px}
+.pillar-card:nth-child(3){top:124px}
+.pillar-card:nth-child(4){top:138px}
+.pillar-card:nth-child(5){top:152px}
+
+.pillar-media{
+  background:radial-gradient(circle at 30% 25%,rgba(124,58,237,0.16),transparent 62%),#161522;
+  padding:clamp(24px,4vw,44px);
+  display:flex;
+  flex-direction:column;
+  justify-content:center;
+  align-items:center;
+  gap:16px;
+  border-right:1px solid var(--line);
+}
+.pillar-media img{
+  border-radius:16px;
+  border:1px solid rgba(245,243,255,0.12);
+  box-shadow:0 20px 50px rgba(0,0,0,0.45);
+}
+.pillar-media .idle-strip{
+  max-width:340px;
+  border-radius:999px;
+}
+.pillar-copy{
+  padding:clamp(28px,4vw,52px);
+  background:var(--panel);
+  display:flex;
+  flex-direction:column;
+  justify-content:space-between;
+  gap:24px;
+}
+.pillar-tag{
+  display:inline-flex;
+  align-items:center;
+  gap:10px;
+  font-family:var(--mono);
+  font-size:0.78rem;
+  letter-spacing:0.1em;
+  text-transform:uppercase;
+  color:var(--gold);
+}
+.pillar-h{
+  font-family:var(--display);
+  font-weight:700;
+  font-size:clamp(1.65rem,2.7vw,2.35rem);
+  line-height:1.06;
+  letter-spacing:-0.02em;
+  text-transform:uppercase;
+  margin-top:12px;
+}
+.pillar-p{
+  margin-top:16px;
+  color:var(--muted);
+  max-width:46ch;
+}
+.spec-list{
+  display:flex;
+  flex-wrap:wrap;
+  gap:8px;
+  padding-top:18px;
+  border-top:1px solid var(--line);
+}
+.spec-chip{
+  padding:6px 12px;
+  border-radius:999px;
+  font-family:var(--mono);
+  font-size:0.75rem;
+  color:var(--ink-80);
+  background:rgba(245,243,255,0.045);
+  border:1px solid var(--line);
+}
+
+/* ── 03 / Verified Engineering Benchmarks ───────────────────────────────── */
+.bench-grid{
+  display:grid;
+  grid-template-columns:repeat(4,minmax(0,1fr));
+  gap:16px;
+  margin-bottom:36px;
+}
+.bench-card{
+  padding:26px 24px;
+  border-radius:22px;
+  background:var(--panel);
+  border:1px solid var(--line);
+  display:flex;
+  flex-direction:column;
+  gap:10px;
+}
+.bench-val{
+  font-family:var(--display);
+  font-weight:700;
+  font-size:clamp(2rem,3.2vw,2.85rem);
+  line-height:1;
+  letter-spacing:-0.03em;
+  color:var(--ink);
+}
+.bench-val span{color:var(--violet-soft)}
+.bench-lbl{
+  font-family:var(--mono);
+  font-size:0.78rem;
+  text-transform:uppercase;
+  letter-spacing:0.08em;
+  color:var(--gold);
+}
+.bench-note{
+  font-size:0.88rem;
+  color:var(--muted);
+}
+
+.table-wrap{
+  border-radius:22px;
+  border:1px solid var(--line);
+  background:var(--panel);
+  overflow-x:auto;
+}
+table{
+  width:100%;
+  border-collapse:collapse;
+  min-width:640px;
+}
+th,td{
+  padding:16px 22px;
+  text-align:left;
+  border-bottom:1px solid var(--line);
+  font-size:0.94rem;
+}
+th{
+  font-family:var(--mono);
+  font-size:0.76rem;
+  text-transform:uppercase;
+  letter-spacing:0.09em;
+  color:var(--muted);
+  background:rgba(245,243,255,0.02);
+}
+tr:last-child td{border-bottom:0}
+td strong{color:var(--ink);font-weight:600}
+td.mono{font-family:var(--mono);font-size:0.86rem}
+td.win{color:var(--gold);font-family:var(--mono);font-weight:600;font-size:0.86rem}
+
+.hotkeys-bar{
+  margin-top:24px;
+  display:grid;
+  grid-template-columns:repeat(3,minmax(0,1fr));
+  gap:14px;
+}
+.hotkey-item{
+  padding:18px 20px;
+  border-radius:18px;
+  background:var(--panel);
+  border:1px solid var(--line);
+  display:flex;
+  align-items:center;
+  justify-content:space-between;
+  gap:12px;
+}
+.hotkey-item span{font-size:0.92rem;color:var(--muted)}
+kbd{
+  font-family:var(--mono);
+  font-size:0.8rem;
+  padding:6px 11px;
+  border-radius:10px;
+  background:var(--panel-hi);
+  border:1px solid var(--line-hi);
+  color:var(--ink);
+  white-space:nowrap;
+}
+
+/* ── 04 / Release CTA & Editorial Footer ────────────────────────────────── */
+.cta-box{
+  display:grid;
+  grid-template-columns:1.1fr 0.9fr;
+  gap:clamp(28px,5vw,64px);
+  padding:clamp(32px,5vw,64px);
+  border-radius:28px;
+  background:linear-gradient(155deg,#181428 0%,#121218 55%,#14121B 100%);
+  border:1px solid rgba(167,139,250,0.26);
+  align-items:center;
+}
+.cta-title{
+  font-family:var(--display);
+  font-weight:700;
+  font-size:clamp(2.1rem,4.6vw,3.9rem);
+  line-height:0.98;
+  letter-spacing:-0.03em;
+  text-transform:uppercase;
+}
+.cta-title span{color:var(--gold)}
+.cta-sub{
+  margin-top:18px;
+  color:var(--muted);
+  max-width:44ch;
+}
+.cta-panel{
+  display:flex;
+  flex-direction:column;
+  gap:14px;
+}
+.cta-buttons{
+  display:flex;
+  flex-wrap:wrap;
+  gap:12px;
+}
+.code-box{
+  position:relative;
+  padding:16px 18px;
+  border-radius:16px;
+  background:#0B0B0F;
+  border:1px solid var(--line);
+  font-family:var(--mono);
+  font-size:0.82rem;
+  color:var(--ink-80);
+  line-height:1.7;
+  overflow-x:auto;
+}
+.copy-btn{
+  position:absolute;
+  top:10px;
+  right:10px;
+  min-height:34px;
+  padding:0 12px;
+  border-radius:999px;
+  background:var(--panel-hi);
+  border:1px solid var(--line-hi);
+  font-family:var(--mono);
+  font-size:0.74rem;
+  color:var(--ink);
+  transition:border-color 180ms var(--ease),background 180ms var(--ease);
+}
+.copy-btn:hover{border-color:var(--violet-soft);background:rgba(124,58,237,0.22)}
+
+footer{
+  padding:56px 0 40px;
+  border-top:1px solid var(--line);
+  margin-top:clamp(56px,8vw,96px);
+}
+.foot-top{
+  display:flex;
+  flex-wrap:wrap;
+  justify-content:space-between;
+  align-items:center;
+  gap:24px;
+  padding-bottom:32px;
+  border-bottom:1px solid var(--line);
+}
+.foot-links{
+  display:flex;
+  flex-wrap:wrap;
+  gap:24px;
+  font-family:var(--display);
+  font-size:0.9rem;
+  letter-spacing:0.06em;
+  text-transform:uppercase;
+  color:var(--muted);
+}
+.foot-links a:hover{color:var(--ink)}
+.foot-bot{
+  padding-top:24px;
+  display:flex;
+  flex-wrap:wrap;
+  justify-content:space-between;
+  gap:12px;
+  font-family:var(--mono);
+  font-size:0.76rem;
+  color:var(--dim);
+}
+
+/* ── Responsive (< 960px & < 768px) ─────────────────────────────────────── */
+@media (max-width:960px){
+  .hero-inner,
+  .manifesto-grid,
+  .pillar-card,
+  .cta-box{
+    grid-template-columns:1fr;
+  }
+  .manifesto-aside{position:static}
+  .pillar-card{position:static}
+  .pillar-media{border-right:0;border-bottom:1px solid var(--line)}
+  .bench-grid{grid-template-columns:repeat(2,minmax(0,1fr))}
+  .hotkeys-bar{grid-template-columns:1fr}
+}
+@media (max-width:768px){
+  .nav{grid-template-columns:1fr auto}
+  .nav-pill,.nav-right .btn-pill{display:none}
+  .menu-btn{display:inline-flex;align-items:center;justify-content:center}
+  .hero{padding-top:96px}
+  .stage-row{grid-template-columns:1fr}
+  .principle-row{grid-template-columns:1fr;gap:6px}
+  .bench-grid{grid-template-columns:1fr}
+  .notch-body{grid-template-columns:1fr}
+  .live-notch.expanded{height:310px}
 }
 @media (prefers-reduced-motion:reduce){
   html{scroll-behavior:auto}
-  *,*::before,*::after{animation-duration:.001ms!important;transition-duration:.001ms!important}
-  .reveal{opacity:1;transform:none}
+  .ribbon-track,.wolf-eye,.live-notch .sweep{animation:none !important}
+  .kinetic-copy .kw{color:var(--ink)}
 }
 </style>
 </head>
 <body>
-<a class="skip-link" href="#main">Skip to content</a>
-<div class="grain" aria-hidden="true"></div>
 
-<header class="rail" id="rail" data-scrolled="false">
-  <div class="rail-inner">
+<header class="nav-wrap">
+  <nav class="nav" aria-label="Primary">
     <a class="brand" href="#top">
-      <img src="./assets/cynotch-icon-96.png" alt="" width="28" height="28">
-      <span class="brand-name">CyNotch</span>
-      <span class="brand-tag">v0.3.0</span>
-      <span class="sr-only">home</span>
+      <img src="./assets/cynotch-icon-64.png" alt="CyNotch emblem" width="28" height="28">
+      <span class="brand-word">CY<span>/</span>NOTCH</span>
     </a>
-    <nav class="rail-nav" aria-label="Primary">
-      <a href="#notch" data-spy>Real shots</a>
-      <a href="#memory" data-spy>Memory</a>
-      <a href="#media" data-spy>Media</a>
-      <a href="#hub" data-spy>Hub</a>
-      <a href="#benchmark" data-spy>v0.3.0 vs v0.2.4.1</a>
-      <a href="#build" data-spy>Build</a>
-    </nav>
-    <div class="rail-actions">
-      <a class="btn btn-ghost" href="https://github.com/muhnbl/CyNotch" target="_blank" rel="noopener">Source <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" aria-hidden="true"><path d="M7 17 17 7M9 7h8v8"/></svg></a>
-      <a class="btn btn-primary" href="#install">Download</a>
-      <button class="menu-btn" id="menuBtn" type="button" aria-label="Open menu" aria-expanded="false" aria-controls="railMenu"><span></span></button>
+
+    <div class="nav-pill" role="navigation">
+      <a href="#manifesto">Manifesto</a>
+      <a href="#pillars">Pillars</a>
+      <a href="#benchmarks">Benchmarks</a>
+      <a href="#download">Release</a>
     </div>
-  </div>
+
+    <div class="nav-right">
+      <a class="btn-pill" href="https://github.com/muhnbl/CyNotch/releases/tag/v1.0.0" target="_blank" rel="noopener">Get v1.0.0</a>
+      <button class="menu-btn" id="menuBtn" type="button" aria-expanded="false" aria-controls="mobileDrawer">/ Menu</button>
+    </div>
+  </nav>
 </header>
-<nav class="rail-menu" id="railMenu" aria-label="Mobile" hidden>
-  <a href="#notch">Real shots</a>
-  <a href="#memory">Memory Reduct</a>
-  <a href="#media">Media &amp; lyrics</a>
-  <a href="#hub">The hub</a>
-  <a href="#benchmark">v0.3.0 Benchmark &amp; Visual Diff</a>
-  <a href="#build">Under the hood</a>
-  <a href="https://github.com/muhnbl/CyNotch" target="_blank" rel="noopener">Source on GitHub</a>
-  <a class="btn btn-primary" href="#install">Download v0.3.0</a>
-</nav>
 
-<main id="main">
-<span id="top"></span>
+<div class="mobile-drawer" id="mobileDrawer" aria-label="Mobile menu">
+  <a href="#manifesto">01 Manifesto <span>&rarr;</span></a>
+  <a href="#pillars">02 Five Pillars <span>&rarr;</span></a>
+  <a href="#benchmarks">03 Benchmarks <span>&rarr;</span></a>
+  <a href="#download">04 Download v1.0.0 <span>&rarr;</span></a>
+  <a href="https://github.com/muhnbl/CyNotch" target="_blank" rel="noopener">GitHub Repo <span>&nearr;</span></a>
+</div>
 
-<section class="hero" aria-labelledby="heroTitle">
-  <div class="wrap hero-inner">
-    <div class="hero-copy reveal">
-      <div class="chips">
-        <span class="chip"><i aria-hidden="true"></i>General Mahamatra · Direct2D GPU</span>
-        <span class="chip">Windows 10 / 11, x64</span>
-      </div>
-      <h1 id="heroTitle"><span class="judge">Judgment,</span><br>at the top<br>of your screen.</h1>
-      <p class="hero-lede">CyNotch v0.3.0 is a GPU-accelerated Dynamic Island for Windows that actually does stuff. Hardware Direct2D + DirectWrite engine, physical screen-edge &amp; corner portal glow, synced lyrics, live telemetry and a Purge RAM button with main character energy. Built in Rust, shrunk to 1.74 MB, zero installer.</p>
-      <div class="hero-cta">
-        <a class="btn btn-primary btn-lg" href="#install">Download v0.3.0 <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><path d="M12 4v12m0 0 4-4m-4 4-4-4M5 20h14"/></svg></a>
-        <a class="btn btn-ghost btn-lg" href="#benchmark">v0.3.0 vs v0.2.4.1 <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" aria-hidden="true"><path d="M5 12h14m-6-6 6 6-6 6"/></svg></a>
-      </div>
-      <div class="hero-micro">
-        <span><kbd>Ctrl</kbd><kbd>Shift</kbd><kbd>C</kbd> to summon it</span>
-        <span>1.74 MB single .exe</span>
-        <span>0% idle CPU</span>
-      </div>
-    </div>
-    <div class="hero-shot reveal">
-      <div class="shot-frame"><img id="heroPreviewImg" src="./assets/real/cynotch-home.png" alt="CyNotch v0.3.0 Command Hub showing General Cyno RAM card, Live Network throughput, Now Playing and Tasks Open" width="660" height="272"></div>
-      <div class="hero-tabs" role="group" aria-label="Switch CyNotch view">
-        <button type="button" class="hero-tab" aria-pressed="true" data-hero-img="./assets/real/cynotch-home.png" data-hero-cap="Direct2D GPU render · Command Hub · v0.3.0" data-hero-alt="CyNotch v0.3.0 Command Hub showing General Cyno RAM card, Live Network throughput, Now Playing and Tasks Open">Command Hub</button>
-        <button type="button" class="hero-tab" aria-pressed="false" data-hero-img="./assets/real/cynotch-music.png" data-hero-cap="Direct2D GPU render · Music &amp; Lyrics · v0.3.0" data-hero-alt="CyNotch v0.3.0 Music and synced LRCLIB lyrics view with interactive 1:1 scrubber">Lyrics</button>
-        <button type="button" class="hero-tab" aria-pressed="false" data-hero-img="./assets/real/cynotch-memreduct.png" data-hero-cap="Direct2D GPU render · Mem Reduct · v0.3.0" data-hero-alt="CyNotch v0.3.0 Mem Reduct view with 8 clean areas and Clean Memory button">Mem Reduct</button>
-        <button type="button" class="hero-tab" aria-pressed="false" data-hero-img="./assets/real/cynotch-shelf.png" data-hero-cap="Direct2D GPU render · Quick Shelf · v0.3.0" data-hero-alt="CyNotch v0.3.0 Quick Shelf with pinned URLs, commands and files">Quick Shelf</button>
-        <button type="button" class="hero-tab" aria-pressed="false" data-hero-img="./assets/real/cynotch-capture.png" data-hero-cap="Direct2D GPU render · Quick Capture · v0.3.0" data-hero-alt="CyNotch v0.3.0 Quick Capture with Full Screen and Active Window actions">Quick Capture</button>
-      </div>
-      <p id="heroPreviewCap">Direct2D GPU render · Command Hub · v0.3.0</p>
-    </div>
-  </div>
+<main id="top">
+  <!-- ── HERO ────────────────────────────────────────────────────────────── -->
+  <section class="hero">
+    <canvas id="starfield" aria-hidden="true"></canvas>
 
-  <div class="wrap">
-    <dl class="specs">
-      <div class="spec"><dt>Binary</dt><dd>1.74 <small>MB (−56%)</small></dd></div>
-      <div class="spec"><dt>Expanded frame</dt><dd>0.93 <small>ms (9.8× faster)</small></dd></div>
-      <div class="spec"><dt>Idle CPU</dt><dd>0.0<small>% (hibernated)</small></dd></div>
-      <div class="spec"><dt>Renderer</dt><dd>Direct2D <small>+ DirectWrite</small></dd></div>
-      <div class="spec"><dt>Stack</dt><dd>Rust <small>edition 2024</small></dd></div>
-    </dl>
-    <p class="spec-note">Measured in v0.3.0 GPU Direct2D benchmark suite. <a href="https://github.com/muhnbl/CyNotch/blob/main/OPTIMIZATION_REPORT.md" target="_blank" rel="noopener">OPTIMIZATION_REPORT.md ↗</a></p>
-  </div>
-</section>
-
-<section class="section section--line" id="notch" aria-labelledby="notchTitle">
-  <div class="wrap">
-    <div class="reveal">
-      <p class="kicker"><span>01</span> Real shots</p>
-      <h2 class="sec-h2" id="notchTitle">Hardware Direct2D captures from CyNotch v0.3.0.</h2>
-      <p class="sec-lede">Every image here is rendered directly by CyNotch v0.3.0's hardware Direct2D + DirectWrite engine with calibrated monochromatic Electro Violet surfaces, sub-pixel typography, and live network activity bars. Click a shot to inspect it full-size.</p>
-    </div>
-    <div class="gallery">
-      <figure class="shot reveal"><button type="button" data-shot="Command Hub" data-img="./assets/real/cynotch-home.png" aria-label="Open full screenshot: Command Hub"><span class="shot-frame"><img src="./assets/real/cynotch-home.png" alt="Command Hub view with RAM, Live Network, media and tasks" width="660" height="272" loading="lazy"></span></button><figcaption><strong>Command Hub</strong><span>Direct2D · v0.3.0 ↗</span></figcaption><p>Home base. Mascot, RAM gauge, live network throughput bars, now playing and open tasks in one cohesive obsidian glass strip.</p></figure>
-      <figure class="shot reveal"><button type="button" data-shot="Mem Reduce" data-img="./assets/real/cynotch-memreduct.png" aria-label="Open full screenshot: Mem Reduce"><span class="shot-frame"><img src="./assets/real/cynotch-memreduct.png" alt="Mem Reduce view with clean areas and Clean Above setting" width="660" height="272" loading="lazy"></span></button><figcaption><strong>Mem Reduce</strong><span>Direct2D · v0.3.0 ↗</span></figcaption><p>The judgment desk. 8 kernel &amp; user clean areas you can toggle, auto threshold, and a receipt of what got freed.</p></figure>
-      <figure class="shot reveal"><button type="button" data-shot="Quick Shelf" data-img="./assets/real/cynotch-shelf.png" aria-label="Open full screenshot: Quick Shelf"><span class="shot-frame"><img src="./assets/real/cynotch-shelf.png" alt="Quick Shelf view with pinned URLs, shell commands and files" width="660" height="272" loading="lazy"></span></button><figcaption><strong>Quick Shelf</strong><span>Direct2D · v0.3.0 ↗</span></figcaption><p>A clipboard with a roof. Pin links, commands, or dropped files, then click to copy or open in one tap.</p></figure>
-      <figure class="shot reveal"><button type="button" data-shot="Quick Capture" data-img="./assets/real/cynotch-capture.png" aria-label="Open full screenshot: Quick Capture"><span class="shot-frame"><img src="./assets/real/cynotch-capture.png" alt="Quick Capture view with full screen and active window buttons" width="660" height="272" loading="lazy"></span></button><figcaption><strong>Quick Capture</strong><span>Direct2D · v0.3.0 ↗</span></figcaption><p>Full screen or active window encoded via native Win32 WIC PNG, copied to clipboard and saved to disk.</p></figure>
-    </div>
-    <p class="gallery-note">Rendered directly from CyNotch v0.3.0's Direct2D GPU swapchain with native premultiplied alpha — zero desktop bleed.</p>
-  </div>
-</section>
-
-<section class="section section--line" id="memory" aria-labelledby="memTitle">
-  <div class="wrap mem-grid">
-    <div class="reveal">
-      <p class="kicker"><span>02</span> Memory reduct</p>
-      <h2 class="sec-h2" id="memTitle">Purge RAM, but make it a courtroom.</h2>
-      <p class="sec-lede">CyNotch trims each process's working set through <code>K32EmptyWorkingSet</code>, releases the system working set, then tidies the standby list. The screenshot shows the real Mem Reduce view after a run, including the freed amount and the clean areas it touched.</p>
-      <dl class="mem-details">
-        <div><dt>Working sets</dt><dd>Active processes get trimmed in place. Nothing gets force-closed, which is very un-Cyno of it.</dd></div>
-        <div><dt>System WS</dt><dd>The kernel's own working set gets released when the engine runs.</dd></div>
-        <div><dt>Standby list</dt><dd>Standby is cache, not trash. Reordering it makes memory give way sooner under pressure.</dd></div>
-        <div><dt>Triggers</dt><dd>Threshold at 70, 80 or 90 percent, or every 5, 15 and 30 minutes. The shot above shows a threshold of 80 percent with the interval disabled.</dd></div>
-      </dl>
-      <p class="mem-quote">“Judgment is passed! Excess RAM purged.”<small>Cyno, after a successful purge</small></p>
-    </div>
-    <div class="reveal cyno-stage">
-      <div class="cyno-wish-wrap" aria-hidden="true">
-        <img class="cyno-wish" src="./assets/cyno/cyno-wish.webp" alt="Official Genshin Impact Cyno splash art" width="600" height="632" loading="lazy">
-      </div>
-      <div class="shot-frame"><img src="./assets/real/cynotch-memreduct.png" alt="Real screenshot of CyNotch v0.3.0 Mem Reduce showing 18.2 of 31.9 GB used, 57 percent, clean areas and a 420 MB last clean" width="660" height="272" loading="lazy"></div>
-      <p class="real-note">Captured from CyNotch v0.3.0 Direct2D engine after a live memory clean.</p>
-    </div>
-  </div>
-</section>
-
-<section class="section media-band" id="media" aria-labelledby="mediaTitle">
-  <div class="wrap media-grid">
-    <div class="reveal" style="display:grid;gap:20px">
-      <div class="shot-frame"><img src="./assets/real/cynotch-music.png" alt="Real render of CyNotch v0.3.0 Music and synced LRCLIB lyrics view with glowing scrubber thumb" width="660" height="272" loading="lazy"></div>
-      <div class="mascot-card">
-        <img class="cyno-portrait" src="./assets/cyno/cyno-icon.webp" alt="Official Genshin Impact Cyno character icon" width="64" height="64" loading="lazy">
-        <img src="./assets/cynotch-icon-192.png" alt="CyNotch mascot" width="86" height="86">
-        <div><p>“Through me, the law is made manifest.”<small>General Cyno · Official Genshin Impact</small></p></div>
-      </div>
-    </div>
-    <div class="reveal">
-      <p class="kicker"><span>03</span> Media &amp; lyrics</p>
-      <h2 class="sec-h2" id="mediaTitle">Your music, with the words already in sync.</h2>
-      <p class="sec-lede">CyNotch listens to the Windows GSMTC session, the same source behind the Windows media flyout. If Windows knows the track, the notch does. LRCLIB supplies the words via zero-crate Win32 WinHTTP, and they follow playback.</p>
-      <dl class="spec-list">
-        <div><dt>Source</dt><dd>WinRT GlobalSystemMediaTransportControls. Spotify, YouTube, Chrome and other Windows media players.</dd></div>
-        <div><dt>Lyrics</dt><dd>Live synced lines from LRCLIB across 4 modes (Classic, Karaoke, Minimal, Stream).</dd></div>
-        <div><dt>Controls</dt><dd>Play, pause and 1:1 sub-pixel click-and-drag seek scrubber directly from the notch.</dd></div>
-      </dl>
-      <p class="media-note">No account. No API key. No "connect your streaming service" quest line.</p>
-    </div>
-  </div>
-</section>
-
-<section class="section section--line" id="hub" aria-labelledby="hubTitle">
-  <div class="wrap">
-    <div class="reveal">
-      <p class="kicker"><span>04</span> The hub</p>
-      <h2 class="sec-h2" id="hubTitle">Small tools, no window tax.</h2>
-      <p class="sec-lede">The same notch also holds a quick shelf, screen capture, live CPU and network readings, a Windows notifications bridge with burst-deduplicated Snapchat chime, tasks and system volume. You open one, use it, close it. Nothing multiplies.</p>
-    </div>
-    <div class="hub-shots">
-      <figure class="shot reveal"><button type="button" data-shot="Quick Shelf" data-img="./assets/real/cynotch-shelf.png" aria-label="Open full screenshot: Quick Shelf"><span class="shot-frame"><img src="./assets/real/cynotch-shelf.png" alt="Real screenshot of CyNotch v0.3.0 Quick Shelf" width="660" height="272" loading="lazy"></span></button><figcaption><strong>Quick Shelf</strong><span>Direct2D · v0.3.0 ↗</span></figcaption><p>Pinned URLs, shell snippets and files, one layer down. Click to copy or open.</p></figure>
-      <figure class="shot reveal"><button type="button" data-shot="Quick Capture" data-img="./assets/real/cynotch-capture.png" aria-label="Open full screenshot: Quick Capture"><span class="shot-frame"><img src="./assets/real/cynotch-capture.png" alt="Real screenshot of CyNotch v0.3.0 Quick Capture" width="660" height="272" loading="lazy"></span></button><figcaption><strong>Quick Capture</strong><span>Direct2D · v0.3.0 ↗</span></figcaption><p>Full screen or active window. Native Win32 WIC PNG on disk, click banner to open folder.</p></figure>
-    </div>
-    <div class="feature-strip reveal" aria-label="More real features">
-      <span>Portal edge glow</span><span>Direct2D GPU engine</span><span>Framer-Motion springs</span><span>Snapchat 25% burst chime</span><span>Live network bars</span><span>Screen Time</span><span>Tasks &amp; Todos</span><span>Notifications bridge</span><span>1:1 Volume Master</span><span>Horizontal &amp; vertical docks</span>
-    </div>
-  </div>
-</section>
-
-<section class="section bench-sec" id="benchmark" aria-labelledby="benchTitle">
-  <div class="wrap">
-    <div class="reveal">
-      <p class="kicker"><span>05</span> Benchmark &amp; Visual Diff · v0.2.4.1 → v0.3.0</p>
-      <h2 class="sec-h2" id="benchTitle">9.8× faster on GPU. 58% smaller on disk.</h2>
-      <p class="sec-lede">In v0.3.0 we replaced the entire CPU software rasterizer (<code>tiny-skia</code> + <code>fontdue</code> + <code>ureq</code> + <code>chrono</code>) with hardware-accelerated <strong>Direct2D + DirectWrite</strong> bound directly to the DirectComposition DXGI SwapChain, while overhauling the visual design into a borderless monochromatic Electro Violet surface system.</p>
-    </div>
-
-    <div class="bench-kpi-grid reveal">
-      <div class="bench-kpi">
-        <p class="bench-kpi-tag">Expanded Frame Time</p>
-        <strong>0.93 ms <small class="mono" style="font-size:.7rem;color:var(--accent-hi)">9.8× faster</small></strong>
-        <p class="bench-kpi-sub">Down from 8.51–10.96 ms CPU raster in v0.2.4.1 (1.08 ms with full GPU flush).</p>
-        <div class="bench-bars" aria-hidden="true">
-          <div class="bench-bar-row"><span>v0.2.4.1</span><div class="bench-bar-track"><div class="bench-bar-fill" style="width:100%"></div></div><span>9.90ms</span></div>
-          <div class="bench-bar-row"><span>v0.3.0</span><div class="bench-bar-track"><div class="bench-bar-fill bench-bar-fill--hi" style="width:10%"></div></div><span>0.93ms</span></div>
+    <div class="wrap">
+      <!-- Live Interactive CyNotch Top-Bezel Preview -->
+      <div class="bezel-stage">
+        <div class="bezel-hint" id="bezelHint">Hover or click the live bezel capsule to inspect v1.0.0</div>
+        <div class="live-notch" id="liveNotch" role="button" tabindex="0" aria-expanded="false" aria-label="Interactive CyNotch capsule preview">
+          <div class="sweep" aria-hidden="true"></div>
+          <div class="notch-idle">
+            <div class="wolf-eyes" aria-hidden="true">
+              <span class="wolf-eye"></span>
+              <span class="wolf-eye r"></span>
+            </div>
+            <div class="idle-stat"><strong>v1.0.0</strong> &middot; 144Hz GPU</div>
+          </div>
+          <div class="notch-panel">
+            <div class="notch-head">
+              <div class="notch-tabs" role="tablist" aria-label="Notch preview modes">
+                <button class="notch-tab active" data-mode="home" type="button" role="tab" aria-selected="true">Home</button>
+                <button class="notch-tab" data-mode="music" type="button" role="tab" aria-selected="false">Music</button>
+                <button class="notch-tab" data-mode="ram" type="button" role="tab" aria-selected="false">MemReduct</button>
+                <button class="notch-tab" data-mode="shelf" type="button" role="tab" aria-selected="false">Shelf</button>
+              </div>
+              <button class="notch-close" id="notchClose" type="button">Collapse</button>
+            </div>
+            <div class="notch-body" id="notchBody">
+              <div class="notch-card">
+                <div>
+                  <div class="notch-card-label">General Cyno &middot; Command Hub</div>
+                  <div class="notch-card-title">RAM 57% &middot; 18.2 GB</div>
+                  <div class="notch-card-sub">Safe Trim ready &middot; zero app stutter</div>
+                </div>
+                <div class="notch-bar"><span></span></div>
+              </div>
+              <div class="notch-card">
+                <div>
+                  <div class="notch-card-label">Now Playing &middot; SMTC</div>
+                  <div class="notch-card-title">Golden Hour Drive</div>
+                  <div class="notch-card-sub">Northbound &middot; LRCLIB synced</div>
+                </div>
+                <div class="notch-card-sub" style="font-family:var(--mono);color:var(--gold)">3 parked on Quick Shelf</div>
+              </div>
+            </div>
+          </div>
         </div>
       </div>
 
-      <div class="bench-kpi">
-        <p class="bench-kpi-tag">Idle Capsule Render</p>
-        <strong>59.3 µs <small class="mono" style="font-size:.7rem;color:var(--accent-hi)">7.0× faster</small></strong>
-        <p class="bench-kpi-sub">Down from 412.7 µs in v0.2.4.1 (122.6 µs including D3D11 GPU command flush).</p>
-        <div class="bench-bars" aria-hidden="true">
-          <div class="bench-bar-row"><span>v0.2.4.1</span><div class="bench-bar-track"><div class="bench-bar-fill" style="width:100%"></div></div><span>413µs</span></div>
-          <div class="bench-bar-row"><span>v0.3.0</span><div class="bench-bar-track"><div class="bench-bar-fill bench-bar-fill--hi" style="width:15%"></div></div><span>59µs</span></div>
+      <!-- Asymmetric Editorial Hero Grid -->
+      <div class="hero-inner">
+        <div>
+          <div class="hero-kicker"><i></i>General Mahamatra Edition &middot; Final Stable v1.0.0</div>
+          <h1 class="hero-title">
+            The <span class="accent-word">Notch</span>
+            <span class="inline-chip" aria-hidden="true"><img src="./assets/cyno/cyno-icon.webp" alt=""></span>
+            Windows Deserved.
+          </h1>
+          <p class="hero-lead">
+            A 1.70 MB Rust-native Dynamic Island and ambient command hub for Windows 10 &amp; 11. Built directly on Direct2D, DirectWrite, and triple-buffered DirectComposition with zero Electron, zero WebView2, and 144Hz GPU-cached transitions.
+          </p>
+          <div class="hero-actions">
+            <a class="btn-pill" href="https://github.com/muhnbl/CyNotch/releases/tag/v1.0.0" target="_blank" rel="noopener">Download v1.0.0 Portable</a>
+            <a class="btn-outline" href="https://github.com/muhnbl/CyNotch" target="_blank" rel="noopener">Source on GitHub &nearr;</a>
+          </div>
+          <div class="hero-meta">
+            <span>1.70 MB single .exe</span>
+            <span>Windows 10 / 11 x64</span>
+            <span>147 / 147 tests passing</span>
+          </div>
         </div>
-      </div>
 
-      <div class="bench-kpi">
-        <p class="bench-kpi-tag">Standalone Binary Size</p>
-        <strong>1.74 MB <small class="mono" style="font-size:.7rem;color:var(--accent-hi)">−55.9%</small></strong>
-        <p class="bench-kpi-sub">Shrunk from 3.95 MB (3,949,056 B) to 1,662,976 B by switching to native Win32 APIs.</p>
-        <div class="bench-bars" aria-hidden="true">
-          <div class="bench-bar-row"><span>v0.2.4.1</span><div class="bench-bar-track"><div class="bench-bar-fill" style="width:100%"></div></div><span>3.95MB</span></div>
-          <div class="bench-bar-row"><span>v0.3.0</span><div class="bench-bar-track"><div class="bench-bar-fill bench-bar-fill--hi" style="width:42%"></div></div><span>1.66MB</span></div>
-        </div>
-      </div>
-
-      <div class="bench-kpi">
-        <p class="bench-kpi-tag">Settled Idle CPU</p>
-        <strong>0.0% <small class="mono" style="font-size:.7rem;color:var(--accent-hi)">Hibernated</small></strong>
-        <p class="bench-kpi-sub">Down from ~2.6% in v0.2.x. High-res pacer and Win32 timers are killed at rest.</p>
-        <div class="bench-bars" aria-hidden="true">
-          <div class="bench-bar-row"><span>v0.2.4.1</span><div class="bench-bar-track"><div class="bench-bar-fill" style="width:65%"></div></div><span>~2.6%</span></div>
-          <div class="bench-bar-row"><span>v0.3.0</span><div class="bench-bar-track"><div class="bench-bar-fill bench-bar-fill--hi" style="width:3%"></div></div><span>0.0%</span></div>
+        <div class="hero-stage">
+          <div class="stage-card">
+            <img src="./assets/real/cynotch-home.png" alt="CyNotch v1.0.0 Command Hub rendered with Direct2D Obsidian Liquid Glass">
+          </div>
+          <div class="stage-row">
+            <div class="stage-card">
+              <img src="./assets/real/cynotch-music.png" alt="CyNotch v1.0.0 3-box floating Music mode with synced lyrics">
+            </div>
+            <div class="cyno-frame">
+              <img src="./assets/cyno/cyno-wish.webp" alt="Cyno Electro Violet visual inspiration">
+              <div class="cyno-caption">
+                <span>Electro Obsidian</span>
+                <span>#7C3AED</span>
+              </div>
+            </div>
+          </div>
         </div>
       </div>
     </div>
+  </section>
 
-    <div class="bench-split">
-      <div class="bench-card reveal">
-        <h3>Performance &amp; Systems Architecture Comparison</h3>
-        <p class="bench-card-sub">Measured on Windows 11 x64 (`cargo test --release --test perf_bench_d2d` vs v0.2.4.1 `bench_render`).</p>
-        <table class="bench-table">
+  <!-- ── TILTED MARQUEE RIBBON 1 ─────────────────────────────────────────── -->
+  <div class="ribbon-band" aria-hidden="true">
+    <div class="ribbon">
+      <div class="ribbon-track">
+        <span class="ribbon-item">RUST NATIVE <i class="ribbon-dot"></i></span>
+        <span class="ribbon-item">1.70 MB SINGLE EXE <i class="ribbon-dot"></i></span>
+        <span class="ribbon-item">DIRECT2D + DIRECTCOMPOSITION <i class="ribbon-dot"></i></span>
+        <span class="ribbon-item">144HZ GPU CACHED <i class="ribbon-dot"></i></span>
+        <span class="ribbon-item">OBSIDIAN LIQUID GLASS <i class="ribbon-dot"></i></span>
+        <span class="ribbon-item">ZERO RUNTIME OVERHEAD <i class="ribbon-dot"></i></span>
+        <span class="ribbon-item">RUST NATIVE <i class="ribbon-dot"></i></span>
+        <span class="ribbon-item">1.70 MB SINGLE EXE <i class="ribbon-dot"></i></span>
+        <span class="ribbon-item">DIRECT2D + DIRECTCOMPOSITION <i class="ribbon-dot"></i></span>
+        <span class="ribbon-item">144HZ GPU CACHED <i class="ribbon-dot"></i></span>
+        <span class="ribbon-item">OBSIDIAN LIQUID GLASS <i class="ribbon-dot"></i></span>
+        <span class="ribbon-item">ZERO RUNTIME OVERHEAD <i class="ribbon-dot"></i></span>
+      </div>
+    </div>
+  </div>
+
+  <!-- ── 01 / THE MANIFESTO ──────────────────────────────────────────────── -->
+  <section class="section" id="manifesto">
+    <div class="wrap manifesto-grid">
+      <aside class="manifesto-aside">
+        <span class="eyebrow">01 / The Philosophy</span>
+        <div class="manifesto-badge">
+          <img src="./assets/cyno/cyno-icon.webp" alt="Cyno icon" width="36" height="36">
+          <div>
+            <strong>General Mahamatra</strong>
+            Precision over bloat
+          </div>
+        </div>
+      </aside>
+
+      <div>
+        <p class="kinetic-copy" id="kineticCopy">
+          Desktop utilities should never weigh 200 megabytes or steal 60 frames from your monitor. CyNotch is engineered in raw Rust against native Win32, Direct2D, and DirectComposition — staying invisible when you work, waking in milliseconds when you hover, and returning your screen to calm the instant you leave.
+        </p>
+
+        <div class="principles">
+          <div class="principle-row">
+            <span class="principle-num">01</span>
+            <h3 class="principle-title">144Hz GPU Bitmap Cache</h3>
+            <p class="principle-desc">Pre-warms an offscreen ID2D1Bitmap1 snapshot during hover dwell so every expand and close frame blits a single bilinear GPU quad in 2.4 to 3.5 ms with zero DirectWrite glyph thrash.</p>
+          </div>
+          <div class="principle-row">
+            <span class="principle-num">02</span>
+            <h3 class="principle-title">Fixed-Size DWM Blur Visual</h3>
+            <p class="principle-desc">Chains WinRT 15px GaussianBlur with an Optical Luminosity Clamp on triple-buffered DXGI swapchains while keeping the blur visual size fixed so dwm.exe never stalls mid-transition.</p>
+          </div>
+          <div class="principle-row">
+            <span class="principle-num">03</span>
+            <h3 class="principle-title">Click-Through &amp; Fullscreen Safe</h3>
+            <p class="principle-desc">Collapsed by default with WS_EX_TRANSPARENT so browser tabs stay clickable, plus automatic SHQueryUserNotificationState suppression over fullscreen games and video.</p>
+          </div>
+          <div class="principle-row">
+            <span class="principle-num">04</span>
+            <h3 class="principle-title">Zero Sleep Interference</h3>
+            <p class="principle-desc">No SetThreadExecutionState or power-blocking hooks. Windows screen-off and sleep timers behave natively, while idle Wolf Eyes breathe at a low-power 20 FPS.</p>
+          </div>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- ── 02 / FIVE STICKY-STACKING PILLARS ───────────────────────────────── -->
+  <section class="section" id="pillars">
+    <div class="wrap">
+      <div class="section-head">
+        <div>
+          <span class="eyebrow">02 / Five Core Pillars</span>
+          <h2 class="section-title">Focused Scope.<br>Zero Clutter.</h2>
+        </div>
+        <p class="section-sub">Locked to Top-Center with five disciplined modes and redesigned graphite Preferences — every pixel backed by hardware Direct2D.</p>
+      </div>
+
+      <div class="pillars-stack">
+        <!-- Pillar 01 -->
+        <article class="pillar-card">
+          <div class="pillar-media">
+            <img src="./assets/real/cynotch-home.png" alt="CyNotch Command Hub screenshot">
+            <img class="idle-strip" src="./assets/real/cynotch-idle.png" alt="CyNotch collapsed idle capsule">
+          </div>
+          <div class="pillar-copy">
+            <div>
+              <div class="pillar-tag">Pillar 01 &middot; Command Hub &amp; Stealth Idle</div>
+              <h3 class="pillar-h">Glowing Wolf Eyes to Full Command Hub</h3>
+              <p class="pillar-p">When idle, CyNotch collapses into a whisper-thin top-bezel pill featuring two Glowing Purple Wolf Eyes that breathe softly and react on clipboard captures. Hovering sweeps a smooth 0% to crest to 0% violet wave strictly inside the capsule before expanding into live RAM, Now Playing, and Quick Shelf telemetry.</p>
+            </div>
+            <div class="spec-list">
+              <span class="spec-chip">Exclusive Capsule Sweep</span>
+              <span class="spec-chip">650ms Self-Healing Dwell</span>
+              <span class="spec-chip">Auto-Stashed Notifications</span>
+            </div>
+          </div>
+        </article>
+
+        <!-- Pillar 02 -->
+        <article class="pillar-card">
+          <div class="pillar-media">
+            <img src="./assets/real/cynotch-music.png" alt="CyNotch 3-box floating Music player screenshot">
+          </div>
+          <div class="pillar-copy">
+            <div>
+              <div class="pillar-tag">Pillar 02 &middot; 3-Box Floating Music</div>
+              <h3 class="pillar-h">Apple-Focus Lyrics &amp; WinRT SMTC</h3>
+              <p class="pillar-p">Separated into three floating Obsidian Liquid Glass boxes with 100% transparent gaps between them: centered large LRCLIB synced lyrics with a 1:1 scrubbable seek bar, a floating track card with monotonic SMTC progress clamping, and three dedicated transport buttons.</p>
+            </div>
+            <div class="spec-list">
+              <span class="spec-chip">WinRT SMTC Transport</span>
+              <span class="spec-chip">LRCLIB Synced Lyrics</span>
+              <span class="spec-chip">Monotonic Seek Clamp</span>
+            </div>
+          </div>
+        </article>
+
+        <!-- Pillar 03 -->
+        <article class="pillar-card">
+          <div class="pillar-media">
+            <img src="./assets/real/cynotch-memreduct.png" alt="CyNotch Safe Trim Memory Reduct screenshot">
+          </div>
+          <div class="pillar-copy">
+            <div>
+              <div class="pillar-tag">Pillar 03 &middot; Safe Trim Memory Reduct</div>
+              <h3 class="pillar-h">One-Click RAM Relief Without Stutter</h3>
+              <p class="pillar-p">Trims Working Sets, System File Cache, and Low-Priority Standby memory using native Windows privileges — freeing gigabytes of idle bloat while keeping active apps, browser tabs, and foreground games untouched. Trigger manually via Ctrl+Alt+M or automate by threshold.</p>
+            </div>
+            <div class="spec-list">
+              <span class="spec-chip">Safe Trim Profile</span>
+              <span class="spec-chip">Auto-Clean Threshold</span>
+              <span class="spec-chip">Ctrl+Alt+M Hotkey</span>
+            </div>
+          </div>
+        </article>
+
+        <!-- Pillar 04 -->
+        <article class="pillar-card">
+          <div class="pillar-media">
+            <img src="./assets/real/cynotch-shelf.png" alt="CyNotch Native OLE Quick Shelf screenshot">
+          </div>
+          <div class="pillar-copy">
+            <div>
+              <div class="pillar-tag">Pillar 04 &middot; Native OLE Quick Shelf</div>
+              <h3 class="pillar-h">Drop, Park, Drag Out Anywhere</h3>
+              <p class="pillar-p">Drop files, screenshots from Win+Shift+S, URLs, or text snippets straight onto the top bezel via native Windows IDropTarget and IDropSource. Respects Windows clipboard privacy formats to automatically skip password managers, with an 8-second Undo safety net.</p>
+            </div>
+            <div class="spec-list">
+              <span class="spec-chip">Native OLE DnD</span>
+              <span class="spec-chip">CF_DIB Screenshot Capture</span>
+              <span class="spec-chip">Password-Manager Safe</span>
+            </div>
+          </div>
+        </article>
+
+        <!-- Pillar 05 -->
+        <article class="pillar-card">
+          <div class="pillar-media">
+            <img src="./assets/real/cynotch-settings-general.png" alt="CyNotch v1.0.0 Graphite Obsidian Preferences screenshot">
+          </div>
+          <div class="pillar-copy">
+            <div>
+              <div class="pillar-tag">Pillar 05 &middot; Graphite Preferences</div>
+              <h3 class="pillar-h">Grouped Graphite Clarity</h3>
+              <p class="pillar-p">Completely redesigned for v1.0.0 with macOS-inspired neutral graphite obsidian cards, Linear-style rows with leading glyphs and hairline separators, and CyNotch violet accents across four streamlined sections: General &amp; Notch, Motion &amp; Perf, Notifications, and Memory &amp; System.</p>
+            </div>
+            <div class="spec-list">
+              <span class="spec-chip">4 Streamlined Sections</span>
+              <span class="spec-chip">Zero-Churn Motion</span>
+              <span class="spec-chip">DPI-Aware Scaling</span>
+            </div>
+          </div>
+        </article>
+      </div>
+    </div>
+  </section>
+
+  <!-- ── TILTED MARQUEE RIBBON 2 ─────────────────────────────────────────── -->
+  <div class="ribbon-band" aria-hidden="true">
+    <div class="ribbon alt">
+      <div class="ribbon-track">
+        <span class="ribbon-item">147 / 147 TESTS PASSING <i class="ribbon-dot"></i></span>
+        <span class="ribbon-item">2.4–3.5 MS GPU EXPAND <i class="ribbon-dot"></i></span>
+        <span class="ribbon-item">TRIPLE-BUFFERED DXGI <i class="ribbon-dot"></i></span>
+        <span class="ribbon-item">0 COMPILER WARNINGS <i class="ribbon-dot"></i></span>
+        <span class="ribbon-item">56.8% SMALLER BINARY <i class="ribbon-dot"></i></span>
+        <span class="ribbon-item">147 / 147 TESTS PASSING <i class="ribbon-dot"></i></span>
+        <span class="ribbon-item">2.4–3.5 MS GPU EXPAND <i class="ribbon-dot"></i></span>
+        <span class="ribbon-item">TRIPLE-BUFFERED DXGI <i class="ribbon-dot"></i></span>
+        <span class="ribbon-item">0 COMPILER WARNINGS <i class="ribbon-dot"></i></span>
+        <span class="ribbon-item">56.8% SMALLER BINARY <i class="ribbon-dot"></i></span>
+      </div>
+    </div>
+  </div>
+
+  <!-- ── 03 / VERIFIED ENGINEERING BENCHMARKS ────────────────────────────── -->
+  <section class="section" id="benchmarks">
+    <div class="wrap">
+      <div class="section-head">
+        <div>
+          <span class="eyebrow">03 / Verified Telemetry</span>
+          <h2 class="section-title">Measured.<br>Not Invented.</h2>
+        </div>
+        <p class="section-sub">Real numbers captured directly from release builds, hardware Direct2D benchmarks, and the 14-suite automated test runner.</p>
+      </div>
+
+      <div class="bench-grid">
+        <div class="bench-card">
+          <div class="bench-lbl">Portable Binary</div>
+          <div class="bench-val">1.70<span> MB</span></div>
+          <div class="bench-note">1,704,448 bytes standalone .exe &mdash; 56.8% smaller than v0.2.4.1.</div>
+        </div>
+        <div class="bench-card">
+          <div class="bench-lbl">Expand / Close Frame</div>
+          <div class="bench-val">2.4–3.5<span> ms</span></div>
+          <div class="bench-note">Hardware GPU-cached quad on 144Hz AMD Radeon iGPU (3.7&times; faster).</div>
+        </div>
+        <div class="bench-card">
+          <div class="bench-lbl">Idle Capsule Record</div>
+          <div class="bench-val">89<span> &micro;s</span></div>
+          <div class="bench-note">CPU record + 235 &micro;s GPU flush measured via perf_bench_d2d.</div>
+        </div>
+        <div class="bench-card">
+          <div class="bench-lbl">Automated QA Suite</div>
+          <div class="bench-val">147<span> / 147</span></div>
+          <div class="bench-note">Unit, WARP D2D pixel, hover-dwell, OLE DnD, and soak tests green.</div>
+        </div>
+      </div>
+
+      <div class="table-wrap">
+        <table>
           <thead>
-            <tr><th>Subsystem / Metric</th><th>v0.2.4.1 (CPU Raster)</th><th>v0.3.0 (GPU Direct2D)</th></tr>
+            <tr>
+              <th>Subsystem</th>
+              <th>v0.2.4.1 (CPU Raster)</th>
+              <th>v1.0.0 (Direct2D + DComp)</th>
+              <th>Result</th>
+            </tr>
           </thead>
           <tbody>
             <tr>
-              <td>2D Vector Engine</td>
-              <td class="v-old">CPU <code>tiny-skia</code> software pixmap</td>
-              <td class="v-new">GPU <code>ID2D1DeviceContext</code> + D3D11 <span class="bench-badge">Hardware</span></td>
+              <td><strong>Standalone Executable</strong></td>
+              <td class="mono">3.95 MB (3,949,056 B)</td>
+              <td class="mono">1.70 MB (1,704,448 B)</td>
+              <td class="win">-56.8% smaller</td>
             </tr>
             <tr>
-              <td>Typography &amp; Emoji</td>
-              <td class="v-old"><code>fontdue</code> + GDI fallback</td>
-              <td class="v-new"><code>DirectWrite</code> Color Fonts + Bidi sanitizer</td>
+              <td><strong>Expand / Close Animation</strong></td>
+              <td class="mono">8.51 – 10.96 ms (CPU)</td>
+              <td class="mono">2.4 – 3.5 ms (GPU bitmap quad)</td>
+              <td class="win">144Hz capable</td>
             </tr>
             <tr>
-              <td>Idle Capsule Frame (676×253)</td>
-              <td class="v-old">412.7 µs (CPU)</td>
-              <td class="v-new">59.3 µs CPU / 122.6 µs GPU <span class="bench-badge">7.0×</span></td>
+              <td><strong>DWM Backdrop Blur</strong></td>
+              <td class="mono">Paired backdrop HWND</td>
+              <td class="mono">Fixed-size DComp Visual + 3-buffer DXGI</td>
+              <td class="win">0 mid-frame realloc</td>
             </tr>
             <tr>
-              <td>Expanded Heavy Scene (25× glow)</td>
-              <td class="v-old">8.51 – 10.96 ms (CPU)</td>
-              <td class="v-new">0.93 ms CPU / 1.08 ms GPU <span class="bench-badge">9.8×</span></td>
+              <td><strong>Typography &amp; Icons</strong></td>
+              <td class="mono">tiny-skia + fontdue</td>
+              <td class="mono">DirectWrite Color Fonts + Bidi sanitizer</td>
+              <td class="win">Sub-pixel AA + emoji</td>
             </tr>
             <tr>
-              <td>Portable Binary (<code>cynotch.exe</code>)</td>
-              <td class="v-old">3,949,056 B (3.95 MB)</td>
-              <td class="v-new">1,743,360 B (1.74 MB) <span class="bench-badge">−55.9%</span></td>
-            </tr>
-            <tr>
-              <td>Portable ZIP Archive</td>
-              <td class="v-old">1.82 MB</td>
-              <td class="v-new">779 KB (797,915 B) <span class="bench-badge">−58.1%</span></td>
-            </tr>
-            <tr>
-              <td>HTTP / Time / PNG Stack</td>
-              <td class="v-old"><code>ureq</code> + <code>chrono</code> + custom PNG</td>
-              <td class="v-new">Native Win32 <code>WinHTTP</code> + <code>WIC</code> + <code>GetLocalTime</code></td>
-            </tr>
-            <tr>
-              <td>Automated Test Suite</td>
-              <td class="v-old">73 tests passing</td>
-              <td class="v-new">132 unit + adversarial + GPU soak tests</td>
+              <td><strong>External Dependencies</strong></td>
+              <td class="mono">None</td>
+              <td class="mono">None (native Win32 / WinRT)</td>
+              <td class="win">Zero runtime install</td>
             </tr>
           </tbody>
         </table>
       </div>
 
-      <div class="bench-card reveal">
-        <h3>Visual &amp; Interaction Evolution (v0.2.4.1 → v0.3.0)</h3>
-        <p class="bench-card-sub">Every visual surface, motion curve, and audio cue was refined for zero visual friction.</p>
-        <div class="visual-diff-list">
-          <div class="visual-diff-item">
-            <strong>Physical Screen-Edge &amp; Corner Portal Glow <span>Visual + Motion</span></strong>
-            <p>Replaced v0.2.4.1's static inner capsule border cue with a dedicated click-through DirectComposition bezel portal window (32-stop 16bpc float radial violet aura) that hugs <strong>Top / Left / Right</strong> edges and <strong>originates directly from Top-Left / Top-Right corners</strong> when corner-docked, with 5th-order smootherstep opening and a 1.2s atmospheric dissipation fade-out.</p>
-          </div>
-          <div class="visual-diff-item">
-            <strong>Monochromatic Electro Violet Palette &amp; Live Network <span>UI Polish</span></strong>
-            <p>Unified the gold/orange split buttons from v0.2.4.1 into a cohesive obsidian-violet glass hierarchy, replaced the static Hydration placeholder on Command Hub with a real-time <strong>Live Network</strong> card + 6 animated activity bars, and eliminated the <code>[FSI]</code>/<code>[PDI]</code> Unicode boxes in Discord toasts.</p>
-          </div>
-          <div class="visual-diff-item">
-            <strong>Framer-Motion Springs &amp; Configurable Hover Delay <span>Choreography</span></strong>
-            <p>Added critically-damped spring physics (<code>spring_step</code>) for notch morphs, dock pill glides, and Preferences panes—exclusively gated by Windows Animation Effects—plus <strong>Quick (120ms)</strong>, <strong>Normal (400ms)</strong>, and <strong>Slow (700ms)</strong> hover dwell presets.</p>
-          </div>
-          <div class="visual-diff-item">
-            <strong>Continuous Glass Sliders, 1:1 Scrubbers &amp; Snapchat Chime <span>UX &amp; Audio</span></strong>
-            <p>Replaced stepped opacity/blur percentage buttons with live drag sliders, upgraded Music &amp; Volume bars to 1:1 sub-pixel scrubbers with glowing thumbs, calibrated all Preferences tabs to fit unclipped at <code>scroll=0</code>, and added a fixed 25% Snapchat Pop chime with burst deduplication.</p>
-          </div>
-          <div class="visual-diff-item">
-            <strong>Production Reliability, Security &amp; GPU Recovery <span>Hardening</span></strong>
-            <p>Audited and remediated 43 reliability findings: UTF-16 safe bounded <code>WinHTTP</code>, crash-resistant atomic persistence with <code>.bak</code> recovery, DirectComposition device-loss &amp; target recreation, strict Quick Shelf <code>ShellExecuteW</code> executable/ADS/UNC guard, safe Windows notification registry restore, and <strong>132/132</strong> automated + soak tests passing.</p>
-          </div>
+      <div class="hotkeys-bar" aria-label="Global keyboard shortcuts">
+        <div class="hotkey-item">
+          <span>Toggle Notch Expand</span>
+          <kbd>Ctrl + Alt + C</kbd>
+        </div>
+        <div class="hotkey-item">
+          <span>Safe Trim Purge RAM</span>
+          <kbd>Ctrl + Alt + M</kbd>
+        </div>
+        <div class="hotkey-item">
+          <span>Capture to Quick Shelf</span>
+          <kbd>Ctrl + Alt + S</kbd>
         </div>
       </div>
     </div>
+  </section>
 
-    <div class="bench-shots">
-      <figure class="shot reveal"><button type="button" data-shot="Preferences · Fluid Motion &amp; Hover Delay (v0.3.0)" data-img="./assets/real/cynotch-settings-motion.png" aria-label="Open full screenshot: Preferences Motion &amp; Perf"><span class="shot-frame"><img src="./assets/real/cynotch-settings-motion.png" alt="CyNotch v0.3.0 Preferences showing Fluid Motion Engine, FPS Target, Hover Delay (Quick, Normal, Slow) and Windows Animation Effects status" width="892" height="752" loading="lazy"></span></button><figcaption><strong>Fluid Motion &amp; Hover Delay</strong><span>v0.3.0 Preferences ↗</span></figcaption><p>Configurable Quick (120ms), Normal (400ms), and Slow (700ms) hover dwell delay, adaptive FPS target, and live Windows Animation Effects gate.</p></figure>
-      <figure class="shot reveal"><button type="button" data-shot="Volume Master · 1:1 Sub-Pixel Scrubber (v0.3.0)" data-img="./assets/real/cynotch-volume.png" aria-label="Open full screenshot: Volume Master"><span class="shot-frame"><img src="./assets/real/cynotch-volume.png" alt="CyNotch v0.3.0 Volume Master view with 1:1 sub-pixel slider thumb and exact preset highlighting" width="660" height="272" loading="lazy"></span></button><figcaption><strong>1:1 Sub-Pixel Volume &amp; Music Scrubbers</strong><span>v0.3.0 Direct2D ↗</span></figcaption><p>Continuous sub-pixel click-and-drag sliders with glowing thumbs, exact preset highlighting, and right-click context menu directly on the notch.</p></figure>
-    </div>
-  </div>
-</section>
-
-<section class="dossier" id="build" aria-labelledby="buildTitle">
-  <div class="wrap">
-    <div class="reveal">
-      <p class="kicker"><span>06</span> Under the hood</p>
-      <h2 class="sec-h2" id="buildTitle">The engineering is the aesthetic.</h2>
-      <p class="sec-lede">A Win32 layered window bound to a DirectComposition DXGI SwapChain and painted on the GPU with Direct2D and DirectWrite. WinHTTP and WinRT talk to LRCLIB, your media session, and Action Center. Everything compiles into a single 1.74 MB portable executable.</p>
-      <p class="paper-statement">One 1.74 MB .exe. Rust, Direct2D, and Win32 handle the rest.</p>
-      <div class="dossier-links">
-        <a href="https://github.com/muhnbl/CyNotch/blob/main/OPTIMIZATION_REPORT.md" target="_blank" rel="noopener">Optimization report ↗</a>
-        <a href="https://github.com/muhnbl/CyNotch/releases/tag/v0.3.0" target="_blank" rel="noopener">v0.3.0 release notes ↗</a>
-      </div>
-    </div>
-    <div class="reveal">
-      <dl class="dtable">
-        <div class="drow"><dt>Language</dt><dd>Rust, edition 2024, MSVC toolchain</dd></div>
-        <div class="drow"><dt>Binary</dt><dd>1.74 MB (1,743,360 B), stripped LTO release build (−55.9% vs v0.2.4.1)</dd></div>
-        <div class="drow"><dt>Frame time</dt><dd>59.3 µs idle / 0.93 ms expanded (Direct2D GPU)</dd></div>
-        <div class="drow"><dt>Idle CPU</dt><dd>0.0% at rest (timers &amp; frame pacer fully hibernated)</dd></div>
-        <div class="drow"><dt>Compositor</dt><dd>DirectComposition DXGI SwapChain + paired Win11 rounded frosted-blur backdrop</dd></div>
-        <div class="drow"><dt>Vectors &amp; type</dt><dd>Hardware <code>Direct2D</code> (<code>ID2D1DeviceContext</code>) + <code>DirectWrite</code> color fonts</dd></div>
-        <div class="drow"><dt>Media &amp; audio</dt><dd>WinRT GSMTC, CoreAudio, burst-deduplicated 25% Snapchat Pop PCM chime</dd></div>
-        <div class="drow"><dt>Network &amp; OS</dt><dd>Native Win32 <code>WinHTTP</code>, <code>WIC</code> PNG encoder, <code>GetLocalTime</code>, <code>serde_json</code></dd></div>
-        <div class="drow"><dt>Lyrics</dt><dd>LRCLIB, live synced lines (Classic, Karaoke, Minimal, Stream)</dd></div>
-        <div class="drow"><dt>Release</dt><dd>v0.3.0, 20 November 2026 (132/132 automated + soak tests passing)</dd></div>
-      </dl>
-      <div class="quote-card">
-        <blockquote>“Migrated rendering to hardware Direct2D + DirectWrite (9.8× faster expanded frames, 55.9% smaller 1.74 MB binary), added physical screen-edge &amp; corner-origin portal glow with 1.2s atmospheric dissipation, Framer-Motion springs, live frosted sliders, and 43 audited reliability, security &amp; GPU recovery fixes. Verified 132/132 automated + soak tests passing.”</blockquote>
-        <cite>CyNotch v0.3.0 release notes</cite>
-      </div>
-      <div class="terminal">
-        <div class="terminal-bar"><span>Powershell · build from source</span><button class="copy-btn" type="button" data-copy="buildCmdRaw">Copy</button></div>
-<pre id="buildCmd"><span class="prompt">PS&gt;</span> git clone https://github.com/muhnbl/CyNotch.git
-<span class="prompt">PS&gt;</span> cd CyNotch
-<span class="prompt">PS&gt;</span> cargo build --release
-<span class="prompt">PS&gt;</span> .\target\release\cynotch.exe</pre>
-<code id="buildCmdRaw" hidden>git clone https://github.com/muhnbl/CyNotch.git
-cd CyNotch
-cargo build --release
-.\target\release\cynotch.exe</code>
-        <p class="terminal-note">Tests: <code>cargo test</code> · GPU benchmark: <code>cargo test --release --test perf_bench_d2d -- --nocapture</code></p>
-      </div>
-      <p class="dossier-fine">Performance figures are measured by the repository's automated Direct2D benchmark harness (<code>tests/perf_bench_d2d.rs</code>) and documented in <code>OPTIMIZATION_REPORT.md</code>.</p>
-    </div>
-  </div>
-</section>
-
-<section class="section install" id="install" aria-labelledby="installTitle">
-  <div class="wrap install-grid">
-    <div class="reveal">
-      <p class="kicker"><span>07</span> Install</p>
-      <h2 class="sec-h2" id="installTitle">Download, double-click, done.</h2>
-      <p class="sec-lede">Portable 1.74 MB .exe, or a 786 KB ZIP with the helper scripts. No wizard asking where you want to install yourself.</p>
-      <ol class="steps">
-        <li><span class="num">01</span><div><strong>Download</strong><p>Grab the portable <code>.exe</code>. The <code>.zip</code> is there if you want the launcher and autostart scripts.</p></div></li>
-        <li><span class="num">02</span><div><strong>Run it</strong><p>Double-click. CyNotch parks at the top centre (or left/right edge). Autostart is opt-in, so it will not greet you at boot unless you ask.</p></div></li>
-        <li><span class="num">03</span><div><strong>Summon it</strong><p><kbd>Ctrl</kbd> <kbd>Shift</kbd> <kbd>C</kbd> toggles the notch, or hover the top edge to open the portal glow. That is the whole tutorial.</p></div></li>
-      </ol>
-      <div class="keys">
-        <div class="key-row"><span>Toggle the notch</span><kbd>Ctrl</kbd><kbd>Shift</kbd><kbd>C</kbd></div>
-        <div class="key-row"><span>Purge RAM</span><kbd>Ctrl</kbd><kbd>Shift</kbd><kbd>M</kbd></div>
-        <div class="key-row"><span>Capture screen</span><kbd>Ctrl</kbd><kbd>Shift</kbd><kbd>S</kbd></div>
-      </div>
-      <p class="req">Windows 10 or 11, x64. No Rust toolchain, no runtime, no installer. The helper scripts in the ZIP only run when you call them.</p>
-      <p class="star-line">If it survives your RAM habits, <a href="https://github.com/muhnbl/CyNotch" target="_blank" rel="noopener">star the repo ↗</a>.</p>
-    </div>
-    <div class="reveal">
-      <div class="get">
-        <div class="get-top"><span>Latest release</span><span class="get-ver">v0.3.0</span><span>20 Nov 2026</span></div>
-        <div class="get-size"><strong>1.74</strong><span>MB · portable · win64 x64</span></div>
-        <a class="btn btn-primary btn-lg btn-block" href="https://github.com/muhnbl/CyNotch/releases/download/v0.3.0/CyNotch-v0.3.0-portable.exe">Download portable.exe <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><path d="M12 4v12m0 0 4-4m-4 4-4-4M5 20h14"/></svg></a>
-        <a class="btn btn-ghost btn-block" href="https://github.com/muhnbl/CyNotch/releases/download/v0.3.0/CyNotch-v0.3.0-portable-win64.zip">Get the win64 .zip · 786 KB</a>
-        <div class="get-links">
-          <a href="https://github.com/muhnbl/CyNotch/releases" target="_blank" rel="noopener">All releases ↗</a>
-          <a href="https://github.com/muhnbl/CyNotch/releases/tag/v0.3.0" target="_blank" rel="noopener">Release notes ↗</a>
-          <a href="https://github.com/muhnbl/CyNotch" target="_blank" rel="noopener">Source ↗</a>
+  <!-- ── 04 / RELEASE CTA & FOOTER ───────────────────────────────────────── -->
+  <section class="section" id="download">
+    <div class="wrap">
+      <div class="cta-box">
+        <div>
+          <span class="eyebrow">04 / Final Stable Release</span>
+          <h2 class="cta-title">Ready to Claim Your <span>Top Bezel?</span></h2>
+          <p class="cta-sub">Portable x64 Windows binary with zero installer required. Drop it anywhere, launch, and toggle Startup directly from Preferences.</p>
         </div>
-        <div class="hash">
-          <div class="hash-head"><span>SHA-256 · portable.exe</span><button class="copy-btn" type="button" data-copy="exeHash">Copy</button></div>
-          <code id="exeHash">63583ce234c0f5de0b598908633f042a906d5c99360017d439ad2d9d3dbf33bf</code>
+        <div class="cta-panel">
+          <div class="cta-buttons">
+            <a class="btn-pill" href="https://github.com/muhnbl/CyNotch/releases/tag/v1.0.0" target="_blank" rel="noopener">Download v1.0.0 (.exe)</a>
+            <a class="btn-outline" href="https://github.com/muhnbl/CyNotch/blob/main/CHANGELOG.md" target="_blank" rel="noopener">Read Changelog &nearr;</a>
+          </div>
+          <div class="code-box" id="buildSnippet">
+            <button class="copy-btn" id="copyBtn" type="button">Copy</button>
+            git clone https://github.com/muhnbl/CyNotch.git<br>
+            cd CyNotch &amp;&amp; cargo build --release<br>
+            .\target\release\cynotch.exe
+          </div>
         </div>
-        <p class="get-note">Open-source portable build (unsigned .exe). Verify the SHA-256 above before running; if Windows SmartScreen prompts on first launch, click <strong>More info → Run anyway</strong> or build from source. ZIP digest: abc269b95c09b3d45f7593b9c4578d1a0cd27919cdbdedfb17594d4d3a1be595</p>
       </div>
+
+      <footer>
+        <div class="foot-top">
+          <a class="brand" href="#top">
+            <img src="./assets/cynotch-icon-64.png" alt="CyNotch emblem" width="28" height="28">
+            <span class="brand-word">CY<span>/</span>NOTCH</span>
+          </a>
+          <div class="foot-links">
+            <a href="#manifesto">Manifesto</a>
+            <a href="#pillars">Pillars</a>
+            <a href="#benchmarks">Benchmarks</a>
+            <a href="https://github.com/muhnbl/CyNotch" target="_blank" rel="noopener">GitHub &nearr;</a>
+            <a href="https://github.com/muhnbl/CyNotch/releases" target="_blank" rel="noopener">Releases &nearr;</a>
+          </div>
+        </div>
+        <div class="foot-bot">
+          <span>CyNotch v1.0.0 &middot; Built in Rust by muhnbl &middot; Windows 10 &amp; 11 (x64)</span>
+          <span>Inspired by Nusa, Layzee &amp; Cyno (Genshin Impact / HoYoverse) &middot; Lyrics by LRCLIB</span>
+        </div>
+      </footer>
     </div>
-  </div>
-</section>
+  </section>
 </main>
-
-<footer class="foot">
-  <div class="wrap">
-    <div class="foot-sign">
-      <img src="./assets/cynotch-icon-192.png" alt="CyNotch mascot" width="54" height="54">
-      <p>“Through me, the law is made manifest.”</p>
-      <div class="foot-cta"><a class="btn btn-primary" href="#install">Get CyNotch v0.3.0</a><a class="btn btn-ghost" href="https://github.com/muhnbl/CyNotch" target="_blank" rel="noopener">GitHub ↗</a></div>
-    </div>
-    <div class="foot-grid">
-      <div class="foot-brand"><span class="brand-name">CyNotch</span><p>A GPU-accelerated Dynamic Island for Windows, built in Rust and themed after Cyno. Unofficial fan project.</p></div>
-      <nav class="foot-col" aria-label="Product links"><h3>Product</h3><a href="#install">Download</a><a href="#benchmark">v0.3.0 Benchmark</a><a href="https://github.com/muhnbl/CyNotch/releases" target="_blank" rel="noopener">Releases</a><a href="https://github.com/muhnbl/CyNotch/issues" target="_blank" rel="noopener">Issues</a><a href="#build">Build from source</a></nav>
-      <nav class="foot-col" aria-label="Project links"><h3>Project</h3><a href="https://github.com/muhnbl/CyNotch/blob/main/OPTIMIZATION_REPORT.md" target="_blank" rel="noopener">Optimization report</a><a href="https://github.com/muhnbl/CyNotch/tree/main/src" target="_blank" rel="noopener">Source tree</a><a href="https://github.com/muhnbl/CyNotch/tree/main/tests" target="_blank" rel="noopener">Tests &amp; benchmarks</a></nav>
-      <div class="foot-col"><h3>Credits</h3><span>Inspired by Nusa &amp; Layzee</span><a href="https://lrclib.net" target="_blank" rel="noopener">Lyrics by LRCLIB ↗</a><a href="https://www.hoyoverse.com" target="_blank" rel="noopener">Cyno · Genshin Impact ↗</a></div>
-    </div>
-    <div class="foot-legal">
-      <p>Cyno is a character from Genshin Impact, © HoYoverse. CyNotch is an unofficial fan project and is not affiliated with, endorsed by, or sponsored by HoYoverse. Lyrics data comes from LRCLIB. All UI captures on this page are rendered directly from CyNotch's Direct2D GPU UI engine with transparent edges.</p>
-      <div class="foot-bottom"><span>© 2026 muhnbl</span><span>Version 0.3.0 · built with Rust 2024 + Direct2D</span><span>Made at the top of the screen</span></div>
-    </div>
-  </div>
-  <div class="foot-word" aria-hidden="true">CyNotch</div>
-</footer>
-
-<div class="lightbox" id="lightbox" role="dialog" aria-modal="true" aria-labelledby="lightboxTitle" hidden>
-  <div class="lightbox-inner">
-    <img id="lightboxImg" alt="">
-    <div class="lightbox-bar"><p id="lightboxTitle">Screenshot</p><button type="button" id="lightboxClose">Close</button></div>
-  </div>
-</div>
 
 <script>
 (function(){
-  "use strict";
-  var reduced = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+  const reduced = window.matchMedia('(prefers-reduced-motion: reduce)').matches;
 
-  var rail = document.getElementById("rail");
-  function onScroll(){ rail.setAttribute("data-scrolled", window.scrollY > 36 ? "true" : "false"); }
-  window.addEventListener("scroll", onScroll, {passive:true}); onScroll();
-
-  var menuBtn = document.getElementById("menuBtn"), menu = document.getElementById("railMenu");
-  function closeMenu(){ menu.hidden = true; menuBtn.setAttribute("aria-expanded","false"); menuBtn.setAttribute("aria-label","Open menu"); }
-  menuBtn.addEventListener("click", function(){
-    var open = menu.hidden; menu.hidden = !open;
-    menuBtn.setAttribute("aria-expanded", String(open));
-    menuBtn.setAttribute("aria-label", open ? "Close menu" : "Open menu");
-  });
-  menu.addEventListener("click", function(e){ if(e.target.closest("a")) closeMenu(); });
-  document.addEventListener("click", function(e){ if(!menu.hidden && !e.target.closest(".rail")) closeMenu(); });
-  document.addEventListener("keydown", function(e){ if(e.key === "Escape") closeMenu(); });
-
-  var reveals = Array.prototype.slice.call(document.querySelectorAll(".reveal"));
-  if(reduced || !("IntersectionObserver" in window)){
-    reveals.forEach(function(el){ el.classList.add("is-in"); });
-  } else {
-    var ro = new IntersectionObserver(function(es){
-      es.forEach(function(en){ if(en.isIntersecting){ en.target.classList.add("is-in"); ro.unobserve(en.target); } });
-    }, {threshold:.12, rootMargin:"0px 0px -40px 0px"});
-    reveals.forEach(function(el){ ro.observe(el); });
-  }
-
-  if("IntersectionObserver" in window){
-    var links = Array.prototype.slice.call(document.querySelectorAll(".rail-nav a[data-spy]"));
-    var sections = links.map(function(a){ return document.querySelector(a.getAttribute("href")); }).filter(Boolean);
-    var so = new IntersectionObserver(function(es){
-      es.forEach(function(en){
-        if(!en.isIntersecting) return;
-        links.forEach(function(a){ a.removeAttribute("aria-current"); });
-        var hit = links.filter(function(a){ return a.getAttribute("href") === "#" + en.target.id; })[0];
-        if(hit) hit.setAttribute("aria-current","true");
-      });
-    }, {rootMargin:"-45% 0px -50% 0px"});
-    sections.forEach(function(s){ so.observe(s); });
-  }
-
-  var heroImg = document.getElementById("heroPreviewImg"),
-      heroCap = document.getElementById("heroPreviewCap");
-  document.querySelectorAll("[data-hero-img]").forEach(function(tab){
-    tab.addEventListener("click", function(){
-      document.querySelectorAll("[data-hero-img]").forEach(function(t){ t.setAttribute("aria-pressed", "false"); });
-      tab.setAttribute("aria-pressed", "true");
-      if(heroImg){
-        heroImg.src = tab.getAttribute("data-hero-img");
-        heroImg.alt = tab.getAttribute("data-hero-alt") || "";
-      }
-      if(heroCap) heroCap.textContent = tab.getAttribute("data-hero-cap") || "";
+  // 1. Mobile drawer
+  const menuBtn = document.getElementById('menuBtn');
+  const drawer = document.getElementById('mobileDrawer');
+  if (menuBtn && drawer) {
+    menuBtn.addEventListener('click', () => {
+      const open = drawer.classList.toggle('open');
+      menuBtn.setAttribute('aria-expanded', String(open));
+      menuBtn.textContent = open ? '/ Close' : '/ Menu';
     });
-  });
-
-  var lightbox = document.getElementById("lightbox"),
-      lightboxImg = document.getElementById("lightboxImg"),
-      lightboxTitle = document.getElementById("lightboxTitle"),
-      lightboxClose = document.getElementById("lightboxClose"),
-      lastFocus = null;
-  document.querySelectorAll("[data-shot]").forEach(function(btn){
-    btn.addEventListener("click", function(){
-      lastFocus = btn;
-      lightboxImg.src = btn.getAttribute("data-img");
-      lightboxImg.alt = "Real CyNotch screenshot: " + btn.getAttribute("data-shot");
-      lightboxTitle.textContent = btn.getAttribute("data-shot") + " · real screenshot · v0.3.0";
-      lightbox.hidden = false;
-      document.body.style.overflow = "hidden";
-      lightboxClose.focus();
-    });
-  });
-  function closeLightbox(){ lightbox.hidden = true; document.body.style.overflow = ""; lightboxImg.removeAttribute("src"); if(lastFocus) lastFocus.focus(); }
-  lightboxClose.addEventListener("click", closeLightbox);
-  lightbox.addEventListener("click", function(e){ if(e.target === lightbox) closeLightbox(); });
-  document.addEventListener("keydown", function(e){ if(e.key === "Escape" && !lightbox.hidden) closeLightbox(); });
-
-  document.querySelectorAll("[data-copy]").forEach(function(btn){
-    btn.addEventListener("click", function(){
-      var src = document.getElementById(btn.getAttribute("data-copy"));
-      if(!src) return;
-      var text = src.textContent.trim();
-      var done = function(){ var old = btn.textContent; btn.textContent = "Copied"; setTimeout(function(){ btn.textContent = old; }, 1600); };
-      function fallback(){
-        var ta = document.createElement("textarea"); ta.value = text; ta.setAttribute("readonly","");
-        ta.style.position = "fixed"; ta.style.opacity = "0"; document.body.appendChild(ta); ta.select();
-        try{ document.execCommand("copy"); done(); }catch(e){}
-        document.body.removeChild(ta);
-      }
-      if(navigator.clipboard && navigator.clipboard.writeText) navigator.clipboard.writeText(text).then(done).catch(fallback);
-      else fallback();
-    });
-  });
-})();
-</script>
-<script type="module">
-(async function(){
-  if (window.matchMedia("(prefers-reduced-motion: reduce)").matches) return;
-  let m;
-  try {
-    m = await import("https://cdn.jsdelivr.net/npm/motion@12/+esm");
-  } catch (e) {
-    return;
-  }
-  const { animate, inView, scroll, stagger } = m;
-  const crispSpring = { type: "spring", stiffness: 360, damping: 28, mass: 0.85 };
-
-  // Hero entrance choreography
-  const heroNodes = document.querySelectorAll(".hero-copy .chips, .hero-copy h1, .hero-copy .hero-lede, .hero-copy .hero-cta, .hero-copy .hero-micro");
-  if (heroNodes.length) {
-    animate(heroNodes, { opacity: [0, 1], y: [18, 0] }, { ...crispSpring, delay: stagger(0.065) });
-  }
-  const heroShot = document.querySelector(".hero-shot");
-  if (heroShot) {
-    animate(heroShot, { opacity: [0, 1], y: [22, 0], scale: [0.97, 1] }, { type: "spring", stiffness: 280, damping: 26, delay: 0.14 });
+    drawer.querySelectorAll('a').forEach(a => a.addEventListener('click', () => {
+      drawer.classList.remove('open');
+      menuBtn.setAttribute('aria-expanded', 'false');
+      menuBtn.textContent = '/ Menu';
+    }));
   }
 
-  // Hero notch tab switch spring morph
-  const heroImg = document.getElementById("heroPreviewImg");
-  document.querySelectorAll("[data-hero-img]").forEach((tab) => {
-    tab.addEventListener("click", () => {
-      if (heroImg) {
-        animate(heroImg, { opacity: [0.45, 1], scale: [0.965, 1], y: [6, 0] }, { type: "spring", stiffness: 420, damping: 26 });
-      }
-    });
-  });
+  // 2. Interactive Top-Bezel Live CyNotch Capsule
+  const notch = document.getElementById('liveNotch');
+  const notchClose = document.getElementById('notchClose');
+  const notchBody = document.getElementById('notchBody');
+  const bezelHint = document.getElementById('bezelHint');
+  const modeTemplates = {
+    home: `
+      <div class="notch-card">
+        <div>
+          <div class="notch-card-label">General Cyno &middot; Command Hub</div>
+          <div class="notch-card-title">RAM 57% &middot; 18.2 GB</div>
+          <div class="notch-card-sub">Safe Trim ready &middot; zero app stutter</div>
+        </div>
+        <div class="notch-bar"><span style="width:57%"></span></div>
+      </div>
+      <div class="notch-card">
+        <div>
+          <div class="notch-card-label">Now Playing &middot; SMTC</div>
+          <div class="notch-card-title">Golden Hour Drive</div>
+          <div class="notch-card-sub">Northbound &middot; LRCLIB synced</div>
+        </div>
+        <div class="notch-card-sub" style="font-family:var(--mono);color:var(--gold)">3 parked on Quick Shelf</div>
+      </div>`,
+    music: `
+      <div class="notch-card">
+        <div>
+          <div class="notch-card-label">Synced Lyrics &middot; LRCLIB</div>
+          <div class="notch-card-title">Nowhere else we need to go</div>
+          <div class="notch-card-sub">Chasing golden horizons through the midnight glow</div>
+        </div>
+        <div class="notch-bar"><span style="width:42%"></span></div>
+      </div>
+      <div class="notch-card">
+        <div>
+          <div class="notch-card-label">WinRT SMTC Controls</div>
+          <div class="notch-card-title">Golden Hour Drive</div>
+          <div class="notch-card-sub">Northbound &middot; 1:03 / -2:31</div>
+        </div>
+        <div class="notch-card-sub" style="font-family:var(--mono);color:var(--violet-soft)">3-Box Floating Glass</div>
+      </div>`,
+    ram: `
+      <div class="notch-card">
+        <div>
+          <div class="notch-card-label">Safe Trim Profile</div>
+          <div class="notch-card-title">18.2 GB / 32.0 GB</div>
+          <div class="notch-card-sub">Working Sets + File Cache + Low-Priority Standby</div>
+        </div>
+        <div class="notch-bar"><span style="width:48%"></span></div>
+      </div>
+      <div class="notch-card">
+        <div>
+          <div class="notch-card-label">Last Trim Result</div>
+          <div class="notch-card-title">3,042 MB Freed</div>
+          <div class="notch-card-sub">70% &rarr; 48% &middot; apps &amp; tabs intact</div>
+        </div>
+        <div class="notch-card-sub" style="font-family:var(--mono);color:var(--gold)">Hotkey: Ctrl+Alt+M</div>
+      </div>`,
+    shelf: `
+      <div class="notch-card">
+        <div>
+          <div class="notch-card-label">Native OLE Quick Shelf</div>
+          <div class="notch-card-title">3 Items Parked</div>
+          <div class="notch-card-sub">screenshot_v1.png &middot; release_notes.md &middot; URL</div>
+        </div>
+        <div class="notch-card-sub" style="font-family:var(--mono);color:var(--gold)">8s Undo &middot; Password-Manager Safe</div>
+      </div>
+      <div class="notch-card">
+        <div>
+          <div class="notch-card-label">Drag Out Anywhere</div>
+          <div class="notch-card-title">IDropTarget / IDropSource</div>
+          <div class="notch-card-sub">Drop files, CF_DIB snips, or links directly onto bezel</div>
+        </div>
+        <div class="notch-card-sub" style="font-family:var(--mono);color:var(--violet-soft)">Hotkey: Ctrl+Alt+S</div>
+      </div>`
+  };
 
-  // Tactile spring press micro-interactions on buttons & cards
-  document.querySelectorAll(".btn, .hero-tab, .shot > button, [data-copy]").forEach((el) => {
-    el.addEventListener("pointerdown", () => animate(el, { scale: 0.965 }, { duration: 0.1 }));
-    const release = () => animate(el, { scale: 1 }, { type: "spring", stiffness: 460, damping: 24 });
-    el.addEventListener("pointerup", release);
-    el.addEventListener("pointercancel", release);
-    el.addEventListener("pointerleave", release);
-  });
-
-  // Subtle 3D tilt on hero notch (desktop fine pointer only)
-  if (heroImg && window.matchMedia("(pointer: fine)").matches) {
-    const stage = heroImg.closest(".hero-shot");
-    if (stage) {
-      stage.addEventListener("pointermove", (ev) => {
-        const rect = stage.getBoundingClientRect();
-        const dx = ((ev.clientX - rect.left) / rect.width - 0.5) * 2;
-        const dy = ((ev.clientY - rect.top) / rect.height - 0.5) * 2;
-        animate(heroImg, { rotateY: dx * 3.5, rotateX: -dy * 2.5 }, { duration: 0.25 });
-      });
-      stage.addEventListener("pointerleave", () => {
-        animate(heroImg, { rotateY: 0, rotateX: 0 }, { type: "spring", stiffness: 260, damping: 22 });
-      });
+  let dwellTimer = null;
+  function setExpanded(on) {
+    if (!notch) return;
+    notch.classList.toggle('expanded', on);
+    notch.setAttribute('aria-expanded', String(on));
+    if (bezelHint) {
+      bezelHint.textContent = on
+        ? 'Live preview expanded — switch modes or click Collapse'
+        : 'Hover or click the live bezel capsule to inspect v1.0.0';
     }
   }
+  if (notch) {
+    notch.addEventListener('mouseenter', () => {
+      if (notch.classList.contains('expanded')) return;
+      clearTimeout(dwellTimer);
+      dwellTimer = setTimeout(() => setExpanded(true), 650);
+    });
+    notch.addEventListener('mouseleave', () => {
+      clearTimeout(dwellTimer);
+    });
+    notch.addEventListener('click', (e) => {
+      if (e.target.closest('button')) return;
+      clearTimeout(dwellTimer);
+      if (!notch.classList.contains('expanded')) setExpanded(true);
+    });
+    notch.addEventListener('keydown', (e) => {
+      if ((e.key === 'Enter' || e.key === ' ') && !notch.classList.contains('expanded')) {
+        e.preventDefault();
+        setExpanded(true);
+      }
+    });
+  }
+  if (notchClose) {
+    notchClose.addEventListener('click', (e) => {
+      e.stopPropagation();
+      clearTimeout(dwellTimer);
+      setExpanded(false);
+    });
+  }
+  document.querySelectorAll('.notch-tab').forEach(btn => {
+    btn.addEventListener('click', (e) => {
+      e.stopPropagation();
+      document.querySelectorAll('.notch-tab').forEach(b => {
+        b.classList.remove('active');
+        b.setAttribute('aria-selected', 'false');
+      });
+      btn.classList.add('active');
+      btn.setAttribute('aria-selected', 'true');
+      const m = btn.getAttribute('data-mode');
+      if (notchBody && modeTemplates[m]) notchBody.innerHTML = modeTemplates[m];
+    });
+  });
 
-  // Staggered inView reveals for spec strip, feature pills, and dossier rows
-  inView(".specs", () => {
-    animate(".specs .spec", { opacity: [0, 1], y: [14, 0] }, { ...crispSpring, delay: stagger(0.05) });
-  }, { amount: 0.2 });
+  // 3. Kinetic Scroll-Reveal Manifesto (Made to Disrupt character/word highlight)
+  const kinetic = document.getElementById('kineticCopy');
+  if (kinetic && !reduced) {
+    const goldWords = new Set(['Rust', 'Direct2D,', 'DirectComposition', 'milliseconds', 'CyNotch']);
+    const words = kinetic.textContent.trim().split(/\s+/);
+    kinetic.innerHTML = words.map(w => {
+      const cls = goldWords.has(w) ? 'kw gold' : 'kw';
+      return `<span class="${cls}">${w}</span>`;
+    }).join(' ');
+    const spans = Array.from(kinetic.querySelectorAll('.kw'));
+    let ticking = false;
+    const updateReveal = () => {
+      ticking = false;
+      const rect = kinetic.getBoundingClientRect();
+      const vh = window.innerHeight || 800;
+      const progress = Math.max(0, Math.min(1, (vh * 0.82 - rect.top) / (rect.height + vh * 0.25)));
+      const litCount = Math.round(progress * spans.length);
+      for (let i = 0; i < spans.length; i++) {
+        spans[i].classList.toggle('lit', i < litCount);
+      }
+    };
+    window.addEventListener('scroll', () => {
+      if (!ticking) {
+        ticking = true;
+        requestAnimationFrame(updateReveal);
+      }
+    }, { passive: true });
+    updateReveal();
+  }
 
-  inView(".feature-strip", () => {
-    animate(".feature-strip span", { opacity: [0, 1], scale: [0.92, 1], y: [8, 0] }, { ...crispSpring, delay: stagger(0.03) });
-  }, { amount: 0.2 });
-
-  // Scroll-linked parallax on official Cyno splash art in Memory Reduct
-  const cynoWish = document.querySelector(".cyno-wish");
-  if (cynoWish) {
-    scroll(animate(cynoWish, { y: [26, -18], scale: [0.96, 1.02] }), {
-      target: document.getElementById("memory"),
-      offset: ["start end", "end start"]
+  // 4. Copy build command
+  const copyBtn = document.getElementById('copyBtn');
+  if (copyBtn) {
+    copyBtn.addEventListener('click', async () => {
+      const cmd = 'git clone https://github.com/muhnbl/CyNotch.git\ncd CyNotch && cargo build --release\n.\\target\\release\\cynotch.exe';
+      try {
+        await navigator.clipboard.writeText(cmd);
+        copyBtn.textContent = 'Copied';
+        setTimeout(() => { copyBtn.textContent = 'Copy'; }, 1800);
+      } catch {
+        copyBtn.textContent = 'Select & Copy';
+      }
     });
   }
 
-  // Lightbox spring pop
-  const lbInner = document.querySelector(".lightbox-inner");
-  document.querySelectorAll("[data-shot]").forEach((btn) => {
-    btn.addEventListener("click", () => {
-      if (lbInner) {
-        animate(lbInner, { opacity: [0, 1], scale: [0.94, 1], y: [10, 0] }, { type: "spring", stiffness: 380, damping: 26 });
+  // 5. Subtle Hero Electro-Starfield Canvas
+  const canvas = document.getElementById('starfield');
+  if (canvas && !reduced) {
+    const ctx = canvas.getContext('2d');
+    let w = 0, h = 0, pts = [];
+    const resize = () => {
+      const dpr = Math.min(window.devicePixelRatio || 1, 2);
+      w = canvas.clientWidth;
+      h = canvas.clientHeight;
+      canvas.width = Math.max(1, Math.floor(w * dpr));
+      canvas.height = Math.max(1, Math.floor(h * dpr));
+      ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+      const count = Math.min(72, Math.floor((w * h) / 18000));
+      pts = Array.from({ length: count }, (_, i) => ({
+        x: Math.random() * w,
+        y: Math.random() * h,
+        r: Math.random() * 1.35 + 0.4,
+        vy: -(Math.random() * 0.16 + 0.04),
+        a: Math.random() * 0.48 + 0.18,
+        tint: i % 5 === 0 ? '244,235,181' : (i % 3 === 0 ? '167,139,250' : '245,243,255')
+      }));
+    };
+    resize();
+    window.addEventListener('resize', resize, { passive: true });
+    let last = 0;
+    const draw = (ts) => {
+      if (ts - last >= 33) {
+        last = ts;
+        ctx.clearRect(0, 0, w, h);
+        for (const p of pts) {
+          p.y += p.vy;
+          if (p.y < -4) { p.y = h + 4; p.x = Math.random() * w; }
+          ctx.fillStyle = `rgba(${p.tint},${p.a})`;
+          ctx.beginPath();
+          ctx.arc(p.x, p.y, p.r, 0, Math.PI * 2);
+          ctx.fill();
+        }
       }
-    });
-  });
+      requestAnimationFrame(draw);
+    };
+    requestAnimationFrame(draw);
+  }
 })();
 </script>
 </body>
